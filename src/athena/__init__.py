@@ -41,6 +41,7 @@ from athena.permissions import (
     RiskTier,
 )
 from athena.process_tools import BashTool, CommandPolicy
+from athena.recovery import RecoveryAction, RecoveryDirective, RecoveryPolicy
 from athena.registry import ToolRegistry
 from athena.repository_tools import (
     GlobTool,
@@ -53,7 +54,19 @@ from athena.state import AgentState, SessionState
 from athena.stores import InMemoryToolResultStore, ToolResultStore
 from athena.tool_executor import ToolExecutor
 from athena.tools import Tool, ToolContext, ToolResult, ToolResultReference
-from athena.verification import VerificationResult
+from athena.verification import (
+    ChangeIntegrityPolicy,
+    CommandVerificationPolicy,
+    IntegrityAuthorization,
+    VerificationCheck,
+    VerificationEvidence,
+    VerificationPlan,
+    VerificationPlanner,
+    VerificationPolicy,
+    VerificationResult,
+    VerificationStatus,
+)
+from athena.working_state import PlanStep, WorkingState
 from athena.workspace import Workspace
 
 __all__ = [
@@ -67,7 +80,9 @@ __all__ = [
     "BashTool",
     "CancellationSource",
     "CancellationToken",
+    "ChangeIntegrityPolicy",
     "CommandPolicy",
+    "CommandVerificationPolicy",
     "ContextBuilder",
     "EditFileTool",
     "EventBus",
@@ -82,6 +97,7 @@ __all__ = [
     "GrepTool",
     "InMemoryEventBus",
     "InMemoryToolResultStore",
+    "IntegrityAuthorization",
     "ListDirectoryTool",
     "ModelCapabilities",
     "ModelEvent",
@@ -94,10 +110,14 @@ __all__ = [
     "PermissionPolicy",
     "PermissionPrompt",
     "PermissionRequest",
+    "PlanStep",
     "PolicyPermissionEngine",
     "ProcessEvent",
     "ReadFileTool",
     "ReadRangeTool",
+    "RecoveryAction",
+    "RecoveryDirective",
+    "RecoveryPolicy",
     "RiskTier",
     "RuntimeEvent",
     "SessionState",
@@ -109,7 +129,14 @@ __all__ = [
     "ToolResult",
     "ToolResultReference",
     "ToolResultStore",
+    "VerificationCheck",
+    "VerificationEvidence",
+    "VerificationPlan",
+    "VerificationPlanner",
+    "VerificationPolicy",
     "VerificationResult",
+    "VerificationStatus",
+    "WorkingState",
     "Workspace",
     "WriteFileTool",
     "git_read_tools",
