@@ -16,3 +16,11 @@ state will be persisted by a later storage design; chat history is contextual in
 
 Recovery and interfaces can reason over explicit state. Persistent memory remains out of
 scope for H0.
+
+## Implementation status (H3, 2026-08-18)
+
+`WorkingState` holds the objective, constraints, plan, current step, facts, files
+examined and modified, commands run, decisions, typed errors, verification outcome and
+remaining work. Updates go through validated methods, and the state is serialised into
+the session rather than being reconstructed from the transcript. Persistence across
+processes remains out of scope.

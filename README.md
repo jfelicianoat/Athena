@@ -2,7 +2,8 @@
 
 Athena is a provider-neutral autonomous-agent runtime. H1 implements a functional,
 read-only repository-investigation loop on top of the contracts frozen in H0. H2 adds
-mutation and local execution behind a deterministic permission engine.
+mutation and local execution behind a deterministic permission engine. H3 makes
+completion conditional on evidence, and lets Athena repair its own broken changes.
 
 ## Architecture
 
@@ -43,6 +44,34 @@ outside the runtime core.
 ```text
 set ATHENA_BASE_URL=http://localhost:1234/v1
 set ATHENA_MODEL=local-model
+athena D:\path\to\repository --objective "Explain the authentication flow"
+```
+
+The recommended investigation sequence is `Glob -> Grep -> ReadRange`. By default the
+runtime offers only read-only tools.
+
+## Verification and self-repair
+
+A run completes only when the project's own checks pass. Athena discovers those commands
+from an `AGENTS.md` `## Verification` section or from the project configuration; it never
+invents one, and a command that is not plain local execution is discarded.
+
+Before the agent starts, the checks run once to capture a baseline, so a repository that
+was already failing is not blamed on Athena. When a check that used to pass now fails, the
+evidence goes back to the model and a bounded repair cycle begins (`--max-repair-cycles`,
+default 2). Deleting a test, skipping one, removing assertions or adding lint suppressions
+fails verification instead of passing it.
+
+See [ADR-012](docs/adr/012-verification-owns-completion-and-recovery-is-explicit.md) and
+[V0_1_ACCEPTANCE_REPORT.md](V0_1_ACCEPTANCE_REPORT.md).
+
+## Capabilities and permissions
+
+Mutation and execution are opt-in per run and gated by capability tiers (see
+[ADR-011](docs/adr/011-capability-tiers-gate-mutation-and-execution.md) and
+[docs/security-model.md](docs/security-model.md)):
+
+```text
 athena D:\path\to\repository -o "Fix the failing test" --writes ask --exec ask
 ```
 

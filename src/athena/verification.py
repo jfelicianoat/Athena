@@ -253,9 +253,7 @@ class VerificationPlanner:
                 VerificationCheck("ruff", CheckKind.LINT, ("python", "-m", "ruff", "check", "."))
             )
         if "mypy" in tools:
-            checks.append(
-                VerificationCheck("mypy", CheckKind.TYPECHECK, ("python", "-m", "mypy"))
-            )
+            checks.append(VerificationCheck("mypy", CheckKind.TYPECHECK, ("python", "-m", "mypy")))
         return tuple(checks)
 
     def _from_package_json(self) -> tuple[VerificationCheck, ...]:
@@ -316,6 +314,7 @@ class ChangeIntegrityPolicy:
     """Refuses a green verdict obtained by weakening what does the verifying."""
 
     _REMOVED_TEST = re.compile(r"^-\s*(?:async\s+)?(?:def\s+test_|it\(|test\()")
+    _ADDED_TEST = re.compile(r"^\+\s*(?:async\s+)?(?:def\s+test_|it\(|test\()")
     _ADDED_SKIP = re.compile(
         r"^\+.*(pytest\.mark\.skip|pytest\.mark\.xfail|unittest\.skip|@skip\b"
         r"|\.skip\(|\.only\(|xit\(|xdescribe\()"
@@ -332,6 +331,7 @@ class ChangeIntegrityPolicy:
 
     def inspect(self, diff: str) -> tuple[IntegrityFinding, ...]:
         removed_tests: list[str] = []
+        added_tests = 0
         added_skips: list[str] = []
         removed_assertions = 0
         added_assertions = 0
@@ -342,6 +342,8 @@ class ChangeIntegrityPolicy:
                 continue
             if self._REMOVED_TEST.match(line):
                 removed_tests.append(line.strip())
+            if self._ADDED_TEST.match(line):
+                added_tests += 1
             if self._ADDED_SKIP.match(line):
                 added_skips.append(line.strip())
             if self._REMOVED_ASSERT.match(line):
@@ -353,11 +355,13 @@ class ChangeIntegrityPolicy:
                 suppressions.append(line.strip())
 
         findings: list[IntegrityFinding] = []
-        if removed_tests and not self.authorization.allow_test_removal:
+        # Net counting, so renaming or restructuring a test is not mistaken for deleting it.
+        net_removed_tests = len(removed_tests) - added_tests
+        if net_removed_tests > 0 and not self.authorization.allow_test_removal:
             findings.append(
                 IntegrityFinding(
                     "test_removed",
-                    f"{len(removed_tests)} test definition(s) were deleted",
+                    f"{net_removed_tests} test definition(s) were deleted",
                     tuple(removed_tests[:10]),
                 )
             )
@@ -369,10 +373,7 @@ class ChangeIntegrityPolicy:
                     tuple(added_skips[:10]),
                 )
             )
-        if (
-            removed_assertions > added_assertions
-            and not self.authorization.allow_assertion_removal
-        ):
+        if removed_assertions > added_assertions and not self.authorization.allow_assertion_removal:
             findings.append(
                 IntegrityFinding(
                     "assertions_weakened",
@@ -516,8 +517,7 @@ class CommandVerificationPolicy:
                 VerificationEvidence(
                     kind=check.kind.value,
                     summary=(
-                        f"{check.name}: {'passed' if outcome.passed else 'failed'} "
-                        f"({attribution})"
+                        f"{check.name}: {'passed' if outcome.passed else 'failed'} ({attribution})"
                     ),
                     reference=check.rendered,
                     metadata={
@@ -557,10 +557,7 @@ class CommandVerificationPolicy:
             return VerificationResult(
                 VerificationStatus.FAILED,
                 tuple(evidence),
-                (
-                    f"Failing checks with no baseline to compare against: "
-                    f"{', '.join(unattributed)}."
-                ),
+                (f"Failing checks with no baseline to compare against: {', '.join(unattributed)}."),
             )
         summary = "All project checks pass."
         if pre_existing:
@@ -580,9 +577,7 @@ class CommandVerificationPolicy:
             return ()
         return self.integrity.inspect(diff)
 
-    async def _git_diff(
-        self, workspace: Workspace, cancellation: CancellationToken
-    ) -> str | None:
+    async def _git_diff(self, workspace: Workspace, cancellation: CancellationToken) -> str | None:
         if not (workspace.root / ".git").exists():
             return None
         argv = (

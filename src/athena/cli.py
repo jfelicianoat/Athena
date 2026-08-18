@@ -34,6 +34,7 @@ from athena.repository_tools import repository_read_tools
 from athena.stores import InMemoryToolResultStore
 from athena.tool_executor import ToolExecutor
 from athena.tools import Tool
+from athena.verification import CommandVerificationPolicy, VerificationPlanner
 from athena.workspace import Workspace
 
 _CAPABILITY_MODES = ("off", "ask", "allow")
@@ -78,6 +79,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--model", default=os.getenv("ATHENA_MODEL", "local-model"))
     parser.add_argument("--max-iterations", type=int, default=12)
+    parser.add_argument("--max-repair-cycles", type=int, default=2)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument(
         "--writes",
@@ -152,15 +154,18 @@ async def _run(arguments: argparse.Namespace, source: CancellationSource | None 
         arguments.model,
         api_key=os.getenv("ATHENA_API_KEY"),
     )
+    verification = CommandVerificationPolicy(VerificationPlanner(workspace), event_bus=event_bus)
     loop = AgentLoop(
         provider,
         registry,
         executor,
         ContextBuilder(workspace),
         event_bus,
+        verification=verification,
         config=AgentLoopConfig(
             max_iterations=arguments.max_iterations,
             session_timeout_seconds=arguments.timeout,
+            max_repair_cycles=arguments.max_repair_cycles,
         ),
     )
     cancellation = source or CancellationSource()
@@ -168,6 +173,8 @@ async def _run(arguments: argparse.Namespace, source: CancellationSource | None 
     result = await loop.run(objective, workspace, cancellation.token)
     if result.answer:
         print(result.answer)
+    if result.verification is not None:
+        print(f"\nVerification: {result.verification.status.value} - {result.verification.summary}")
     if result.status is AgentRunStatus.COMPLETED:
         return 0
     return 130 if result.status is AgentRunStatus.CANCELLED else 1

@@ -20,3 +20,5 @@ of rewritten history.
   [Subagents use isolated contexts and budgets](010-subagents-use-isolated-contexts-and-budgets.md)
 - ADR-011:
   [Capability tiers gate mutation and execution](011-capability-tiers-gate-mutation-and-execution.md)
+- ADR-012:
+  [Verification owns completion, and recovery is explicit per error](012-verification-owns-completion-and-recovery-is-explicit.md)

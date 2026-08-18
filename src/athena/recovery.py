@@ -98,9 +98,7 @@ class RecoveryPolicy:
     def decide(self, error: AthenaRuntimeError) -> RecoveryDirective:
         # Cancellation first: it outranks whatever the failing operation was.
         if isinstance(error, (CancellationError, ProcessCancelledError)):
-            return RecoveryDirective(
-                RecoveryAction.CANCELLED, "The session was cancelled."
-            )
+            return RecoveryDirective(RecoveryAction.CANCELLED, "The session was cancelled.")
         if isinstance(error, WorkspaceBoundaryError):
             return RecoveryDirective(
                 RecoveryAction.ABORT,
@@ -152,9 +150,7 @@ class RecoveryPolicy:
                 "Verification failed; return the evidence for a repair cycle.",
             )
         if isinstance(error, BudgetExceededError):
-            return RecoveryDirective(
-                RecoveryAction.STOP, "The run exhausted its budget and stops."
-            )
+            return RecoveryDirective(RecoveryAction.STOP, "The run exhausted its budget and stops.")
         if isinstance(error, FatalRuntimeError):
             return RecoveryDirective(
                 RecoveryAction.ABORT, "An unrecoverable runtime failure aborts the run."
