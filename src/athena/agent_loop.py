@@ -7,7 +7,6 @@ import json
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import NoReturn
 from uuid import uuid4
 
 from athena.async_utils import await_cancellable
@@ -375,7 +374,6 @@ class AgentLoop:
                 )
             )
             return response
-        self._unreachable()
 
     async def _execute_calls(
         self,
@@ -676,7 +674,3 @@ class AgentLoop:
             ),
             updated_at=datetime.now(UTC),
         )
-
-    @staticmethod
-    def _unreachable() -> NoReturn:
-        raise FatalRuntimeError("Model retry loop ended unexpectedly")
