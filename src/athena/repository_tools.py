@@ -8,7 +8,7 @@ from typing import ClassVar
 
 from athena.cancellation import CancellationToken
 from athena.errors import ToolExecutionError, ToolValidationError
-from athena.permissions import PermissionRequest, RiskLevel
+from athena.permissions import PermissionRequest, RiskLevel, RiskTier
 from athena.tools import Tool, ToolContext, ToolResult, ToolSpec
 from athena.types import JSONObject
 
@@ -64,10 +64,15 @@ class _ReadOnlyTool:
         return PermissionRequest(
             tool_name=self.spec.name,
             operation=self.spec.name,
+            action=f"{self.spec.name} {resource}",
             workspace=context.workspace,
             risk=RiskLevel.LOW,
+            tier=RiskTier.R0_READ_ONLY,
             is_read_only=True,
             is_destructive=False,
+            is_concurrency_safe=True,
+            reason="The agent requested read-only access inside the workspace.",
+            possible_effects=("Reads workspace content", "Changes nothing"),
             resources=(resource,),
             arguments=arguments,
         )
@@ -290,9 +295,7 @@ class GlobTool(_ReadOnlyTool):
                 truncated = True
                 break
             matches.append(context.workspace.relative(canonical))
-        return ToolResult(
-            {"pattern": pattern, "matches": sorted(matches), "truncated": truncated}
-        )
+        return ToolResult({"pattern": pattern, "matches": sorted(matches), "truncated": truncated})
 
 
 class GrepTool(_ReadOnlyTool):

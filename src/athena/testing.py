@@ -15,6 +15,7 @@ from athena.models import (
     ModelRequest,
     ModelResponse,
 )
+from athena.permissions import PermissionDecision, PermissionRequest
 
 
 class FakeModelProvider(ModelProvider):
@@ -57,3 +58,19 @@ class FakeModelProvider(ModelProvider):
     async def health(self, cancellation: CancellationToken) -> ModelHealth:
         cancellation.raise_if_cancelled()
         return ModelHealth(ModelHealthStatus.HEALTHY)
+
+
+class ScriptedPermissionPrompt:
+    """Answers ASK prompts from a fixed script and records what it was asked.
+
+    Anything beyond the script is denied: an exhausted script must never become an
+    implicit approval.
+    """
+
+    def __init__(self, answers: Iterable[PermissionDecision] = ()) -> None:
+        self._answers = iter(answers)
+        self.requests: list[PermissionRequest] = []
+
+    async def confirm(self, request: PermissionRequest) -> PermissionDecision:
+        self.requests.append(request)
+        return next(self._answers, PermissionDecision.DENY)

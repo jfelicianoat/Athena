@@ -31,6 +31,10 @@ class EventName(StrEnum):
     VERIFICATION_STARTED = "verification.started"
     VERIFICATION_COMPLETED = "verification.completed"
     FILE_CHANGED = "file.changed"
+    PROCESS_STARTED = "process.started"
+    PROCESS_COMPLETED = "process.completed"
+    PROCESS_FAILED = "process.failed"
+    PROCESS_CANCELLED = "process.cancelled"
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +70,16 @@ class PermissionEvent(RuntimeEvent):
 @dataclass(frozen=True, slots=True)
 class VerificationEvent(RuntimeEvent):
     """Event in the verification.* namespace."""
+
+
+@dataclass(frozen=True, slots=True)
+class FileEvent(RuntimeEvent):
+    """Event in the file.* namespace, carrying the change evidence."""
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessEvent(RuntimeEvent):
+    """Event in the process.* namespace for child-process lifecycle."""
 
 
 EventHandler: TypeAlias = Callable[[RuntimeEvent], Awaitable[None] | None]

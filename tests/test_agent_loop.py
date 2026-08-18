@@ -8,7 +8,12 @@ from pathlib import Path
 from athena.agent_loop import AgentLoop, AgentLoopConfig, AgentRunStatus
 from athena.cancellation import CancellationSource, CancellationToken
 from athena.context import ContextBuilder
-from athena.errors import BudgetExceededError, ModelPermanentError, ModelTransientError
+from athena.errors import (
+    BudgetExceededError,
+    ModelPermanentError,
+    ModelTransientError,
+    ProcessCancelledError,
+)
 from athena.events import EventName, InMemoryEventBus, ModelEvent, RuntimeEvent
 from athena.models import (
     ModelCapabilities,
@@ -19,7 +24,12 @@ from athena.models import (
     ModelResponse,
     ModelToolCall,
 )
-from athena.permissions import PermissionRequest, ReadOnlyPermissionEngine, RiskLevel
+from athena.permissions import (
+    PermissionRequest,
+    ReadOnlyPermissionEngine,
+    RiskLevel,
+    RiskTier,
+)
 from athena.registry import ToolRegistry
 from athena.repository_tools import repository_read_tools
 from athena.stores import InMemoryToolResultStore
@@ -284,6 +294,7 @@ class _LongTool:
             self.spec.name,
             context.workspace,
             RiskLevel.LOW,
+            RiskTier.R0_READ_ONLY,
             True,
             False,
             arguments=arguments,
@@ -385,5 +396,74 @@ def test_same_loop_accepts_another_model_provider(tmp_path: Path) -> None:
 
         assert result.status is AgentRunStatus.COMPLETED
         assert result.answer == "Alternate provider works."
+
+    asyncio.run(scenario())
+
+
+class _CancelledProcessTool:
+    spec = ToolSpec(
+        name="long_process",
+        description="Simulates a command that is killed because the session was cancelled.",
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        output_schema={"type": "object"},
+        risk=RiskLevel.LOW,
+        max_result_size_chars=1_000,
+    )
+
+    def validate(self, arguments: JSONObject) -> JSONObject:
+        return arguments
+
+    def permission(self, context: ToolContext, arguments: JSONObject) -> PermissionRequest:
+        return PermissionRequest(
+            self.spec.name,
+            self.spec.name,
+            context.workspace,
+            RiskLevel.LOW,
+            RiskTier.R0_READ_ONLY,
+            True,
+            False,
+            arguments=arguments,
+        )
+
+    async def execute(
+        self,
+        context: ToolContext,
+        arguments: JSONObject,
+        cancellation: CancellationToken,
+    ) -> ToolResult:
+        del context, arguments, cancellation
+        raise ProcessCancelledError("Command cancelled and child process terminated")
+
+    def is_read_only(self, arguments: JSONObject) -> bool:
+        return True
+
+    def is_destructive(self, arguments: JSONObject) -> bool:
+        return False
+
+    def is_concurrency_safe(self, arguments: JSONObject) -> bool:
+        return True
+
+
+def test_a_killed_child_process_ends_the_run_as_cancelled(tmp_path: Path) -> None:
+    """A cancelled process is not a tool failure to report back to the model."""
+
+    async def scenario() -> None:
+        provider = FakeModelProvider(
+            [
+                _response_with_call("p-1", "long_process", {}),
+                ModelResponse("Should never be reached.", "fake", "stop"),
+            ]
+        )
+        loop, workspace, source, _, _ = _runtime(
+            tmp_path, provider, tools=(_CancelledProcessTool(),)
+        )
+
+        result = await loop.run("Run it", workspace, source.token)
+
+        assert result.status is AgentRunStatus.CANCELLED
+        assert result.session.agent.status == "cancelled"
+        assert result.error is not None
+        assert result.error.code == "process_cancelled"
+        assert len(provider.requests) == 1, "the model must not be asked to continue"
 
     asyncio.run(scenario())

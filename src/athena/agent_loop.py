@@ -21,6 +21,7 @@ from athena.errors import (
     FatalRuntimeError,
     ModelPermanentError,
     ModelTransientError,
+    ProcessCancelledError,
     ProcessTimeoutError,
     VerificationFailure,
 )
@@ -136,7 +137,7 @@ class AgentLoop:
                 error=timeout,
                 tool_call_ids=tuple(data.seen_call_ids),
             )
-        except CancellationError as exc:
+        except (CancellationError, ProcessCancelledError) as exc:
             cancelled = self._set_status(data.session, AgentStatus.CANCELLED, exc.code)
             await self.event_bus.publish(
                 AgentEvent(
@@ -370,6 +371,8 @@ class AgentLoop:
                     "output": result.output,
                     "reference_uri": result.reference.uri if result.reference else None,
                 }
+            except (CancellationError, ProcessCancelledError):
+                raise
             except AthenaRuntimeError as exc:
                 payload = {
                     "ok": False,

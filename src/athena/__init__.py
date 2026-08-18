@@ -8,10 +8,20 @@ from athena.events import (
     AgentEvent,
     EventBus,
     EventName,
+    FileEvent,
     InMemoryEventBus,
     ModelEvent,
+    ProcessEvent,
     RuntimeEvent,
     ToolEvent,
+)
+from athena.git_tools import (
+    GitCommitTool,
+    GitDiffTool,
+    GitLogTool,
+    GitShowTool,
+    GitStatusTool,
+    git_read_tools,
 )
 from athena.models import (
     ModelCapabilities,
@@ -20,7 +30,17 @@ from athena.models import (
     ModelResponse,
     ModelToolCall,
 )
-from athena.permissions import PermissionDecision, PermissionEngine, PermissionRequest
+from athena.mutation_tools import EditFileTool, WriteFileTool, workspace_mutation_tools
+from athena.permissions import (
+    PermissionDecision,
+    PermissionEngine,
+    PermissionPolicy,
+    PermissionPrompt,
+    PermissionRequest,
+    PolicyPermissionEngine,
+    RiskTier,
+)
+from athena.process_tools import BashTool, CommandPolicy
 from athena.registry import ToolRegistry
 from athena.repository_tools import (
     GlobTool,
@@ -44,11 +64,20 @@ __all__ = [
     "AgentRunStatus",
     "AgentState",
     "AthenaRuntimeError",
+    "BashTool",
     "CancellationSource",
     "CancellationToken",
+    "CommandPolicy",
     "ContextBuilder",
+    "EditFileTool",
     "EventBus",
     "EventName",
+    "FileEvent",
+    "GitCommitTool",
+    "GitDiffTool",
+    "GitLogTool",
+    "GitShowTool",
+    "GitStatusTool",
     "GlobTool",
     "GrepTool",
     "InMemoryEventBus",
@@ -62,9 +91,14 @@ __all__ = [
     "ModelToolCall",
     "PermissionDecision",
     "PermissionEngine",
+    "PermissionPolicy",
+    "PermissionPrompt",
     "PermissionRequest",
+    "PolicyPermissionEngine",
+    "ProcessEvent",
     "ReadFileTool",
     "ReadRangeTool",
+    "RiskTier",
     "RuntimeEvent",
     "SessionState",
     "Tool",
@@ -77,4 +111,7 @@ __all__ = [
     "ToolResultStore",
     "VerificationResult",
     "Workspace",
+    "WriteFileTool",
+    "git_read_tools",
+    "workspace_mutation_tools",
 ]

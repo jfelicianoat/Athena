@@ -25,9 +25,7 @@ class ToolRegistry:
         try:
             return self._tools[name]
         except KeyError as exc:
-            raise ToolValidationError(
-                f"Unknown tool: {name}", details={"tool_name": name}
-            ) from exc
+            raise ToolValidationError(f"Unknown tool: {name}", details={"tool_name": name}) from exc
 
     def definitions(self) -> tuple[JSONObject, ...]:
         definitions: list[JSONObject] = []

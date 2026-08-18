@@ -16,3 +16,8 @@ Tools produce structured `PermissionRequest` values. A `PermissionEngine` alone 
 
 Model output never grants authority. Permission evaluation is independently testable and
 auditable.
+
+## Implementation status (H2, 2026-08-18)
+
+H2 implements the decision as `PolicyPermissionEngine`, with the capability tiers described in [ADR-011](011-capability-tiers-gate-mutation-and-execution.md). An ASK is
+resolved by a `PermissionPrompt` owned by the interface and is valid for a single call.

@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 
 from athena.cancellation import CancellationSource, CancellationToken
-from athena.permissions import PermissionRequest, RiskLevel
+from athena.permissions import PermissionRequest, RiskLevel, RiskTier
 from athena.tools import Tool, ToolContext, ToolLoadPolicy, ToolResult, ToolSpec
 from athena.types import JSONObject
 from athena.workspace import Workspace
@@ -38,6 +38,7 @@ class EchoTool:
             operation="echo",
             workspace=context.workspace,
             risk=self.spec.risk,
+            tier=RiskTier.R0_READ_ONLY,
             is_read_only=self.is_read_only(arguments),
             is_destructive=self.is_destructive(arguments),
             arguments=arguments,

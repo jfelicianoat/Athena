@@ -15,7 +15,13 @@ from athena.errors import (
 )
 from athena.events import EventBus, EventName, PermissionEvent, ToolEvent
 from athena.models import ModelToolCall
-from athena.permissions import PermissionDecision, PermissionEngine
+from athena.permissions import (
+    DenyingPermissionPrompt,
+    PermissionDecision,
+    PermissionEngine,
+    PermissionPrompt,
+    PermissionRequest,
+)
 from athena.registry import ToolRegistry
 from athena.stores import ToolResultStore
 from athena.tools import ToolContext, ToolResult, ToolResultSizePolicy, ToolSpec
@@ -31,6 +37,7 @@ class ToolExecutor:
         result_store: ToolResultStore,
         event_bus: EventBus,
         *,
+        prompt: PermissionPrompt | None = None,
         tool_timeout_seconds: float | None = 30.0,
         summary_chars: int = 500,
     ) -> None:
@@ -38,6 +45,7 @@ class ToolExecutor:
         self.permissions = permissions
         self.result_store = result_store
         self.event_bus = event_bus
+        self.prompt = prompt or DenyingPermissionPrompt()
         self.tool_timeout_seconds = tool_timeout_seconds
         self.summary_chars = summary_chars
 
@@ -79,16 +87,26 @@ class ToolExecutor:
                 PermissionEvent(
                     EventName.PERMISSION_REQUESTED,
                     session_id,
-                    {"tool_name": call.name, "risk": request.risk.value},
+                    {
+                        "tool_name": call.name,
+                        "risk": request.risk.value,
+                        "tier": request.tier.value,
+                        "action": request.action,
+                        "reason": request.reason,
+                        "possible_effects": list(request.possible_effects),
+                    },
                     call.call_id,
                 )
             )
             decision = self.permissions.decide(request)
+            asked = decision is PermissionDecision.ASK
+            if asked:
+                decision = await self._ask(request, cancellation)
             await self.event_bus.publish(
                 PermissionEvent(
                     EventName.PERMISSION_RESOLVED,
                     session_id,
-                    {"tool_name": call.name, "decision": decision.value},
+                    {"tool_name": call.name, "decision": decision.value, "asked": asked},
                     call.call_id,
                 )
             )
@@ -135,6 +153,13 @@ class ToolExecutor:
                 )
             )
             raise
+
+    async def _ask(
+        self, request: PermissionRequest, cancellation: CancellationToken
+    ) -> PermissionDecision:
+        """Resolve an ASK through the interface. Approval is single-use, never cached."""
+        answer = await await_cancellable(self.prompt.confirm(request), cancellation)
+        return answer if answer is PermissionDecision.ALLOW else PermissionDecision.DENY
 
     async def _apply_result_policy(
         self,

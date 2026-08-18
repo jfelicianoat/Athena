@@ -18,3 +18,5 @@ of rewritten history.
 - [ADR-009: Large outputs are externalized](009-large-outputs-are-externalized.md)
 - ADR-010:
   [Subagents use isolated contexts and budgets](010-subagents-use-isolated-contexts-and-budgets.md)
+- ADR-011:
+  [Capability tiers gate mutation and execution](011-capability-tiers-gate-mutation-and-execution.md)

@@ -25,6 +25,7 @@ def test_fake_model_provider_obeys_provider_contract() -> None:
 
     asyncio.run(scenario())
 
+
 def test_non_streaming_provider_fails_explicitly() -> None:
     async def scenario() -> None:
         provider = FakeModelProvider([])

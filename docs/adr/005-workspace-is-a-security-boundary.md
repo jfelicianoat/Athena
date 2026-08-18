@@ -21,3 +21,9 @@ enforcement are deferred beyond H0.
 
 H1 implemented canonical resolution and boundary enforcement in `athena/workspace.py`,
 including symlink-escape rejection. The deferral recorded above applied to H0 only.
+
+## Implementation status (H2, 2026-08-18)
+
+Mutation tools and command execution resolve every path and working directory through
+`Workspace.resolve` before acting, so traversal, absolute outside paths and symlink
+escapes are rejected for writes exactly as they are for reads.

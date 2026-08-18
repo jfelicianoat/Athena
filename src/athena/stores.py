@@ -21,9 +21,7 @@ class ToolResultStore(Protocol):
         cancellation: CancellationToken,
     ) -> ToolResultReference: ...
 
-    async def get(
-        self, reference: ToolResultReference, cancellation: CancellationToken
-    ) -> str: ...
+    async def get(self, reference: ToolResultReference, cancellation: CancellationToken) -> str: ...
 
 
 class InMemoryToolResultStore:
@@ -52,9 +50,7 @@ class InMemoryToolResultStore:
             checksum=checksum,
         )
 
-    async def get(
-        self, reference: ToolResultReference, cancellation: CancellationToken
-    ) -> str:
+    async def get(self, reference: ToolResultReference, cancellation: CancellationToken) -> str:
         cancellation.raise_if_cancelled()
         async with self._lock:
             content, _ = self._content[reference.store_key]
