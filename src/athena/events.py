@@ -29,7 +29,13 @@ class EventName(StrEnum):
     PERMISSION_REQUESTED = "permission.requested"
     PERMISSION_RESOLVED = "permission.resolved"
     VERIFICATION_STARTED = "verification.started"
+    VERIFICATION_CHECK_STARTED = "verification.check.started"
+    VERIFICATION_CHECK_COMPLETED = "verification.check.completed"
+    VERIFICATION_FAILED = "verification.failed"
     VERIFICATION_COMPLETED = "verification.completed"
+    RECOVERY_STARTED = "recovery.started"
+    RECOVERY_ACTION = "recovery.action"
+    RECOVERY_EXHAUSTED = "recovery.exhausted"
     FILE_CHANGED = "file.changed"
     PROCESS_STARTED = "process.started"
     PROCESS_COMPLETED = "process.completed"
@@ -80,6 +86,11 @@ class FileEvent(RuntimeEvent):
 @dataclass(frozen=True, slots=True)
 class ProcessEvent(RuntimeEvent):
     """Event in the process.* namespace for child-process lifecycle."""
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryEvent(RuntimeEvent):
+    """Event in the recovery.* namespace describing how a typed error was handled."""
 
 
 EventHandler: TypeAlias = Callable[[RuntimeEvent], Awaitable[None] | None]

@@ -52,5 +52,11 @@ def test_required_event_vocabulary_is_frozen() -> None:
         "process.completed",
         "process.failed",
         "process.cancelled",
+        "verification.check.started",
+        "verification.check.completed",
+        "verification.failed",
+        "recovery.started",
+        "recovery.action",
+        "recovery.exhausted",
     }
     assert issubclass(AgentEvent, RuntimeEvent)
