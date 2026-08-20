@@ -24,3 +24,10 @@ examined and modified, commands run, decisions, typed errors, verification outco
 remaining work. Updates go through validated methods, and the state is serialised into
 the session rather than being reconstructed from the transcript. Persistence across
 processes remains out of scope.
+
+## Implementation status (H4, 2026-08-18)
+
+The structured state is now durable. `SqliteSessionStore` persists it, and
+`AgentLoop.resume()` rebuilds a run from it with an empty conversation. Persistence
+across processes is no longer out of scope; see
+[ADR-013](013-sessions-persist-outside-the-conversation.md).

@@ -62,3 +62,37 @@ def test_cli_policy_only_grants_what_was_explicitly_allowed(tmp_path: Path) -> N
 
     assert engine.policy.allow_workspace_writes is True
     assert engine.policy.allow_local_execution is False
+
+
+def test_cli_lists_sessions_awaiting_recovery(tmp_path: Path) -> None:
+    """A human can find an interrupted session without reading any transcript."""
+    import asyncio
+
+    from athena.cli import _run
+    from athena.session_store import SessionRecord, SqliteSessionStore
+    from athena.state import AgentStatus
+    from athena.working_state import WorkingState
+
+    async def scenario() -> None:
+        state_dir = tmp_path / "state"
+        store = SqliteSessionStore(state_dir / "sessions.db")
+        await store.save(
+            SessionRecord(
+                session_id="abandoned-1",
+                workspace_id="ws",
+                status=AgentStatus.RUNNING,
+                working_memory=WorkingState(objective="Half-finished refactor"),
+            )
+        )
+
+        arguments = _parser().parse_args(
+            [str(tmp_path), "--state-dir", str(state_dir), "--list-sessions"]
+        )
+        exit_code = await _run(arguments)
+
+        assert exit_code == 0
+        recovered = await store.load("abandoned-1")
+        assert recovered is not None
+        assert recovered.status is AgentStatus.RECOVERY_PENDING
+
+    asyncio.run(scenario())

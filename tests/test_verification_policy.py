@@ -277,3 +277,54 @@ def test_a_run_that_deletes_the_failing_test_cannot_verify(tmp_path: Path) -> No
         assert "test_removed" in kinds
 
     asyncio.run(scenario())
+
+
+def test_verification_leaves_no_bytecode_cache_to_go_stale(tmp_path: Path) -> None:
+    """A `.pyc` header keeps the source mtime in whole seconds.
+
+    Athena edits fast and often without changing a file's length, so a cache written by
+    one check can still look valid to the next one — and a check that judges the previous
+    version of the code is worse than no check. Verification therefore writes no bytecode.
+    """
+    _repository(tmp_path, {"test_ok.py": PASSING_TEST, "AGENTS.md": _agents_md(_pytest_command())})
+
+    async def scenario() -> None:
+        policy = _policy(tmp_path)
+        workspace = Workspace.from_path(tmp_path)
+        token = CancellationSource().token
+
+        await policy.capture_baseline(workspace, token)
+        result = await policy.verify(_session(), workspace, token)
+
+        assert result.status is VerificationStatus.PASSED
+        caches = [path for path in tmp_path.rglob("__pycache__") if path.is_dir()]
+        assert caches == [], f"verification left a bytecode cache: {caches}"
+
+    asyncio.run(scenario())
+
+
+def test_a_same_length_edit_is_still_judged_on_the_new_code(tmp_path: Path) -> None:
+    """The exact trap: two edits, same second, same file length."""
+    source = "def add(a, b):\n    return a + b\n"
+    test = "from calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n"
+    _repository(
+        tmp_path,
+        {"calc.py": source, "test_calc.py": test, "AGENTS.md": _agents_md(_pytest_command())},
+    )
+
+    async def scenario() -> None:
+        policy = _policy(tmp_path)
+        workspace = Workspace.from_path(tmp_path)
+        token = CancellationSource().token
+        await policy.capture_baseline(workspace, token)
+
+        # Identical length, written immediately after the baseline ran.
+        (tmp_path / "calc.py").write_text(source.replace("a + b", "a - b"), encoding="utf-8")
+
+        result = await policy.verify(_session(), workspace, token)
+
+        assert result.status is VerificationStatus.FAILED, (
+            "the broken edit must be seen, not masked by a cached compile"
+        )
+
+    asyncio.run(scenario())

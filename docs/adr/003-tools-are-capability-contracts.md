@@ -24,3 +24,10 @@ H1 added concrete read-only tools (`athena/repository_tools.py`) that implement 
 contract. Deferred loading is still declared and not implemented, so the H0 statement
 about `load_policy` remains accurate; "concrete tools remain out of scope" describes
 H0 only.
+
+## Implementation status (H5, 2026-08-19)
+
+Deferred loading is now implemented on the contract H0 froze: `ToolRegistry` sends
+only core schemas, and `ToolSearchTool` reveals deferred ones on demand using
+`search_hint`. MCP tools arrive through an adapter wearing the same contract. See
+[ADR-014](014-extensions-restrict-but-never-grant.md).

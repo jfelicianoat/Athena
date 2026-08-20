@@ -1,4 +1,5 @@
 /.venv/
+/.athena/
 /.uv-cache/
 /.pytest_cache/
 /.pytest-tmp/

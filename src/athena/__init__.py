@@ -2,6 +2,27 @@
 
 from athena.agent_loop import AgentLoop, AgentLoopConfig, AgentRunResult, AgentRunStatus
 from athena.cancellation import CancellationSource, CancellationToken
+from athena.channels import (
+    HELP_TEXT,
+    NEW_INTERACTION_TEXT,
+    ChannelAdapter,
+    ChannelCommand,
+    ChannelEventSink,
+    ChannelIdentity,
+    ChannelMessage,
+    ChannelResponse,
+    CommandName,
+    ResponseKind,
+    parse_command,
+    render_event,
+)
+from athena.checkpoints import Checkpoint, CheckpointStore
+from athena.concurrency import (
+    AccessMode,
+    ConcurrencyScheduler,
+    ResourceClaim,
+    ScheduledBatch,
+)
 from athena.context import ContextBuilder
 from athena.errors import AthenaRuntimeError
 from athena.events import (
@@ -22,6 +43,23 @@ from athena.git_tools import (
     GitShowTool,
     GitStatusTool,
     git_read_tools,
+)
+from athena.hooks import (
+    Hook,
+    HookContext,
+    HookDecision,
+    HookEvent,
+    HookRegistry,
+    HookResult,
+)
+from athena.mcp import McpClient, McpTool, McpToolDescriptor, McpToolPolicy, mcp_tools
+from athena.memory import (
+    CompactionReport,
+    ContextWindowManager,
+    ConversationContext,
+    MicroCompaction,
+    ProjectMemory,
+    WorkingMemory,
 )
 from athena.models import (
     ModelCapabilities,
@@ -50,10 +88,46 @@ from athena.repository_tools import (
     ReadFileTool,
     ReadRangeTool,
 )
+from athena.session_store import (
+    EventCheckpoint,
+    InMemorySessionStore,
+    SessionRecord,
+    SessionStore,
+    SqliteSessionStore,
+)
+from athena.skills import SkillManifest, SkillRegistry, SkillSelection
 from athena.state import AgentState, SessionState
-from athena.stores import InMemoryToolResultStore, ToolResultStore
+from athena.stores import (
+    InMemoryToolResultStore,
+    SqliteToolResultStore,
+    ToolResultStore,
+)
+from athena.subagents import (
+    CODER_PROFILE,
+    EXPLORER_PROFILE,
+    VERIFIER_PROFILE,
+    ExplorerReport,
+    SubagentBrief,
+    SubagentBudget,
+    SubagentProfile,
+    SubagentResult,
+    SubagentRole,
+    SubagentRunner,
+    VerifierReport,
+)
+from athena.tasks import (
+    BackgroundProcess,
+    BackgroundProcessSupervisor,
+    ProcessState,
+    TaskBudget,
+    TaskBudgetTracker,
+    TaskManager,
+    TaskRecord,
+    TaskState,
+)
 from athena.tool_executor import ToolExecutor
-from athena.tools import Tool, ToolContext, ToolResult, ToolResultReference
+from athena.tool_search import ToolSearchTool
+from athena.tools import Tool, ToolContext, ToolLoadPolicy, ToolResult, ToolResultReference
 from athena.verification import (
     ChangeIntegrityPolicy,
     CommandVerificationPolicy,
@@ -68,8 +142,21 @@ from athena.verification import (
 )
 from athena.working_state import PlanStep, WorkingState
 from athena.workspace import Workspace
+from athena.workspaces import (
+    IsolationKind,
+    SharedWorkspaceStrategy,
+    WorkspaceLease,
+    WorkspaceStrategy,
+    default_strategies,
+)
 
 __all__ = [
+    "CODER_PROFILE",
+    "EXPLORER_PROFILE",
+    "HELP_TEXT",
+    "NEW_INTERACTION_TEXT",
+    "VERIFIER_PROFILE",
+    "AccessMode",
     "AgentEvent",
     "AgentLoop",
     "AgentLoopConfig",
@@ -77,16 +164,33 @@ __all__ = [
     "AgentRunStatus",
     "AgentState",
     "AthenaRuntimeError",
+    "BackgroundProcess",
+    "BackgroundProcessSupervisor",
     "BashTool",
     "CancellationSource",
     "CancellationToken",
     "ChangeIntegrityPolicy",
+    "ChannelAdapter",
+    "ChannelCommand",
+    "ChannelEventSink",
+    "ChannelIdentity",
+    "ChannelMessage",
+    "ChannelResponse",
+    "Checkpoint",
+    "CheckpointStore",
+    "CommandName",
     "CommandPolicy",
     "CommandVerificationPolicy",
+    "CompactionReport",
+    "ConcurrencyScheduler",
     "ContextBuilder",
+    "ContextWindowManager",
+    "ConversationContext",
     "EditFileTool",
     "EventBus",
+    "EventCheckpoint",
     "EventName",
+    "ExplorerReport",
     "FileEvent",
     "GitCommitTool",
     "GitDiffTool",
@@ -95,10 +199,23 @@ __all__ = [
     "GitStatusTool",
     "GlobTool",
     "GrepTool",
+    "Hook",
+    "HookContext",
+    "HookDecision",
+    "HookEvent",
+    "HookRegistry",
+    "HookResult",
     "InMemoryEventBus",
+    "InMemorySessionStore",
     "InMemoryToolResultStore",
     "IntegrityAuthorization",
+    "IsolationKind",
     "ListDirectoryTool",
+    "McpClient",
+    "McpTool",
+    "McpToolDescriptor",
+    "McpToolPolicy",
+    "MicroCompaction",
     "ModelCapabilities",
     "ModelEvent",
     "ModelProvider",
@@ -113,22 +230,48 @@ __all__ = [
     "PlanStep",
     "PolicyPermissionEngine",
     "ProcessEvent",
+    "ProcessState",
+    "ProjectMemory",
     "ReadFileTool",
     "ReadRangeTool",
     "RecoveryAction",
     "RecoveryDirective",
     "RecoveryPolicy",
+    "ResourceClaim",
+    "ResponseKind",
     "RiskTier",
     "RuntimeEvent",
+    "ScheduledBatch",
+    "SessionRecord",
     "SessionState",
+    "SessionStore",
+    "SharedWorkspaceStrategy",
+    "SkillManifest",
+    "SkillRegistry",
+    "SkillSelection",
+    "SqliteSessionStore",
+    "SqliteToolResultStore",
+    "SubagentBrief",
+    "SubagentBudget",
+    "SubagentProfile",
+    "SubagentResult",
+    "SubagentRole",
+    "SubagentRunner",
+    "TaskBudget",
+    "TaskBudgetTracker",
+    "TaskManager",
+    "TaskRecord",
+    "TaskState",
     "Tool",
     "ToolContext",
     "ToolEvent",
     "ToolExecutor",
+    "ToolLoadPolicy",
     "ToolRegistry",
     "ToolResult",
     "ToolResultReference",
     "ToolResultStore",
+    "ToolSearchTool",
     "VerificationCheck",
     "VerificationEvidence",
     "VerificationPlan",
@@ -136,9 +279,17 @@ __all__ = [
     "VerificationPolicy",
     "VerificationResult",
     "VerificationStatus",
+    "VerifierReport",
+    "WorkingMemory",
     "WorkingState",
     "Workspace",
+    "WorkspaceLease",
+    "WorkspaceStrategy",
     "WriteFileTool",
+    "default_strategies",
     "git_read_tools",
+    "mcp_tools",
+    "parse_command",
+    "render_event",
     "workspace_mutation_tools",
 ]

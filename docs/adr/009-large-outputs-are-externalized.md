@@ -16,3 +16,10 @@ reference for externalized content; the runtime will summarize or selectively re
 
 Tool results remain addressable without becoming conversation history. A concrete store is
 deferred.
+
+## Implementation status (H4, 2026-08-18)
+
+`SqliteToolResultStore` makes references durable for a documented retention window
+(seven days by default) and raises `ToolResultUnavailableError` when one has expired,
+is missing, or fails its checksum. Compaction reduces an already-externalized result
+in the transcript to its reference.

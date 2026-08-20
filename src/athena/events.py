@@ -33,6 +33,13 @@ class EventName(StrEnum):
     VERIFICATION_CHECK_COMPLETED = "verification.check.completed"
     VERIFICATION_FAILED = "verification.failed"
     VERIFICATION_COMPLETED = "verification.completed"
+    SUBAGENT_STARTED = "subagent.started"
+    SUBAGENT_COMPLETED = "subagent.completed"
+    SUBAGENT_FAILED = "subagent.failed"
+    SUBAGENT_CANCELLED = "subagent.cancelled"
+    CONTEXT_COMPACTED = "context.compacted"
+    SESSION_PERSISTED = "session.persisted"
+    SESSION_RESUMED = "session.resumed"
     RECOVERY_STARTED = "recovery.started"
     RECOVERY_ACTION = "recovery.action"
     RECOVERY_EXHAUSTED = "recovery.exhausted"
@@ -86,6 +93,11 @@ class FileEvent(RuntimeEvent):
 @dataclass(frozen=True, slots=True)
 class ProcessEvent(RuntimeEvent):
     """Event in the process.* namespace for child-process lifecycle."""
+
+
+@dataclass(frozen=True, slots=True)
+class SubagentEvent(RuntimeEvent):
+    """Event in the subagent.* namespace. correlation_id carries the child session id."""
 
 
 @dataclass(frozen=True, slots=True)

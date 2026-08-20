@@ -344,8 +344,11 @@ def _terminate_tree(process: asyncio.subprocess.Process) -> None:
             process.kill()
 
 
-async def _spawn_process(argv: tuple[str, ...], cwd: Path) -> asyncio.subprocess.Process:
+async def _spawn_process(
+    argv: tuple[str, ...], cwd: Path, env: Mapping[str, str] | None = None
+) -> asyncio.subprocess.Process:
     """Start a child with pipes and no shell, isolated into its own group on POSIX."""
+    environment = {**os.environ, **env} if env else None
     try:
         if sys.platform == "win32":
             return await asyncio.create_subprocess_exec(
@@ -354,6 +357,7 @@ async def _spawn_process(argv: tuple[str, ...], cwd: Path) -> asyncio.subprocess
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.DEVNULL,
+                env=environment,
             )
         return await asyncio.create_subprocess_exec(
             *argv,
@@ -362,6 +366,7 @@ async def _spawn_process(argv: tuple[str, ...], cwd: Path) -> asyncio.subprocess
             stderr=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.DEVNULL,
             start_new_session=True,
+            env=environment,
         )
     except (OSError, ValueError) as exc:
         raise ToolExecutionError(
@@ -375,10 +380,11 @@ async def run_process(
     cwd: Path,
     timeout_seconds: float,
     cancellation: CancellationToken,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[int, str, str]:
     """Run one argv with a mandatory timeout, killing the tree on cancel or timeout."""
     cancellation.raise_if_cancelled()
-    process = await _spawn_process(argv, cwd)
+    process = await _spawn_process(argv, cwd, env)
     unsubscribe = cancellation.register(lambda: _terminate_tree(process))
     try:
         raw_out, raw_err = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)

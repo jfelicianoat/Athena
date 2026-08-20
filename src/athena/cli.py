@@ -31,8 +31,11 @@ from athena.permissions import (
 from athena.process_tools import BashTool
 from athena.registry import ToolRegistry
 from athena.repository_tools import repository_read_tools
-from athena.stores import InMemoryToolResultStore
+from athena.session_store import SqliteSessionStore
+from athena.state import AgentStatus
+from athena.stores import SqliteToolResultStore
 from athena.tool_executor import ToolExecutor
+from athena.tool_search import ToolSearchTool
 from athena.tools import Tool
 from athena.verification import CommandVerificationPolicy, VerificationPlanner
 from athena.workspace import Workspace
@@ -80,6 +83,22 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default=os.getenv("ATHENA_MODEL", "local-model"))
     parser.add_argument("--max-iterations", type=int, default=12)
     parser.add_argument("--max-repair-cycles", type=int, default=2)
+    parser.add_argument(
+        "--state-dir",
+        type=Path,
+        default=None,
+        help="where sessions and tool results are persisted (default: <workspace>/.athena)",
+    )
+    parser.add_argument(
+        "--resume",
+        metavar="SESSION_ID",
+        help="continue an interrupted session from its stored working memory",
+    )
+    parser.add_argument(
+        "--list-sessions",
+        action="store_true",
+        help="list sessions awaiting recovery and exit",
+    )
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument(
         "--writes",
@@ -124,8 +143,29 @@ def _install_cancellation(source: CancellationSource) -> None:
 
 async def _run(arguments: argparse.Namespace, source: CancellationSource | None = None) -> int:
     workspace = Workspace.from_path(arguments.workspace)
-    objective = arguments.objective or input("Objective: ").strip()
-    if not objective:
+    state_dir = Path(arguments.state_dir or (workspace.root / ".athena"))
+    session_store = SqliteSessionStore(state_dir / "sessions.db")
+
+    # Any session still marked live belongs to a process that is no longer running.
+    interrupted = await session_store.mark_interrupted()
+    for session_id in interrupted:
+        print(f"session {session_id} was interrupted and awaits recovery", file=sys.stderr)
+
+    if arguments.list_sessions:
+        pending = await session_store.list_sessions(AgentStatus.RECOVERY_PENDING)
+        for record in pending:
+            print(
+                f"{record.session_id}  {record.updated_at.isoformat()}  "
+                f"{'degraded  ' if record.degraded else ''}{record.objective}"
+            )
+        if not pending:
+            print("no sessions awaiting recovery")
+        return 0
+
+    objective = arguments.objective
+    if arguments.resume is None and not objective:
+        objective = input("Objective: ").strip()
+    if arguments.resume is None and not objective:
         raise ValueError("Objective must be non-empty")
     event_bus = InMemoryEventBus()
 
@@ -141,7 +181,10 @@ async def _run(arguments: argparse.Namespace, source: CancellationSource | None 
 
     event_bus.subscribe(print_event)
     registry = ToolRegistry(_tools(arguments, event_bus))
-    store = InMemoryToolResultStore()
+    if registry.deferred_names():
+        # Only worth a slot in the schema list when there is something to find.
+        registry.register(ToolSearchTool(registry))
+    store = SqliteToolResultStore(state_dir / "results.db")
     engine = PolicyPermissionEngine(
         PermissionPolicy(
             allow_workspace_writes=arguments.writes == "allow",
@@ -162,6 +205,7 @@ async def _run(arguments: argparse.Namespace, source: CancellationSource | None 
         ContextBuilder(workspace),
         event_bus,
         verification=verification,
+        session_store=session_store,
         config=AgentLoopConfig(
             max_iterations=arguments.max_iterations,
             session_timeout_seconds=arguments.timeout,
@@ -170,7 +214,10 @@ async def _run(arguments: argparse.Namespace, source: CancellationSource | None 
     )
     cancellation = source or CancellationSource()
     _install_cancellation(cancellation)
-    result = await loop.run(objective, workspace, cancellation.token)
+    if arguments.resume is not None:
+        result = await loop.resume(arguments.resume, workspace, cancellation.token)
+    else:
+        result = await loop.run(objective or "", workspace, cancellation.token)
     if result.answer:
         print(result.answer)
     if result.verification is not None:

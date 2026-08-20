@@ -58,5 +58,12 @@ def test_required_event_vocabulary_is_frozen() -> None:
         "recovery.started",
         "recovery.action",
         "recovery.exhausted",
+        "context.compacted",
+        "session.persisted",
+        "session.resumed",
+        "subagent.started",
+        "subagent.completed",
+        "subagent.failed",
+        "subagent.cancelled",
     }
     assert issubclass(AgentEvent, RuntimeEvent)

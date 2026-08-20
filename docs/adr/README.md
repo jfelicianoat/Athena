@@ -22,3 +22,17 @@ of rewritten history.
   [Capability tiers gate mutation and execution](011-capability-tiers-gate-mutation-and-execution.md)
 - ADR-012:
   [Verification owns completion, and recovery is explicit per error](012-verification-owns-completion-and-recovery-is-explicit.md)
+- ADR-013:
+  [Sessions persist outside the conversation](013-sessions-persist-outside-the-conversation.md)
+- ADR-014:
+  [Extensions restrict, but never grant](014-extensions-restrict-but-never-grant.md)
+- ADR-015:
+  [Three delegates, not a swarm](015-three-delegates-not-a-swarm.md)
+- ADR-016:
+  [Parallelism is earned, not assumed](016-parallelism-is-earned-not-assumed.md)
+- ADR-017:
+  [ChatyGPT as an external Athena client](017-chatygpt-as-an-external-athena-client.md)
+- ADR-018:
+  [An approval is a decision with a record](018-approval-is-a-decision-with-a-record.md)
+- ADR-019:
+  [A channel is an adapter, not a feature](019-a-channel-is-an-adapter-not-a-feature.md)

@@ -87,6 +87,7 @@ def _runtime(
     approvals: int = 8,
     config: AgentLoopConfig | None = None,
     verification: object | None = None,
+    policy: PermissionPolicy | None = None,
 ) -> tuple[AgentLoop, Workspace, CancellationSource, list[RuntimeEvent]]:
     bus = InMemoryEventBus()
     events: list[RuntimeEvent] = []
@@ -95,12 +96,14 @@ def _runtime(
     registry = ToolRegistry((*repository_read_tools(), *workspace_mutation_tools(bus)))
     executor = ToolExecutor(
         registry,
-        PolicyPermissionEngine(PermissionPolicy(allow_workspace_writes=True)),
+        PolicyPermissionEngine(
+            policy if policy is not None else PermissionPolicy(allow_workspace_writes=True)
+        ),
         InMemoryToolResultStore(),
         bus,
         prompt=ScriptedPermissionPrompt((PermissionDecision.ALLOW,) * approvals),
     )
-    policy = verification or CommandVerificationPolicy(
+    verification_policy = verification or CommandVerificationPolicy(
         VerificationPlanner(workspace), event_bus=bus
     )
     loop = AgentLoop(
@@ -109,7 +112,7 @@ def _runtime(
         executor,
         ContextBuilder(workspace),
         bus,
-        verification=policy,  # type: ignore[arg-type]
+        verification=verification_policy,  # type: ignore[arg-type]
         config=config or AgentLoopConfig(max_iterations=10, session_timeout_seconds=600.0),
     )
     return loop, workspace, CancellationSource(), events
@@ -476,3 +479,33 @@ def test_an_unclassified_error_is_never_retried() -> None:
 
     assert directive.action is RecoveryAction.ABORT
     assert "no recovery policy" in directive.reason
+
+
+def test_a_refused_tool_call_is_not_recorded_as_work_done(tmp_path: Path) -> None:
+    """The working state must record what happened, never what was attempted."""
+    root = _sandbox(tmp_path, {"calc.py": CALC_FIXED, "test_calc.py": CALC_TEST})
+
+    async def scenario() -> None:
+        provider = FakeModelProvider(
+            [
+                _call(
+                    "denied-1",
+                    "write_file",
+                    {"path": "unauthorised.txt", "content": "should never land"},
+                ),
+                ModelResponse("I could not write that file.", "scripted", "stop"),
+            ]
+        )
+        # Writes are not granted and nothing approves the ASK, so the call is refused.
+        loop, workspace, source, _ = _runtime(
+            root, provider, approvals=0, policy=PermissionPolicy()
+        )
+
+        result = await loop.run("Try to write something", workspace, source.token)
+
+        assert not (root / "unauthorised.txt").exists()
+        assert result.working_state is not None
+        assert result.working_state.files_modified == ()
+        assert any(error.code == "permission_denied" for error in result.working_state.errors)
+
+    asyncio.run(scenario())

@@ -17,6 +17,9 @@ class AgentStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    #: The process died while this session was live. It is not finished, and it is not
+    #: running either; a human or a resume must decide what happens next.
+    RECOVERY_PENDING = "recovery_pending"
 
 
 @dataclass(frozen=True, slots=True)

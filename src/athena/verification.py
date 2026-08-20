@@ -28,6 +28,14 @@ from athena.workspace import Workspace
 _MAX_OUTPUT_TAIL = 2_000
 _DEFAULT_CHECK_TIMEOUT = 300.0
 
+#: A `.pyc` header stores the source mtime truncated to whole seconds, so two edits in the
+#: same second that leave the file the same length look identical to the import system.
+#: Athena edits fast and often keeps a file's length unchanged, which is exactly the shape
+#: that makes a stale cache pass for fresh — and a verification judging the previous
+#: version of the code is worse than no verification at all. Writing no bytecode during a
+#: check means Athena can never create that trap for itself.
+_CHECK_ENVIRONMENT = {"PYTHONDONTWRITEBYTECODE": "1"}
+
 
 class VerificationStatus(StrEnum):
     PASSED = "passed"
@@ -617,6 +625,7 @@ class CommandVerificationPolicy:
                 cwd=workspace.root,
                 timeout_seconds=self.check_timeout_seconds,
                 cancellation=cancellation,
+                env=_CHECK_ENVIRONMENT,
             )
         except ProcessTimeoutError:
             outcome = CheckOutcome(

@@ -44,6 +44,12 @@ class ProcessCancelledError(ToolExecutionError):
     code = "process_cancelled"
 
 
+class ToolResultUnavailableError(ToolExecutionError):
+    """A tool-result reference outlived its store, or its payload no longer matches."""
+
+    code = "tool_result_unavailable"
+
+
 class CancellationError(AthenaRuntimeError):
     code = "cancellation_requested"
 

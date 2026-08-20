@@ -21,3 +21,9 @@ auditable.
 
 H2 implements the decision as `PolicyPermissionEngine`, with the capability tiers described in [ADR-011](011-capability-tiers-gate-mutation-and-execution.md). An ASK is
 resolved by a `PermissionPrompt` owned by the interface and is valid for a single call.
+
+## Implementation status (H5, 2026-08-19)
+
+Hooks and skills were added without weakening this decision: a hook can only BLOCK,
+never ALLOW, and a skill grants no capability at all. The `PermissionEngine` remains
+the single authority. See [ADR-014](014-extensions-restrict-but-never-grant.md).

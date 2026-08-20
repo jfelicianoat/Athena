@@ -31,6 +31,13 @@ from athena.events import (
     ToolEvent,
     VerificationEvent,
 )
+from athena.hooks import (
+    HookBlockedError,
+    HookContext,
+    HookEvent,
+    HookRegistry,
+)
+from athena.memory import CompactionReport, ContextWindowManager, ConversationContext
 from athena.models import (
     ModelMessage,
     ModelProvider,
@@ -41,9 +48,18 @@ from athena.models import (
 )
 from athena.recovery import RecoveryAction, RecoveryLimits, RecoveryPolicy
 from athena.registry import ToolRegistry
+from athena.session_store import (
+    EventCheckpoint,
+    SessionRecord,
+    SessionStore,
+    SessionStoreError,
+)
+from athena.skills import SkillRegistry, SkillSelection, render_skills
 from athena.state import AgentState, AgentStatus, BudgetState, SessionState
 from athena.tool_executor import ToolExecutor
-from athena.types import JSONObject
+from athena.tool_search import TOOL_SEARCH_NAME
+from athena.tools import ToolResultReference
+from athena.types import JSONObject, JSONValue
 from athena.verification import (
     LoopCompletionVerificationPolicy,
     VerificationPolicy,
@@ -93,6 +109,11 @@ class _RunData:
     repair_cycles: int = 0
     compactions: int = 0
     last_verification: VerificationResult | None = None
+    references: list[object] = field(default_factory=list)
+    checkpoints: list[EventCheckpoint] = field(default_factory=list)
+    pending_compaction: CompactionReport | None = None
+    revealed_tools: set[str] = field(default_factory=set)
+    skills: tuple[SkillSelection, ...] = ()
 
 
 class AgentLoop:
@@ -106,6 +127,10 @@ class AgentLoop:
         *,
         verification: VerificationPolicy | None = None,
         recovery: RecoveryPolicy | None = None,
+        session_store: SessionStore | None = None,
+        context_window: ContextWindowManager | None = None,
+        hooks: HookRegistry | None = None,
+        skills: SkillRegistry | None = None,
         config: AgentLoopConfig | None = None,
     ) -> None:
         self.provider = provider
@@ -114,6 +139,10 @@ class AgentLoop:
         self.context_builder = context_builder
         self.event_bus = event_bus
         self.verification = verification or LoopCompletionVerificationPolicy()
+        self.session_store = session_store
+        self.context_window = context_window or ContextWindowManager()
+        self.hooks = hooks or HookRegistry()
+        self.skills = skills or SkillRegistry()
         self.config = config or AgentLoopConfig()
         self.recovery = recovery or RecoveryPolicy(
             RecoveryLimits(
@@ -122,23 +151,89 @@ class AgentLoop:
             )
         )
 
+    async def resume(
+        self,
+        session_id: str,
+        workspace: Workspace,
+        cancellation: CancellationToken,
+    ) -> AgentRunResult:
+        """Continue an interrupted session from stored working memory alone.
+
+        No transcript is replayed. Everything the run needs was persisted as structured
+        state, which is the point of keeping it out of the chat in the first place.
+        """
+        if self.session_store is None:
+            raise SessionStoreError("Resuming requires a session store")
+        record = await self.session_store.load(session_id)
+        if record is None:
+            raise SessionStoreError(f"Unknown session: {session_id}")
+        if not record.resumable:
+            raise SessionStoreError(
+                f"Session {session_id} is {record.status.value}, not recovery_pending"
+            )
+        await self.event_bus.publish(
+            AgentEvent(
+                EventName.SESSION_RESUMED,
+                session_id,
+                {
+                    "objective": record.working_memory.objective,
+                    "degraded": record.degraded,
+                    "files_modified": list(record.working_memory.files_modified),
+                },
+            )
+        )
+        return await self.run(
+            record.working_memory.objective, workspace, cancellation, resume_from=record
+        )
+
     async def run(
         self,
         objective: str,
         workspace: Workspace,
         cancellation: CancellationToken,
+        *,
+        resume_from: SessionRecord | None = None,
+        session_id: str | None = None,
     ) -> AgentRunResult:
-        session_id = str(uuid4())
+        # An external caller may name the run before it starts. Without this a service
+        # cannot address a run until the loop has already emitted events about it.
+        if resume_from is not None:
+            session_id = resume_from.session_id
+        elif session_id is None:
+            session_id = str(uuid4())
         initial_agent = AgentState(
             AgentStatus.RUNNING,
             budget=BudgetState(max_steps=self.config.max_iterations),
         )
+        working = (
+            resume_from.working_memory
+            if resume_from is not None
+            else WorkingState(objective=objective)
+        )
         data = _RunData(
             SessionState(session_id, workspace.workspace_id, initial_agent),
-            WorkingState(objective=objective),
+            working,
         )
+        if resume_from is not None:
+            data.references.extend(resume_from.tool_references)
+            data.checkpoints.extend(resume_from.checkpoints)
         await self.event_bus.publish(
-            AgentEvent(EventName.AGENT_STARTED, session_id, {"objective": objective})
+            AgentEvent(
+                EventName.AGENT_STARTED,
+                session_id,
+                {"objective": objective, "resumed": resume_from is not None},
+            )
+        )
+        await self._persist(data, workspace, AgentStatus.RUNNING, "started")
+        self._select_skills(objective, data)
+        await self._hook(
+            HookEvent.SESSION_START,
+            session_id,
+            {
+                "objective": objective,
+                "resumed": resume_from is not None,
+                "skills": [selection.skill.name for selection in data.skills],
+            },
         )
         try:
             return await asyncio.wait_for(
@@ -148,6 +243,9 @@ class AgentLoop:
         except TimeoutError:
             timeout = ProcessTimeoutError("Agent session timed out")
             failed = self._set_status(data.session, AgentStatus.FAILED, timeout.code)
+            await self._persist(
+                data, workspace, AgentStatus.FAILED, "failed", {"error_code": timeout.code}
+            )
             await self.event_bus.publish(
                 AgentEvent(
                     EventName.AGENT_FAILED,
@@ -155,6 +253,7 @@ class AgentLoop:
                     {"error_code": timeout.code, "message": timeout.message},
                 )
             )
+            await self._finish(data, "failed", timeout.code, timeout.message)
             return AgentRunResult(
                 AgentRunStatus.FAILED,
                 failed,
@@ -163,6 +262,9 @@ class AgentLoop:
             )
         except (CancellationError, ProcessCancelledError) as exc:
             cancelled = self._set_status(data.session, AgentStatus.CANCELLED, exc.code)
+            await self._persist(
+                data, workspace, AgentStatus.CANCELLED, "cancelled", {"error_code": exc.code}
+            )
             await self.event_bus.publish(
                 AgentEvent(
                     EventName.AGENT_CANCELLED,
@@ -170,6 +272,7 @@ class AgentLoop:
                     {"error_code": exc.code, "message": exc.message},
                 )
             )
+            await self._finish(data, "cancelled", exc.code, exc.message)
             return AgentRunResult(
                 AgentRunStatus.CANCELLED,
                 cancelled,
@@ -178,6 +281,9 @@ class AgentLoop:
             )
         except AthenaRuntimeError as exc:
             failed = self._set_status(data.session, AgentStatus.FAILED, exc.code)
+            await self._persist(
+                data, workspace, AgentStatus.FAILED, "failed", {"error_code": exc.code}
+            )
             await self.event_bus.publish(
                 AgentEvent(
                     EventName.AGENT_FAILED,
@@ -185,6 +291,7 @@ class AgentLoop:
                     {"error_code": exc.code, "message": exc.message},
                 )
             )
+            await self._finish(data, "failed", exc.code, exc.message)
             return AgentRunResult(
                 AgentRunStatus.FAILED,
                 failed,
@@ -192,8 +299,17 @@ class AgentLoop:
                 tool_call_ids=tuple(data.seen_call_ids),
             )
         except Exception as exc:
-            fatal = FatalRuntimeError(f"Unexpected runtime failure: {type(exc).__name__}")
+            # Keep the original: an unclassified failure is hard enough to diagnose
+            # without the runtime throwing away what actually went wrong.
+            fatal = FatalRuntimeError(
+                f"Unexpected runtime failure: {type(exc).__name__}: {exc}",
+                details={"exception_type": type(exc).__name__, "detail": str(exc)},
+            )
+            fatal.__cause__ = exc
             failed = self._set_status(data.session, AgentStatus.FAILED, fatal.code)
+            await self._persist(
+                data, workspace, AgentStatus.FAILED, "failed", {"error_code": fatal.code}
+            )
             await self.event_bus.publish(
                 AgentEvent(
                     EventName.AGENT_FAILED,
@@ -201,6 +317,7 @@ class AgentLoop:
                     {"error_code": fatal.code, "message": fatal.message},
                 )
             )
+            await self._finish(data, "failed", fatal.code, fatal.message)
             return AgentRunResult(
                 AgentRunStatus.FAILED,
                 failed,
@@ -227,16 +344,35 @@ class AgentLoop:
             cancellation.raise_if_cancelled()
             budget.consume_iteration()
             data.session = self._with_budget(data.session, budget, AgentStatus.RUNNING)
+            history = self._select_context(data)
+            if data.pending_compaction is not None:
+                report = data.pending_compaction
+                data.pending_compaction = None
+                await self.event_bus.publish(
+                    AgentEvent(
+                        EventName.CONTEXT_COMPACTED,
+                        data.session.session_id,
+                        {
+                            "messages_before": report.messages_before,
+                            "messages_after": report.messages_after,
+                            "chars_before": report.chars_before,
+                            "chars_after": report.chars_after,
+                            "reasons": list(report.reasons),
+                        },
+                    )
+                )
             request = await self.context_builder.build_request(
                 objective=objective,
-                history=tuple(data.history),
+                history=history,
                 important_state={
                     "iteration": iteration,
                     "tool_calls": budget.usage.tool_calls,
                     "repair_cycle": data.repair_cycles,
                     "working_state": data.working.summary(),
+                    "skills": render_skills(data.skills),
+                    "deferred_tools_available": len(self.registry.deferred_names()),
                 },
-                tool_definitions=self.registry.definitions(),
+                tool_definitions=self.registry.definitions(data.revealed_tools),
                 cancellation=cancellation,
                 discovered_paths=tuple(sorted(data.discovered_paths)),
             )
@@ -256,13 +392,129 @@ class AgentLoop:
                     data,
                     budget,
                 )
+                # Checkpoint here: the agent has just changed the world, and a crash
+                # before the next turn must not lose the record of what it changed.
+                await self._persist(
+                    data,
+                    workspace,
+                    AgentStatus.RUNNING,
+                    "tool_calls",
+                    {
+                        "iteration": iteration,
+                        "tool_calls": [call.name for call in response.tool_calls],
+                    },
+                )
                 continue
             completed = await self._attempt_completion(
                 response, data, workspace, cancellation, budget
             )
             if completed is not None:
                 return completed
+            # Only checkpoint an ongoing run: a terminal state was already written.
+            await self._persist(
+                data,
+                workspace,
+                AgentStatus.RUNNING,
+                "iteration",
+                {"iteration": iteration, "repair_cycles": data.repair_cycles},
+            )
         raise BudgetExceededError("Maximum agent iterations reached without completion")
+
+    async def _hook(self, event: HookEvent, session_id: str, payload: JSONObject) -> None:
+        """Extensions may refuse an action. They can never authorize one."""
+        report = await self.hooks.run(HookContext(event, session_id, payload))
+        if report.blocked:
+            raise HookBlockedError(
+                f"{event.value} blocked by {report.blocked_by}: {report.reason}",
+                details={"event": event.value, "hook": report.blocked_by},
+            )
+
+    async def _finish(
+        self,
+        data: _RunData,
+        outcome: str,
+        error_code: str | None = None,
+        message: str = "",
+    ) -> None:
+        """Announce the end of the run, and any typed error that ended it."""
+        session_id = data.session.session_id
+        if error_code is not None:
+            await self._hook_quietly(
+                HookEvent.ON_ERROR,
+                session_id,
+                {"error_code": error_code, "message": message, "outcome": outcome},
+            )
+        await self._hook_quietly(
+            HookEvent.SESSION_END,
+            session_id,
+            {
+                "outcome": outcome,
+                "error_code": error_code,
+                "files_modified": list(data.working.files_modified),
+                "repair_cycles": data.repair_cycles,
+            },
+        )
+
+    async def _hook_quietly(self, event: HookEvent, session_id: str, payload: JSONObject) -> None:
+        """Terminal notifications: a refusal here has nothing left to refuse."""
+        await self.hooks.run(HookContext(event, session_id, payload))
+
+    def _select_skills(self, objective: str, data: _RunData) -> None:
+        """Skills describe how to work. They never add a tool or widen a permission."""
+        data.skills = self.skills.select(objective, self.registry.names())
+        if data.skills:
+            data.working = data.working.noting(
+                decisions=tuple(
+                    f"Following skill {selection.skill.name} v{selection.skill.version}"
+                    for selection in data.skills
+                )
+            )
+
+    async def _persist(
+        self,
+        data: _RunData,
+        workspace: Workspace,
+        status: AgentStatus,
+        checkpoint: str,
+        payload: JSONObject | None = None,
+    ) -> None:
+        """Write the session out. Losing power must not lose what Athena learned."""
+        if self.session_store is None:
+            return
+        data.checkpoints.append(EventCheckpoint(checkpoint, payload or {}))
+        record = SessionRecord(
+            session_id=data.session.session_id,
+            workspace_id=workspace.workspace_id,
+            status=status,
+            working_memory=data.working,
+            tool_references=tuple(
+                reference
+                for reference in data.references
+                if isinstance(reference, ToolResultReference)
+            ),
+            verification=dict(data.working.verification),
+            checkpoints=tuple(data.checkpoints[-50:]),
+            created_at=data.session.created_at,
+        )
+        await self.session_store.save(record)
+        await self.event_bus.publish(
+            AgentEvent(
+                EventName.SESSION_PERSISTED,
+                data.session.session_id,
+                {"status": status.value, "checkpoint": checkpoint},
+            )
+        )
+
+    def _select_context(self, data: _RunData) -> tuple[ModelMessage, ...]:
+        """Choose what to send. The durable facts are re-rendered from working memory."""
+        selected, report = self.context_window.select(
+            ConversationContext(tuple(data.history)), data.working
+        )
+        if report is not None and report.changed:
+            data.history = list(selected.messages)
+            data.compactions += 1
+            data.pending_compaction = report
+        return selected.messages
 
     async def _capture_baseline(
         self, workspace: Workspace, cancellation: CancellationToken
@@ -415,7 +667,6 @@ class AgentLoop:
                 agent=replace(data.session.agent, active_tool_call_ids=(call.call_id,)),
             )
             self._remember_paths(call, data)
-            data.working = self._record_tool_use(data.working, call)
             try:
                 result = await self.executor.execute(
                     call,
@@ -423,6 +674,14 @@ class AgentLoop:
                     workspace=workspace,
                     cancellation=cancellation,
                 )
+                # Record what happened, never what was merely attempted: a refused write
+                # that still showed up in files_modified would make the working state lie
+                # to verification, to recovery and to whoever reads the session later.
+                data.working = self._record_tool_use(data.working, call)
+                if result.reference is not None:
+                    data.references.append(result.reference)
+                if call.name == TOOL_SEARCH_NAME:
+                    self._reveal(result.output, data)
                 payload: JSONObject = {
                     "ok": True,
                     "call_id": result.call_id,
@@ -485,9 +744,23 @@ class AgentLoop:
         await self.event_bus.publish(
             VerificationEvent(EventName.VERIFICATION_STARTED, data.session.session_id)
         )
+        await self._hook(
+            HookEvent.PRE_VERIFY,
+            data.session.session_id,
+            {"files_modified": list(data.working.files_modified)},
+        )
         verification = await await_cancellable(
             self.verification.verify(data.session, workspace, cancellation),
             cancellation,
+        )
+        await self._hook_quietly(
+            HookEvent.POST_VERIFY,
+            data.session.session_id,
+            {
+                "status": verification.status.value,
+                "summary": verification.summary,
+                "evidence_count": len(verification.evidence),
+            },
         )
         data.last_verification = verification
         data.working = data.working.verified(
@@ -505,7 +778,7 @@ class AgentLoop:
             )
         )
         if verification.permits_completion:
-            return await self._complete_run(response, data, budget, verification)
+            return await self._complete_run(response, data, workspace, budget, verification)
         if verification.status is VerificationStatus.INCONCLUSIVE:
             # Repairing cannot conjure a verification plan the project does not define.
             raise VerificationFailure(verification.summary)
@@ -567,10 +840,18 @@ class AgentLoop:
         self,
         response: ModelResponse,
         data: _RunData,
+        workspace: Workspace,
         budget: RuntimeBudget,
         verification: VerificationResult,
     ) -> AgentRunResult:
         data.session = self._with_budget(data.session, budget, AgentStatus.COMPLETED)
+        await self._persist(
+            data,
+            workspace,
+            AgentStatus.COMPLETED,
+            "completed",
+            {"verification": verification.status.value},
+        )
         data.session = replace(
             data.session,
             attributes={
@@ -590,6 +871,7 @@ class AgentLoop:
                 },
             )
         )
+        await self._finish(data, "completed")
         return AgentRunResult(
             AgentRunStatus.COMPLETED,
             data.session,
@@ -598,6 +880,16 @@ class AgentLoop:
             verification=verification,
             working_state=data.working,
         )
+
+    @staticmethod
+    def _reveal(output: JSONValue, data: _RunData) -> None:
+        """A searched-for tool becomes visible on the next turn, and only then."""
+        if not isinstance(output, dict):
+            return
+        revealed = output.get("revealed")
+        if not isinstance(revealed, list):
+            return
+        data.revealed_tools.update(name for name in revealed if isinstance(name, str))
 
     @staticmethod
     def _compact(request: ModelRequest) -> ModelRequest:
@@ -609,7 +901,10 @@ class AgentLoop:
 
     @staticmethod
     def _record_tool_use(working: WorkingState, call: ModelToolCall) -> WorkingState:
-        """Operational state comes from the call itself, not from re-reading the chat."""
+        """Operational state comes from the call itself, not from re-reading the chat.
+
+        Only ever called after the call succeeded, so the record is of fact, not intent.
+        """
         arguments = call.arguments
         path = arguments.get("path")
         if call.name in ("write_file", "edit_file") and isinstance(path, str):

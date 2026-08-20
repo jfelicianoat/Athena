@@ -14,6 +14,13 @@ from athena.errors import (
     WorkspaceBoundaryError,
 )
 from athena.events import EventBus, EventName, PermissionEvent, ToolEvent
+from athena.hooks import (
+    HookBlockedError,
+    HookContext,
+    HookEvent,
+    HookRegistry,
+    HookReport,
+)
 from athena.models import ModelToolCall
 from athena.permissions import (
     DenyingPermissionPrompt,
@@ -21,6 +28,7 @@ from athena.permissions import (
     PermissionEngine,
     PermissionPrompt,
     PermissionRequest,
+    RiskTier,
 )
 from athena.registry import ToolRegistry
 from athena.stores import ToolResultStore
@@ -38,6 +46,7 @@ class ToolExecutor:
         event_bus: EventBus,
         *,
         prompt: PermissionPrompt | None = None,
+        hooks: HookRegistry | None = None,
         tool_timeout_seconds: float | None = 30.0,
         summary_chars: int = 500,
     ) -> None:
@@ -46,6 +55,7 @@ class ToolExecutor:
         self.result_store = result_store
         self.event_bus = event_bus
         self.prompt = prompt or DenyingPermissionPrompt()
+        self.hooks = hooks or HookRegistry()
         self.tool_timeout_seconds = tool_timeout_seconds
         self.summary_chars = summary_chars
 
@@ -71,6 +81,11 @@ class ToolExecutor:
                     f"Invalid input for {call.name}: {exc}",
                     details={"tool_name": call.name, "call_id": call.call_id},
                 ) from exc
+            await self._hook(
+                HookEvent.PRE_TOOL_USE,
+                session_id,
+                {"tool_name": call.name, "call_id": call.call_id, "arguments": dict(arguments)},
+            )
             try:
                 request = tool.permission(context, arguments)
             except WorkspaceBoundaryError:
@@ -123,6 +138,17 @@ class ToolExecutor:
                     call.call_id,
                 )
             )
+            editing = request.tier is RiskTier.R1_WORKSPACE_WRITE
+            if editing:
+                await self._hook(
+                    HookEvent.PRE_EDIT,
+                    session_id,
+                    {
+                        "tool_name": call.name,
+                        "call_id": call.call_id,
+                        "resources": list(request.resources),
+                    },
+                )
             result = await await_cancellable(
                 tool.execute(context, arguments, cancellation),
                 cancellation,
@@ -130,6 +156,25 @@ class ToolExecutor:
             )
             correlated = replace(result, call_id=call.call_id)
             final = await self._apply_result_policy(tool.spec, correlated, cancellation)
+            if editing:
+                await self._hook(
+                    HookEvent.POST_EDIT,
+                    session_id,
+                    {
+                        "tool_name": call.name,
+                        "call_id": call.call_id,
+                        "resources": list(request.resources),
+                    },
+                )
+            await self._hook(
+                HookEvent.POST_TOOL_USE,
+                session_id,
+                {
+                    "tool_name": call.name,
+                    "call_id": call.call_id,
+                    "externalized": final.reference is not None,
+                },
+            )
             await self.event_bus.publish(
                 ToolEvent(
                     EventName.TOOL_COMPLETED,
@@ -152,7 +197,34 @@ class ToolExecutor:
                     call.call_id,
                 )
             )
+            await self._hook_report(
+                HookEvent.ON_ERROR,
+                session_id,
+                {
+                    "tool_name": call.name,
+                    "call_id": call.call_id,
+                    "error_code": exc.code,
+                    "message": exc.message,
+                },
+            )
             raise
+
+    async def _hook(self, event: HookEvent, session_id: str, payload: JSONValue) -> HookReport:
+        """Run an extension point. A BLOCK stops the action; nothing can unblock one."""
+        report = await self._hook_report(event, session_id, payload)
+        if report.blocked:
+            raise HookBlockedError(
+                f"{event.value} blocked by {report.blocked_by}: {report.reason}",
+                details={"event": event.value, "hook": report.blocked_by},
+            )
+        return report
+
+    async def _hook_report(
+        self, event: HookEvent, session_id: str, payload: JSONValue
+    ) -> HookReport:
+        if not isinstance(payload, dict):
+            payload = {}
+        return await self.hooks.run(HookContext(event, session_id, payload))
 
     async def _ask(
         self, request: PermissionRequest, cancellation: CancellationToken

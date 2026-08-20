@@ -8,7 +8,7 @@ recovery, verification and interfaces can reason over it without re-reading a tr
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
 from typing import TypeVar
@@ -141,6 +141,45 @@ class WorkingState:
             "remaining_work": list(self.remaining_work),
         }
 
+    @classmethod
+    def from_json(cls, payload: JSONObject) -> WorkingState:
+        """Rebuild from storage, tolerating fields written by an older version."""
+        objective = payload.get("objective")
+        if not isinstance(objective, str) or not objective.strip():
+            raise ToolValidationError("Stored working memory has no usable objective")
+        plan = tuple(
+            PlanStep(
+                description=str(step.get("description", "")),
+                status=StepStatus(str(step.get("status", StepStatus.PENDING.value))),
+            )
+            for step in _objects(payload.get("current_plan"))
+        )
+        errors = tuple(
+            RecordedError(
+                code=str(item.get("code", "unknown")),
+                message=str(item.get("message", "")),
+                recovery_action=_optional_str(item.get("recovery_action")),
+            )
+            for item in _objects(payload.get("errors"))
+        )
+        step = payload.get("current_step")
+        current_step = step if isinstance(step, int) and not isinstance(step, bool) else None
+        verification = payload.get("verification")
+        return cls(
+            objective=objective,
+            constraints=_strings(payload.get("constraints")),
+            current_plan=plan,
+            current_step=current_step if current_step is not None and plan else None,
+            facts=_strings(payload.get("facts")),
+            files_examined=_strings(payload.get("files_examined")),
+            files_modified=_strings(payload.get("files_modified")),
+            commands_run=_strings(payload.get("commands_run")),
+            decisions=_strings(payload.get("decisions")),
+            errors=errors,
+            verification=dict(verification) if isinstance(verification, Mapping) else {},
+            remaining_work=_strings(payload.get("remaining_work")),
+        )
+
     def summary(self) -> str:
         """Compact, model-facing rendering. Never the whole transcript."""
         plan = [
@@ -178,3 +217,19 @@ def _extend(
     if unique:
         combined = list(dict.fromkeys(combined))
     return tuple(combined[-_MAX_LIST_ENTRIES:])
+
+
+def _strings(value: object) -> tuple[str, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return ()
+    return tuple(item for item in value if isinstance(item, str))
+
+
+def _objects(value: object) -> tuple[Mapping[str, object], ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return ()
+    return tuple(item for item in value if isinstance(item, Mapping))
+
+
+def _optional_str(value: object) -> str | None:
+    return value if isinstance(value, str) else None

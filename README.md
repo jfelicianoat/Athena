@@ -3,7 +3,11 @@
 Athena is a provider-neutral autonomous-agent runtime. H1 implements a functional,
 read-only repository-investigation loop on top of the contracts frozen in H0. H2 adds
 mutation and local execution behind a deterministic permission engine. H3 makes
-completion conditional on evidence, and lets Athena repair its own broken changes.
+completion conditional on evidence, and lets Athena repair its own broken changes. H4
+makes a session durable, so a long run can be compacted and an interrupted one resumed.
+H5 opens the runtime to extension without letting an extension widen what it may do,
+and H6 adds three bounded delegates rather than a general swarm. H7 adds task
+management, controlled concurrency, background processes and local checkpoints.
 
 ## Architecture
 
@@ -64,6 +68,91 @@ fails verification instead of passing it.
 
 See [ADR-012](docs/adr/012-verification-owns-completion-and-recovery-is-explicit.md) and
 [V0_1_ACCEPTANCE_REPORT.md](V0_1_ACCEPTANCE_REPORT.md).
+
+## Sessions, memory and recovery
+
+Athena keeps three kinds of memory, with different lifetimes:
+
+- the **conversation** is disposable and compactable;
+- the **working memory** — objective, constraints, plan, files, decisions, errors,
+  verification, remaining work — is structured, validated and persisted;
+- **project memory** is an interface only; nothing writes to it yet.
+
+Sessions and externalized tool results are stored in SQLite under `<workspace>/.athena`
+(override with `--state-dir`). On startup any session still marked live is moved to
+`recovery_pending`: an interrupted run is never resurrected as completed.
+
+```text
+athena <repo> --list-sessions
+athena <repo> --resume <session-id>
+```
+
+Resuming rebuilds the run from stored working memory with an empty conversation, which is
+the point: the transcript was never load-bearing. See
+[ADR-013](docs/adr/013-sessions-persist-outside-the-conversation.md).
+
+## Tasks, concurrency and checkpoints
+
+`TaskManager` runs work with seven states — `pending`, `running`, `completed`, `failed`,
+`cancelled`, `killed`, `recovery_pending` — because collapsing them loses what a human
+needs to know. A task carries budgets for iterations, tool calls and wall clock, plus
+tokens and cost when the provider reports them. Cancelling a parent cancels its whole
+subtree; killing a task tears down the background processes it registered, as a process
+tree, so nothing is orphaned. After a restart, anything still live becomes
+`recovery_pending`.
+
+Concurrency is granted, not assumed (see
+[ADR-016](docs/adr/016-parallelism-is-earned-not-assumed.md)): two calls share a wave only
+if **both** tools declare themselves concurrency-safe for those arguments and, when either
+writes, their resources do not overlap. Independent reads run together; conflicting edits,
+git mutations and commands are serialised. Two writes to different files are still
+serialised, because tool identity is not evidence of safety.
+
+Checkpoints copy the files an operation is about to touch to a directory outside the
+workspace. They are **not commits** — Athena does not write to your git history to protect
+itself — and restoring is always explicit.
+
+Workspace isolation is an abstraction with one implementation: everyone shares the
+workspace, which is safe precisely because conflicting writes are serialised. Worktree,
+container and remote strategies refuse clearly rather than falling back, and worktrees stay
+unbuilt until parallel *writing* tasks are shown to need them.
+
+## Delegation
+
+Three profiles, and no way to define a fourth at runtime (see
+[ADR-015](docs/adr/015-three-delegates-not-a-swarm.md)):
+
+| Profile | May | May not |
+| --- | --- | --- |
+| **Explorer** | read, search, read git history | write anything, run anything |
+| **Coder** | read, edit, write, run local checks, see the diff | commit, crawl history |
+| **Verifier** | read, run checks, see the diff | edit or write, ever |
+
+Authority is structural before it is policy: a tool a profile may not use is absent from
+its registry, so the refusal does not depend on a policy being configured correctly. Each
+delegate receives a brief — objective, acceptance criteria, relevant files, the previous
+step's findings — and never the parent's conversation, working memory or session store. It
+carries its own iteration, tool-call and timeout budgets, and its cancellation token is
+chained to the parent's. Delegates cannot delegate.
+
+## Extending the runtime
+
+Four extension points, all of which can narrow Athena's behaviour and none of which can
+widen it (see [ADR-014](docs/adr/014-extensions-restrict-but-never-grant.md)):
+
+- **Hooks** observe `SessionStart`, `PreToolUse`, `PostToolUse`, `PreEdit`, `PostEdit`,
+  `OnError`, `PreVerify`, `PostVerify` and `SessionEnd`. A hook may BLOCK an action; there
+  is no ALLOW, so no hook can override the permission engine. A *blocking* hook that
+  crashes fails closed.
+- **Skills** are procedural knowledge with a manifest (name, description, version,
+  applicable tasks, required toolsets, instructions, metadata). They are selected by
+  relevance and injected as instructions. A skill never registers a tool or widens a tier;
+  one whose required toolsets are missing is simply not selected.
+- **Deferred tools** stay out of the schema list until `tool_search` finds them, using the
+  `load_policy` and `search_hint` fields frozen in H0.
+- **MCP** lives behind an adapter in `athena.mcp`, outside the core and with no transport of
+  its own. Every remote tool is wrapped with a validated schema, a permission tier
+  defaulting to R3 (always ASK), a mandatory timeout, cancellation, and result-size limits.
 
 ## Capabilities and permissions
 
