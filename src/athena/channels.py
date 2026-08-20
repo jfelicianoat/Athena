@@ -140,6 +140,9 @@ class CommandName(StrEnum):
     #: Clear the slate and invite an objective. Distinct from `START_RUN` because it
     #: carries none: it is the prompt, not the request.
     NEW_INTERACTION = "new_interaction"
+    #: Bind this channel account to an Athena user, with a code minted elsewhere.
+    LINK_IDENTITY = "link_identity"
+    UNLINK_IDENTITY = "unlink_identity"
     HELP = "help"
     UNKNOWN = "unknown"
 
@@ -157,6 +160,9 @@ class ChannelCommand:
     identity: ChannelIdentity
     objective: str | None = None
     run_id: str | None = None
+    #: The link code, for `LINK_IDENTITY` only. It is a secret with a short life, so it is
+    #: never logged and never echoed back.
+    link_code: str | None = None
     #: Why the command could not be understood. Only set for `UNKNOWN`.
     reason: str | None = None
 
@@ -270,6 +276,16 @@ def parse_command(message: ChannelMessage, *, bare_text_starts_run: bool = False
             return ChannelCommand(CommandName.RUN_STATUS, identity, run_id=argument or None)
         case "runs":
             return ChannelCommand(CommandName.LIST_RUNS, identity)
+        case "link":
+            if not argument:
+                return ChannelCommand(
+                    CommandName.UNKNOWN,
+                    identity,
+                    reason="Send /link followed by the code from ChatyGPT.",
+                )
+            return ChannelCommand(CommandName.LINK_IDENTITY, identity, link_code=argument)
+        case "unlink":
+            return ChannelCommand(CommandName.UNLINK_IDENTITY, identity)
         case "help" | "start":
             return ChannelCommand(CommandName.HELP, identity)
         case _:
@@ -282,6 +298,8 @@ HELP_TEXT = (
     "/status [run id] — how your latest run is doing\n"
     "/runs — your recent runs\n"
     "/cancel [run id] — stop the current one\n"
+    "/link <code> — become the same person as your ChatyGPT account\n"
+    "/unlink — undo that\n"
     "\n"
     "Permission requests cannot be answered from here. A run started from a channel "
     "only does what your workspace was configured to allow without asking."

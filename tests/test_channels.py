@@ -390,7 +390,7 @@ def test_a_granted_identity_starts_a_run_and_hears_about_it(tmp_path: Path) -> N
         try:
             await gateway.start()
             await gateway.run_forever()
-            run_id = gateway.run_for(ALICE)
+            run_id = await gateway.run_for(ALICE)
             assert run_id is not None
             await registry.wait(run_id)
         finally:
@@ -441,7 +441,7 @@ def test_one_run_at_a_time_per_identity(tmp_path: Path) -> None:
             await gateway.run_forever()
             assert len(registry.live_ids()) == 1
             assert any("already going" in text for text in adapter.texts())
-            run_id = gateway.run_for(ALICE)
+            run_id = await gateway.run_for(ALICE)
             assert run_id is not None
             await registry.wait(run_id)
         finally:
@@ -461,7 +461,7 @@ def test_nobody_can_cancel_a_run_they_do_not_own(tmp_path: Path) -> None:
         try:
             await gateway.start()
             await gateway.run_forever()
-            run_id = gateway.run_for(ALICE)
+            run_id = await gateway.run_for(ALICE)
             assert run_id is not None
             adapter.push(f"/cancel {run_id}", MALLORY)
             await gateway.run_forever()

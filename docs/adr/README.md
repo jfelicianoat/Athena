@@ -36,3 +36,5 @@ of rewritten history.
   [An approval is a decision with a record](018-approval-is-a-decision-with-a-record.md)
 - ADR-019:
   [A channel is an adapter, not a feature](019-a-channel-is-an-adapter-not-a-feature.md)
+- ADR-020:
+  [Identity is claimed, never inferred](020-identity-is-claimed-never-inferred.md)

@@ -504,7 +504,7 @@ def test_plain_text_starts_a_run_in_a_private_chat(tmp_path: Path) -> None:
             from athena.channels import parse_command
 
             await gateway.handle(parse_command(message, bare_text_starts_run=True))
-            run_id = gateway.run_for(message.identity)
+            run_id = await gateway.run_for(message.identity)
             assert run_id is not None
             await registry.wait(run_id)
         finally:
@@ -571,7 +571,7 @@ def test_cancel_stops_the_run_it_started(tmp_path: Path) -> None:
             await gateway.handle(
                 ChannelCommand(CommandName.START_RUN, identity, objective="look around")
             )
-            run_id = gateway.run_for(identity)
+            run_id = await gateway.run_for(identity)
             assert run_id is not None
             await gateway.handle(ChannelCommand(CommandName.CANCEL_RUN, identity))
             await registry.wait(run_id)
@@ -642,7 +642,7 @@ def test_a_run_event_reaches_the_chat_that_asked_for_it(tmp_path: Path) -> None:
             await gateway.handle(
                 ChannelCommand(CommandName.START_RUN, _identity(), objective="look around")
             )
-            run_id = gateway.run_for(_identity())
+            run_id = await gateway.run_for(_identity())
             assert run_id is not None
             await registry.wait(run_id)
             await bus.publish(

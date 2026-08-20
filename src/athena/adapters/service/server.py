@@ -43,6 +43,7 @@ from athena.errors import (
     ToolValidationError,
     WorkspaceBoundaryError,
 )
+from athena.identity import IdentityDirectory
 from athena.permissions import PermissionDecision
 from athena.tools import ToolResultReference
 from athena.types import JSONObject
@@ -62,6 +63,9 @@ class ServiceConfig:
     approval_timeout_seconds: float | None = None
     #: Optional gate the host application supplies, e.g. ChatyGPT's authorized folders.
     authorized_workspace: Callable[[Path], bool] | None = None
+    #: Athena's identity directory. Absent means this deployment has no notion of a person
+    #: beyond "the client holding the bearer token", and link codes cannot be minted.
+    directory: IdentityDirectory | None = None
 
     def __post_init__(self) -> None:
         if self.host not in ("127.0.0.1", "::1", "localhost"):
@@ -272,6 +276,12 @@ class AthenaService:
             return self._decide(*pair, request)
         if (key := _match(path, "/v1/results/{}")) and method == "GET":
             return await self._artifact(key)
+        if path == "/v1/identity/users" and method == "POST":
+            return await self._create_user(request)
+        if path == "/v1/identity/link-codes" and method == "POST":
+            return await self._issue_link_code(request)
+        if (user_id := _match(path, "/v1/identity/users/{}/links")) and method == "GET":
+            return await self._list_links(user_id)
         return Response(404, error_to_json("not_found", f"No route for {method} {path}"))
 
     # -- handlers ---------------------------------------------------------
@@ -354,6 +364,62 @@ class AthenaService:
         decision = PermissionDecision.ALLOW if raw == "allow" else PermissionDecision.DENY
         self.approvals.resolve(request_id, decision)
         return Response(200, {"request_id": request_id, "decision": decision.value})
+
+    def _directory(self) -> IdentityDirectory:
+        directory = self.config.directory
+        if directory is None:
+            raise ToolValidationError("This Athena service has no identity directory")
+        return directory
+
+    async def _create_user(self, request: Request) -> Response:
+        payload = request.json()
+        raw = payload.get("display_name")
+        display_name = raw.strip() if isinstance(raw, str) and raw.strip() else None
+        user = await self._directory().create_user(display_name)
+        return Response(201, {"user_id": user.user_id, "display_name": user.display_name})
+
+    async def _issue_link_code(self, request: Request) -> Response:
+        """Mint a code for a user the caller says it is acting for.
+
+        The caller is believed because it already holds the bearer token for a
+        loopback-only service — this is not a second authentication step, and pretending
+        otherwise would be worse than saying so. That belief is bounded rather than
+        trusted: the code it produces is single-use and dies within minutes, so a client
+        that asks for the wrong user has minted a mistake with a short life rather than a
+        standing grant.
+
+        The plaintext appears in this response and nowhere else, ever.
+        """
+        payload = request.json()
+        user_id = payload.get("user_id")
+        if not isinstance(user_id, str) or not user_id.strip():
+            raise ToolValidationError("user_id is required")
+        token = await self._directory().issue_link_token(user_id.strip())
+        return Response(
+            201,
+            {
+                "token_id": token.token_id,
+                "code": token.code,
+                "user_id": token.user_id,
+                "expires_at": token.expires_at.isoformat(),
+            },
+        )
+
+    async def _list_links(self, user_id: str) -> Response:
+        links = await self._directory().links_for(user_id)
+        return Response(
+            200,
+            {
+                "links": [
+                    {
+                        "identity_key": link.identity_key,
+                        "channel": link.channel,
+                        "linked_at": link.linked_at.isoformat(),
+                    }
+                    for link in links
+                ]
+            },
+        )
 
     async def _artifact(self, key: str) -> Response:
         reference = ToolResultReference(store_key=key, media_type="text/plain", size_chars=0)
