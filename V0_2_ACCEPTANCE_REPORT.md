@@ -88,8 +88,49 @@ Six, all real, all fixed:
   the run. Recovering a half-executed graph is unimplemented.
 - **`PlanBoard` is in-memory and bounded.** A plan older than the last thirty-two is gone.
 - **Acceptance uses a scripted provider.** Deliberately: a real model would make these tests
-  measure whether a small LLM had a good day. V0.1's real-provider run against
-  `granite4.1:3b` stands as the evidence that the port works.
+  measure whether a small LLM had a good day. The real-provider evidence is below instead.
+- **AI_Broker cannot drive Athena's agentic loop, and should not.** Its task API returns
+  text; tool calling is offered through `execution.agent.client_tools`, where the *broker*
+  runs the iteration loop with its own `max_iterations` and asks the client to execute
+  tools. Adopting that would put a second agent loop above Athena's, which ADR-001 exists
+  to prevent. `AiBrokerModelProvider` therefore declares `tool_calls=False` and is useful
+  for completions that do not need tools; the agentic path uses an OpenAI-compatible
+  endpoint directly.
+- **Model-level counters land on the child session.** `model_calls` and `tool_calls` are
+  zero on a hierarchical parent run for the same reason `subagents_spawned` is: a
+  delegate's events belong to the delegate. Run-level totals across a graph would need the
+  collector to walk the parent chain, which it cannot do from an event alone.
+
+## Real-provider evidence
+
+A hierarchical run, on a repository whose test genuinely fails, against
+`qwen3.8:27b` served over an OpenAI-compatible endpoint:
+
+```
+Antes:  def add(a, b): return a - b
+
+Plan: 0 de 2 tareas hechas
+○ T01 [explorer] — di por qué falla test_add
+  ○ T02 [coder] — corrige add en calc.py
+
+T01 [explorer] completed
+   "En calc.py, la función add hace return a - b (resta), no return a + b.
+    Por eso test_add falla: add(1, 2) devuelve -1 en lugar de 3."
+T02 [coder] completed
+   "The function add(a, b) was computing a subtraction… I used edit_file"
+   ficheros: ('calc.py',)
+
+Plan: 2 de 2 tareas hechas
+Después: def add(a, b): return a + b
+Resultado del objetivo: completed
+Verificación: passed — All project checks pass.
+```
+
+The Explorer diagnosed by reading, the Coder fixed it with `edit_file`, and the verdict
+came from running the project's own pytest — not from either of them saying so.
+
+`AiBrokerModelProvider` was separately verified against the live broker: a completion
+returned `listo` from `essentialai/rnj-1`, with the broker choosing the model.
 
 ## Gates
 
