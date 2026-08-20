@@ -137,6 +137,9 @@ class CommandName(StrEnum):
     CANCEL_RUN = "cancel_run"
     RUN_STATUS = "run_status"
     LIST_RUNS = "list_runs"
+    #: El plan del run en curso. Distinto de `RUN_STATUS`, que dice cómo va el
+    #: run entero; esto dice de qué está hecho.
+    RUN_PLAN = "run_plan"
     #: Clear the slate and invite an objective. Distinct from `START_RUN` because it
     #: carries none: it is the prompt, not the request.
     NEW_INTERACTION = "new_interaction"
@@ -276,6 +279,8 @@ def parse_command(message: ChannelMessage, *, bare_text_starts_run: bool = False
             return ChannelCommand(CommandName.RUN_STATUS, identity, run_id=argument or None)
         case "runs":
             return ChannelCommand(CommandName.LIST_RUNS, identity)
+        case "tasks" | "plan":
+            return ChannelCommand(CommandName.RUN_PLAN, identity, run_id=argument or None)
         case "link":
             if not argument:
                 return ChannelCommand(
@@ -297,6 +302,7 @@ HELP_TEXT = (
     "/new <objective> — start a run in your workspace\n"
     "/status [run id] — how your latest run is doing\n"
     "/runs — your recent runs\n"
+    "/tasks — what the current run is made of\n"
     "/cancel [run id] — stop the current one\n"
     "/link <code> — become the same person as your ChatyGPT account\n"
     "/unlink — undo that\n"
@@ -329,6 +335,15 @@ REPORTED_EVENTS: frozenset[EventName] = frozenset(
         EventName.VERIFICATION_COMPLETED,
         EventName.VERIFICATION_FAILED,
         EventName.RECOVERY_EXHAUSTED,
+        # El plan sí, cada tarea no. Un grafo de doce tareas produce veinticuatro
+        # eventos de tarea, y un canal que los relaya todos deja de leerse — que
+        # es exactamente lo que la agregación existe para evitar. Lo que sí se
+        # cuenta es que hay un plan, que una tarea falló, y que el plan acabó.
+        EventName.GRAPH_STARTED,
+        EventName.GRAPH_COMPLETED,
+        EventName.GRAPH_FAILED,
+        EventName.GRAPH_CANCELLED,
+        EventName.TASK_FAILED,
     }
 )
 
@@ -381,6 +396,29 @@ def render_event(event: RuntimeEvent, identity: ChannelIdentity) -> ChannelRespo
                 "so it was refused.",
                 ResponseKind.NOTICE,
             )
+        case EventName.GRAPH_STARTED:
+            total = payload.get("tasks")
+            count = total if isinstance(total, int) and not isinstance(total, bool) else 0
+            return response(
+                f"Plan preparado: {count} tareas." if count else "Plan preparado.",
+                ResponseKind.PROGRESS,
+            )
+        case EventName.GRAPH_COMPLETED:
+            evidence = _text(payload, "summary")
+            return response(
+                "El plan terminó." if evidence is None else f"El plan terminó. {evidence}",
+                ResponseKind.RESULT,
+            )
+        case EventName.GRAPH_FAILED:
+            return response("El plan no salió adelante.", ResponseKind.ERROR)
+        case EventName.GRAPH_CANCELLED:
+            return response("El plan fue cancelado.", ResponseKind.RESULT)
+        case EventName.TASK_FAILED:
+            # Una tarea que falla se cuenta aunque el plan siga: es la señal de
+            # que algo va mal mientras todavía hay tiempo de mirarlo.
+            task = _text(payload, "task_id") or "una tarea"
+            detail = _text(payload, "summary") or "sin detalle"
+            return response(f"Falló {task}: {detail}", ResponseKind.ERROR)
         case EventName.VERIFICATION_STARTED:
             return response("Checking that the changes hold up.", ResponseKind.PROGRESS)
         case EventName.RECOVERY_STARTED:

@@ -25,7 +25,9 @@ from athena.adapters.channel_gateway import (
 from athena.adapters.service.runs import CapabilityMode, RunOptions, RunRegistry
 from athena.cancellation import CancellationToken
 from athena.channels import (
+    REPORTED_EVENTS,
     ChannelAdapter,
+    ChannelCommand,
     ChannelEventSink,
     ChannelIdentity,
     ChannelMessage,
@@ -43,8 +45,10 @@ from athena.models import (
     ModelRequest,
     ModelResponse,
 )
+from athena.planning import PlanBoard, PlanStatus, TaskGraph, TaskNode, describe_plan
 from athena.session_store import SqliteSessionStore
 from athena.stores import SqliteToolResultStore
+from athena.subagents import SubagentRole
 from athena.testing import FakeChannelAdapter
 from athena.types import JSONValue
 
@@ -536,3 +540,160 @@ def test_serving_a_channel_closes_it_even_when_the_loop_is_cancelled(tmp_path: P
         assert adapter.stopped
 
     asyncio.run(scenario())
+
+
+def node(
+    task_id: str,
+    *,
+    depends: Sequence[str] = (),
+    role: SubagentRole = SubagentRole.CODER,
+    output: str | None = None,
+) -> TaskNode:
+    return TaskNode(
+        id=task_id,
+        goal=f"do {task_id}",
+        expected_output=output or f"{task_id} exists",
+        acceptance_criteria=("it can be checked",),
+        dependencies=tuple(depends),
+        suggested_role=role,
+    )
+
+
+# ------------------------------------------------------------------- the plan, in a chat
+
+
+def test_a_channel_hears_about_the_plan_and_not_about_every_task() -> None:
+    """Aggregation, stated as a rule.
+
+    A graph of twelve tasks produces twenty-four task events. A channel that relayed all
+    of them would stop being read, which is the failure aggregation exists to prevent.
+    """
+    from athena.planning import PlanBoard, describe_plan
+
+    del PlanBoard, describe_plan  # imported to prove they are reachable from the package
+
+    assert EventName.GRAPH_STARTED in REPORTED_EVENTS
+    assert EventName.GRAPH_COMPLETED in REPORTED_EVENTS
+    assert EventName.TASK_FAILED in REPORTED_EVENTS, "a failure is worth interrupting for"
+    assert EventName.TASK_STARTED not in REPORTED_EVENTS
+    assert EventName.TASK_COMPLETED not in REPORTED_EVENTS
+
+
+def test_the_plan_announces_its_size_so_someone_knows_what_they_are_waiting_for() -> None:
+    response = render_event(_event(EventName.GRAPH_STARTED, {"tasks": 4}), ALICE)
+
+    assert response is not None
+    assert "4 tareas" in response.text
+    assert response.kind is ResponseKind.PROGRESS
+
+
+def test_a_failing_task_interrupts_while_there_is_still_time_to_look() -> None:
+    response = render_event(
+        _event(EventName.TASK_FAILED, {"task_id": "T03", "summary": "no compila"}), ALICE
+    )
+
+    assert response is not None
+    assert "T03" in response.text
+    assert "no compila" in response.text
+    assert response.kind is ResponseKind.ERROR
+
+
+def test_a_cancelled_plan_is_not_reported_as_a_failed_one() -> None:
+    cancelled = render_event(_event(EventName.GRAPH_CANCELLED), ALICE)
+    failed = render_event(_event(EventName.GRAPH_FAILED), ALICE)
+
+    assert cancelled is not None and cancelled.kind is ResponseKind.RESULT
+    assert failed is not None and failed.kind is ResponseKind.ERROR
+
+
+def test_asking_for_the_plan_of_a_run_that_has_none_says_so(tmp_path: Path) -> None:
+    """A run that goes straight is not a plan of one step.
+
+    Drawing a single-line list would make a direct run look like a graph nobody bothered
+    to decompose.
+    """
+
+    async def scenario() -> None:
+        bus = InMemoryEventBus()
+        registry = _registry(tmp_path, bus)
+        adapter = FakeChannelAdapter()
+        gateway = ChannelGateway(
+            adapter, registry, _policy(_workspace(tmp_path)), bus, board=PlanBoard()
+        )
+        try:
+            await gateway.start()
+            await gateway.handle(
+                ChannelCommand(CommandName.START_RUN, ALICE, objective="look around")
+            )
+            await gateway.handle(ChannelCommand(CommandName.RUN_PLAN, ALICE))
+            run_id = await gateway.run_for(ALICE)
+            assert run_id is not None
+            await registry.wait(run_id)
+        finally:
+            await gateway.stop()
+            await registry.shutdown()
+
+        assert any("va directo" in text for text in adapter.texts())
+
+    asyncio.run(scenario())
+
+
+def test_a_plan_reads_as_a_plan_rather_than_as_a_queue() -> None:
+    """Indented by dependency, because a flat list does not say what waited for what."""
+    graph = TaskGraph.build(
+        [
+            node("survey", role=SubagentRole.EXPLORER),
+            node("api", depends=["survey"], output="api"),
+            node("check", depends=["api"], role=SubagentRole.VERIFIER, output="check"),
+        ]
+    )
+
+    rendered = describe_plan(graph)
+    lines = rendered.splitlines()
+
+    assert "0 de 3" in lines[0]
+    assert not lines[1].startswith(" "), "lo que no espera a nadie va al margen"
+    assert lines[2].startswith("  ")
+    assert lines[3].startswith("    ")
+    assert "explorer" in rendered
+
+
+def test_the_plan_shows_what_is_done_and_what_is_running() -> None:
+    graph = TaskGraph.build([node("a", output="a"), node("b", output="b")])
+    graph.transition("a", PlanStatus.READY)
+    graph.transition("a", PlanStatus.RUNNING)
+    graph.transition("a", PlanStatus.COMPLETED)
+
+    rendered = describe_plan(graph)
+
+    assert "1 de 2" in rendered
+    assert "✓ a" in rendered
+    assert "○ b" in rendered
+
+
+def test_the_board_does_not_remember_every_plan_ever_run() -> None:
+    # A board that grew without bound is a slow leak in a process meant to stay up.
+    board = PlanBoard(capacity=2)
+    for index in range(4):
+        board.record(f"run-{index}", TaskGraph.build([node(f"t{index}")]))
+
+    assert board.plan_for("run-0") is None
+    assert board.plan_for("run-3") is not None
+
+
+def test_the_executor_leaves_its_plan_where_a_channel_can_read_it() -> None:
+    """Neither side knows about the other; both know about the board."""
+    import ast
+
+    import athena
+
+    module = Path(athena.__file__).parent / "graph_executor.py"
+    tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
+    imported = {
+        item.module or ""
+        for item in ast.walk(tree)
+        if isinstance(item, ast.ImportFrom) and (item.module or "").startswith("athena")
+    }
+
+    assert "athena.channels" not in imported
+    assert "athena.adapters.channel_gateway" not in imported

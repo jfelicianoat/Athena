@@ -37,6 +37,7 @@ from athena.channels import (
 from athena.errors import AthenaRuntimeError
 from athena.events import EventBus, RuntimeEvent
 from athena.identity import IdentityDirectory, ResolvedIdentity
+from athena.planning import PlanBoard, describe_plan
 
 #: Facts go in the message itself: `JsonFormatter` renders `message` and redacts it, and
 #: drops `extra`, so anything put there would silently never be logged.
@@ -107,6 +108,7 @@ class ChannelGateway:
         event_bus: EventBus,
         *,
         directory: IdentityDirectory | None = None,
+        board: PlanBoard | None = None,
         bare_text_starts_run: bool = False,
     ) -> None:
         self.adapter = adapter
@@ -116,6 +118,9 @@ class ChannelGateway:
         #: Athena's answer to "who is this". Without one, every channel account is its own
         #: person — which is correct, just not shared.
         self.directory = directory
+        #: El plan en curso, si alguien lo publica. Sin tablón, `/tasks` dice que
+        #: no hay plan — que es la verdad para un run que no es jerárquico.
+        self.board = board
         #: Whether plain text is an objective. Off unless the channel removed the
         #: ambiguity itself — see `parse_command`.
         self.bare_text_starts_run = bare_text_starts_run
@@ -228,6 +233,8 @@ class ChannelGateway:
                 return await self._run_status(resolved, command.run_id)
             case CommandName.LIST_RUNS:
                 return await self._list_runs(resolved)
+            case CommandName.RUN_PLAN:
+                return self._run_plan(resolved, command.run_id)
             case _:  # pragma: no cover - CommandName is closed and handled above
                 return self._say(identity, HELP_TEXT)
 
@@ -335,6 +342,27 @@ class ChannelGateway:
             "Unlinked. This account is on its own again, and no longer sees the runs it shared.",
             ResponseKind.RESULT,
         )
+
+    def _run_plan(self, resolved: ResolvedIdentity, run_id: str | None) -> ChannelResponse:
+        """El plan del run, para quien quiera saber de qué está hecho.
+
+        Distinto de `/status`, que dice cómo va el run entero. Un run que no es
+        jerárquico no tiene plan, y decirlo es mejor que dibujar una lista de una
+        sola línea que parezca uno.
+        """
+        identity = resolved.channel
+        target = self._run_reference(resolved.owner_key, run_id)
+        if target is None:
+            return self._say(identity, "No tienes ningún run en marcha.", ResponseKind.NOTICE)
+        graph = None if self.board is None else self.board.plan_for(target)
+        if graph is None:
+            return self._say(
+                identity,
+                "Este run no se dividió en tareas: va directo.",
+                ResponseKind.NOTICE,
+                run_id=target,
+            )
+        return self._say(identity, describe_plan(graph), ResponseKind.RESULT, run_id=target)
 
     def _run_reference(self, owner_key: str, run_id: str | None) -> str | None:
         """Pick the run a command refers to, refusing anything the asker does not own.

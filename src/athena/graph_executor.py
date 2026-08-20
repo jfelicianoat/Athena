@@ -38,7 +38,7 @@ from datetime import UTC, datetime
 from athena.cancellation import CancellationScope, CancellationToken, chained_source
 from athena.errors import AthenaRuntimeError
 from athena.events import EventBus, EventName, RuntimeEvent
-from athena.planning import PlanStatus, TaskGraph, TaskNode
+from athena.planning import PlanBoard, PlanStatus, TaskGraph, TaskNode
 from athena.state import ExecutionOutcome, SessionState, classify_outcome
 from athena.subagents import SubagentBrief, SubagentResult, SubagentRole, SubagentRunner
 from athena.tasks import TaskBudget, TaskManager
@@ -143,6 +143,7 @@ class GraphExecutor:
         *,
         goal_verification: VerificationPolicy | None = None,
         task_verification: VerificationPolicy | None = None,
+        board: PlanBoard | None = None,
         max_parallel_reads: int = 4,
     ) -> None:
         self.runner = runner
@@ -153,6 +154,9 @@ class GraphExecutor:
         #: Optional, and run only after a task that actually changed something. Finding out
         #: at the end that the third task broke the build is worse than finding out then.
         self.task_verification = task_verification
+        #: Donde otros —una interfaz, un canal— pueden leer el plan en curso. El
+        #: executor no sabe quién mira ni le importa; deja el grafo puesto.
+        self.board = board
         self.max_parallel_reads = max(1, max_parallel_reads)
         #: One writer at a time in a shared workspace. Worktrees would remove the need for
         #: this; until they exist, a lock is the only honest answer.
@@ -171,6 +175,8 @@ class GraphExecutor:
         evidence: list[TaskEvidence] = []
         outcome = ExecutionOutcome.COMPLETED
 
+        if self.board is not None:
+            self.board.record(run_id or "graph", graph)
         await self._publish(EventName.GRAPH_STARTED, run_id, {"tasks": len(graph)})
         try:
             while not graph.is_complete():

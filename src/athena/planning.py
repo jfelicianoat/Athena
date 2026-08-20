@@ -600,6 +600,65 @@ def _collapse_single_children(nodes: Mapping[str, TaskNode]) -> dict[str, TaskNo
         }
 
 
+class PlanBoard:
+    """Which run is executing which plan, for anything that needs to show one.
+
+    A deliberately dumb shared place rather than a reference from the executor to a
+    channel or from a channel to the executor. Both of those would make one of them know
+    about the other, and neither has any business doing so: the executor's job is to run
+    a graph, and a channel's is to describe one.
+
+    Bounded, because a board that remembered every plan ever run would be a slow leak in
+    a process that is meant to stay up.
+    """
+
+    def __init__(self, capacity: int = 32) -> None:
+        self._plans: dict[str, TaskGraph] = {}
+        self.capacity = max(1, capacity)
+
+    def record(self, run_id: str, graph: TaskGraph) -> None:
+        self._plans[run_id] = graph
+        while len(self._plans) > self.capacity:
+            self._plans.pop(next(iter(self._plans)))
+
+    def plan_for(self, run_id: str) -> TaskGraph | None:
+        return self._plans.get(run_id)
+
+    def forget(self, run_id: str) -> None:
+        self._plans.pop(run_id, None)
+
+
+def describe_plan(graph: TaskGraph) -> str:
+    """A plan as a person would read it in a chat window.
+
+    Indented by dependency depth, because a plan rendered as a flat list does not say
+    what was waiting on what — which is the only thing that makes it a plan rather than a
+    queue.
+    """
+    marks = {
+        PlanStatus.COMPLETED: "✓",
+        PlanStatus.RUNNING: "▶",
+        PlanStatus.FAILED: "✕",
+        PlanStatus.BLOCKED: "⊘",
+        PlanStatus.SKIPPED: "·",
+    }
+    lines: list[str] = []
+    depth: dict[str, int] = {}
+    for node in graph.topological_order():
+        level = (
+            0
+            if not node.dependencies
+            else 1 + max(depth.get(dependency, 0) for dependency in node.dependencies)
+        )
+        depth[node.id] = level
+        mark = marks.get(node.status, "○")
+        role = f" [{node.suggested_role.value}]" if node.suggested_role else ""
+        lines.append(f"{'  ' * level}{mark} {node.id}{role} — {node.goal}")
+    done = sum(1 for node in graph.nodes if node.status is PlanStatus.COMPLETED)
+    header = f"Plan: {done} de {len(graph)} tareas hechas"
+    return header + "\n" + "\n".join(lines)
+
+
 # --------------------------------------------------------------- should we plan at all
 
 
@@ -865,6 +924,7 @@ __all__ = [
     "DuplicateTaskIdError",
     "InvalidTransitionError",
     "NonAtomicTaskError",
+    "PlanBoard",
     "PlanLimitExceededError",
     "PlanParseError",
     "PlanStatus",
@@ -875,5 +935,6 @@ __all__ = [
     "TaskGraph",
     "TaskNode",
     "UnknownDependencyError",
+    "describe_plan",
     "parse_plan",
 ]

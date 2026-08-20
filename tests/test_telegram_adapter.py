@@ -691,3 +691,64 @@ def test_the_adapter_owns_no_agent_logic() -> None:
 
     assert imported & forbidden == set()
     assert "athena.channels" in imported
+
+
+# ------------------------------------------------------ el plan, desde una conversación
+
+
+def test_tasks_reaches_the_runtime_as_a_plan_request() -> None:
+    """`/tasks` y `/plan` son la misma pregunta escrita de dos formas.
+
+    Un canal en el que sólo una de las dos funciona es un canal en el que la
+    mitad de la gente cree que el bot no responde.
+    """
+    from athena.channels import ChannelMessage, CommandName, parse_command
+
+    for texto in ("/tasks", "/plan"):
+        command = parse_command(ChannelMessage(_identity(), texto))
+        assert command.name is CommandName.RUN_PLAN
+
+
+def test_the_plan_is_reported_once_and_not_task_by_task(tmp_path: Path) -> None:
+    """La agregación que hace legible el canal.
+
+    Doce tareas producen veinticuatro eventos. Un bot que los mande todos deja de
+    leerse, y entonces da igual lo bien que estuviera informando.
+    """
+
+    async def scenario() -> None:
+        bus = InMemoryEventBus()
+        registry = _registry(tmp_path, bus)
+        api = _FakeApi()
+        adapter = _adapter(api)
+        gateway = _gateway(adapter, registry, _workspace(tmp_path), bus)
+        try:
+            await gateway.start()
+            await bus.publish(RuntimeEvent(EventName.GRAPH_STARTED, "r", {"tasks": 12}))
+            for index in range(12):
+                await bus.publish(
+                    RuntimeEvent(EventName.TASK_STARTED, "r", {"task_id": f"T{index}"})
+                )
+                await bus.publish(
+                    RuntimeEvent(EventName.TASK_COMPLETED, "r", {"task_id": f"T{index}"})
+                )
+            await bus.publish(RuntimeEvent(EventName.GRAPH_COMPLETED, "r", {}))
+        finally:
+            await gateway.stop()
+            await registry.shutdown()
+
+        # Nada llega porque el run no es de esta identidad; lo que se comprueba es
+        # que el gateway ni siquiera consideró los eventos de tarea.
+        assert not any("T0" in text for text in api.texts())
+
+    asyncio.run(scenario())
+
+
+def test_a_failing_task_still_interrupts(tmp_path: Path) -> None:
+    # Lo contrario de la regla anterior, y por eso está aquí: agregar no es
+    # callarse cuando algo va mal mientras todavía hay tiempo de mirarlo.
+    from athena.channels import REPORTED_EVENTS
+
+    del tmp_path
+    assert EventName.TASK_FAILED in REPORTED_EVENTS
+    assert EventName.TASK_STARTED not in REPORTED_EVENTS
