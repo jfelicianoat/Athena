@@ -101,6 +101,10 @@ class PlanStatus(StrEnum):
     BLOCKED = "blocked"
     #: Deliberately not attempted — collapsed away, or made irrelevant by replanning.
     SKIPPED = "skipped"
+    #: The process died while this was running. Nobody knows whether it finished, and the
+    #: same reasoning `AgentStatus` and `TaskState` use applies: the unknown case resolves
+    #: towards "needs a decision", never towards "done".
+    RECOVERY_PENDING = "recovery_pending"
 
 
 #: What may follow what. A plan whose statuses can move arbitrarily is a plan whose state
@@ -109,12 +113,18 @@ class PlanStatus(StrEnum):
 _TRANSITIONS: Mapping[PlanStatus, frozenset[PlanStatus]] = {
     PlanStatus.PENDING: frozenset({PlanStatus.READY, PlanStatus.BLOCKED, PlanStatus.SKIPPED}),
     PlanStatus.READY: frozenset({PlanStatus.RUNNING, PlanStatus.BLOCKED, PlanStatus.SKIPPED}),
-    PlanStatus.RUNNING: frozenset({PlanStatus.COMPLETED, PlanStatus.FAILED}),
+    PlanStatus.RUNNING: frozenset(
+        {PlanStatus.COMPLETED, PlanStatus.FAILED, PlanStatus.RECOVERY_PENDING}
+    ),
     #: A completed task can be reopened only by replanning, which sends it back to PENDING.
     PlanStatus.COMPLETED: frozenset({PlanStatus.PENDING}),
     PlanStatus.FAILED: frozenset({PlanStatus.PENDING, PlanStatus.SKIPPED}),
     PlanStatus.BLOCKED: frozenset({PlanStatus.PENDING, PlanStatus.SKIPPED}),
     PlanStatus.SKIPPED: frozenset({PlanStatus.PENDING}),
+    #: A person or an operator decides. It never resolves itself, which is the point.
+    PlanStatus.RECOVERY_PENDING: frozenset(
+        {PlanStatus.PENDING, PlanStatus.SKIPPED, PlanStatus.FAILED}
+    ),
 }
 
 _TERMINAL = frozenset({PlanStatus.COMPLETED, PlanStatus.SKIPPED})
@@ -286,6 +296,27 @@ class TaskGraph:
 
     def is_complete(self) -> bool:
         return all(node.status in _TERMINAL for node in self._nodes.values())
+
+    def mark_interrupted(self) -> tuple[str, ...]:
+        """After a restart: whatever was running is now of unknown outcome.
+
+        Deliberately mirrors `SessionStore.mark_interrupted` and `TaskManager`'s. A task
+        the runtime stopped watching did not necessarily fail and certainly did not
+        necessarily succeed — and re-running it blindly could repeat a side effect nobody
+        asked for twice.
+        """
+        interrupted: list[str] = []
+        for node_id, node in self._nodes.items():
+            if node.status is PlanStatus.RUNNING:
+                self._nodes[node_id] = replace(node, status=PlanStatus.RECOVERY_PENDING)
+                interrupted.append(node_id)
+        return tuple(interrupted)
+
+    def needs_recovery(self) -> tuple[TaskNode, ...]:
+        """Tasks waiting for somebody to say what happened to them."""
+        return tuple(
+            node for node in self._nodes.values() if node.status is PlanStatus.RECOVERY_PENDING
+        )
 
     def total_attempts(self) -> int:
         return sum(node.attempts for node in self._nodes.values())

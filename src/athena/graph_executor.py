@@ -31,6 +31,7 @@ is what keeps the parent's context from growing with every delegate it uses.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -38,6 +39,7 @@ from datetime import UTC, datetime
 from athena.cancellation import CancellationScope, CancellationToken, chained_source
 from athena.errors import AthenaRuntimeError
 from athena.events import EventBus, EventName, RuntimeEvent
+from athena.graph_store import SqliteGraphStore
 from athena.planning import PlanBoard, PlanStatus, TaskGraph, TaskNode
 from athena.state import ExecutionOutcome, SessionState, classify_outcome
 from athena.subagents import SubagentBrief, SubagentResult, SubagentRole, SubagentRunner
@@ -45,6 +47,8 @@ from athena.tasks import TaskBudget, TaskManager
 from athena.types import JSONObject
 from athena.verification import VerificationPolicy, VerificationResult
 from athena.workspace import Workspace
+
+_logger = logging.getLogger(__name__)
 
 #: Roles that may change the workspace. Everything else runs concurrently, because two
 #: readers cannot produce a conflict and serialising them would waste the parallelism the
@@ -144,6 +148,7 @@ class GraphExecutor:
         goal_verification: VerificationPolicy | None = None,
         task_verification: VerificationPolicy | None = None,
         board: PlanBoard | None = None,
+        store: SqliteGraphStore | None = None,
         max_parallel_reads: int = 4,
     ) -> None:
         self.runner = runner
@@ -157,6 +162,9 @@ class GraphExecutor:
         #: Donde otros —una interfaz, un canal— pueden leer el plan en curso. El
         #: executor no sabe quién mira ni le importa; deja el grafo puesto.
         self.board = board
+        #: Where the plan survives a restart. Absent means it does not, which is the
+        #: correct answer for a deployment that would rather lose a plan than keep one.
+        self.store = store
         self.max_parallel_reads = max(1, max_parallel_reads)
         #: One writer at a time in a shared workspace. Worktrees would remove the need for
         #: this; until they exist, a lock is the only honest answer.
@@ -177,6 +185,7 @@ class GraphExecutor:
 
         if self.board is not None:
             self.board.record(run_id or "graph", graph)
+        await self._persist(run_id, graph)
         await self._publish(EventName.GRAPH_STARTED, run_id, {"tasks": len(graph)})
         try:
             while not graph.is_complete():
@@ -211,6 +220,8 @@ class GraphExecutor:
             started_at=started,
             finished_at=datetime.now(UTC),
         )
+        if self.store is not None:
+            await self.store.close(run_id or "graph")
         await self._publish(
             EventName.GRAPH_COMPLETED
             if outcome is ExecutionOutcome.COMPLETED
@@ -290,6 +301,10 @@ class GraphExecutor:
             PlanStatus.COMPLETED if evidence.succeeded else PlanStatus.FAILED,
             verification=evidence.to_json(),
         )
+        # Saved on every transition, not once at the end. A plan written only at the start
+        # would survive a restart and be wrong about everything it had already done, which
+        # is worse than not surviving.
+        await self._persist(run_id, graph)
         await self._publish(
             EventName.TASK_COMPLETED if evidence.succeeded else EventName.TASK_FAILED,
             run_id,
@@ -420,6 +435,20 @@ class GraphExecutor:
         if transition and graph.get(node.id).status is PlanStatus.RUNNING:
             graph.transition(node.id, PlanStatus.FAILED, verification=evidence.to_json())
         return evidence
+
+    async def _persist(self, run_id: str, graph: TaskGraph) -> None:
+        """Write the plan, and never let a storage problem end a run.
+
+        A plan that could not be saved is a plan that will not survive a restart. That is
+        a loss of resilience, not of correctness, and stopping the work over it would trade
+        a real result for a hypothetical one.
+        """
+        if self.store is None:
+            return
+        try:
+            await self.store.save(run_id or "graph", graph)
+        except AthenaRuntimeError as error:
+            _logger.warning("graph.not_persisted code=%s", error.code)
 
     async def _publish(
         self,

@@ -3,7 +3,7 @@
 - Date: 2026-08-20
 - Baseline: V0.1 (PASS 15/15), which remains accepted and unchanged in behaviour
 - Verdict: **PASS** — the twelve phases of the integration report are closed
-- Gates: 614 tests, ruff, ruff format, mypy `--strict`, all green
+- Gates: 665 tests, ruff, ruff format, mypy `--strict`, all green
 
 ## What changed, in one sentence
 
@@ -35,6 +35,9 @@ tested and used by nothing. V0.2 is those subsystems inside the execution path.
 | 19 | Work can be undone, attributably | PASS | `RollbackLedger` restores only files this run wrote and reports what it declined |
 | 20 | ChatyGPT resumes rather than resynchronises | PASS | `Last-Event-ID` sent and observed; plan drawn as a graph |
 | 21 | Telegram sees the plan without being flooded | PASS | Graph events relayed, task events aggregated, `/tasks` renders the plan |
+| 22 | Parallel writers are integrated, not just detected | PASS | `git apply --check --3way` before anything is touched; conflicts reported, clean patches applied, result verified |
+| 23 | A plan survives a restart | PASS | `SqliteGraphStore`; a task that was running comes back `RECOVERY_PENDING` and never resolves itself |
+| 24 | Decomposition evidence is derived, not supplied | PASS | `RepositoryScout` measures paths, subsystems, file size and the project's own checks — and names what it could not establish |
 
 ## What Athena is still structurally unable to do
 
@@ -55,7 +58,7 @@ retry blindly. V0.2 adds four:
 
 ## Defects found by writing this
 
-Six, all real, all fixed:
+Seven, all real, all fixed:
 
 1. **A cooperative task was recorded as `FAILED`.** A body that stopped when asked raised
    `CancellationError`, which the typed-error branch filed as a failure — punishing the task
@@ -70,22 +73,31 @@ Six, all real, all fixed:
    rendered as "no detail given".
 5. **Duplicate subagent events.** `GraphExecutor` published `SUBAGENT_*` that `SubagentRunner`
    already published. The graph level got its own vocabulary instead.
-6. **`subagents_spawned` never counted on a parent run.** A delegate's events carry the
+6. **Patches were written as text on Windows.** `Path.write_text` translates newlines, so
+   a diff whose lines already ended `
+` came back out as `
+` and git rejected it
+   with "patch does not apply" — indistinguishable from a real conflict, which is what made
+   it worth finding.
+7. **`subagents_spawned` never counted on a parent run.** A delegate's events carry the
    child's session id, which is the correct attribution — so the run-level rate is computed
    from delegation instead.
 
 ## Known limitations
 
-- **Integration of parallel writers is detection only.** Overlapping files are reported; no
-  `IntegrationTask` runs the merge and verifies it. That is the next decision, not a gap in
-  what is claimed here.
-- **The planner's decomposition signals are supplied by the caller.** Nothing yet derives
-  them from a repository automatically, so "does this goal need a plan" is answered with
-  evidence somebody else gathered.
+- **Integration replays patches; it does not rebase or resolve.** Conflicting work is
+  reported intact and left for a person or a replan. Resolving a conflict is a judgement
+  about intent, and git is the wrong place to look for one.
+- **Two signals still cannot be derived.** `RepositoryScout` establishes four of the six
+  and names the two it cannot: whether outputs genuinely depend on each other, and whether
+  the work needs more than one specialism. Both are claims about intent that a filesystem
+  does not contain, so they keep their neutral value and are reported as assumed rather
+  than filled in.
 - **Diagnosis is pattern-based and openly imperfect.** Unrecognised output routes to the
   same undirected repair as before rather than to a confident wrong answer.
-- **The graph is not persisted.** A restart loses the plan; the session store still holds
-  the run. Recovering a half-executed graph is unimplemented.
+- **A recovered plan needs a decision, and nothing makes it automatically.** The store
+  brings the graph back and marks what was running as `RECOVERY_PENDING`; deciding whether
+  to re-run, skip or fail each of those is a person's call, deliberately.
 - **`PlanBoard` is in-memory and bounded.** A plan older than the last thirty-two is gone.
 - **Acceptance uses a scripted provider.** Deliberately: a real model would make these tests
   measure whether a small LLM had a good day. The real-provider evidence is below instead.
@@ -135,10 +147,10 @@ returned `listo` from `essentialai/rnj-1`, with the broker choosing the model.
 ## Gates
 
 ```
-pytest -q                  614 passed
+pytest -q                  665 passed
 ruff check .               All checks passed
-ruff format --check .      129 files already formatted
-mypy --strict src tests    no issues in 102 source files
+ruff format --check .      139 files already formatted
+mypy --strict src tests    no issues in 109 source files
 ```
 
 ChatyGPT, separately: 257 Rust tests, clippy `-D warnings` clean with no module-wide

@@ -52,6 +52,7 @@ from athena.git_tools import (
     git_read_tools,
 )
 from athena.graph_executor import GraphExecutor, GraphResult, TaskEvidence
+from athena.graph_store import SqliteGraphStore, StoredPlan
 from athena.hooks import (
     Hook,
     HookContext,
@@ -71,6 +72,7 @@ from athena.identity import (
     SqliteIdentityDirectory,
     UserIdentity,
 )
+from athena.integration import IntegrationResult, Integrator, PatchOutcome
 from athena.mcp import McpClient, McpTool, McpToolDescriptor, McpToolPolicy, mcp_tools
 from athena.memory import (
     CompactionReport,
@@ -102,12 +104,14 @@ from athena.planning import (
     DecompositionDecision,
     DecompositionPolicy,
     DecompositionSignals,
+    PlanBoard,
     Planner,
     PlanningError,
     PlanningLimits,
     PlanStatus,
     TaskGraph,
     TaskNode,
+    describe_plan,
     parse_plan,
 )
 from athena.process_tools import BashTool, CommandPolicy
@@ -126,6 +130,7 @@ from athena.repository_tools import (
     ReadFileTool,
     ReadRangeTool,
 )
+from athena.scouting import RepositoryScout, ScoutedSignals
 from athena.session_store import (
     EventCheckpoint,
     InMemorySessionStore,
@@ -262,6 +267,8 @@ __all__ = [
     "InMemoryEventBus",
     "InMemorySessionStore",
     "InMemoryToolResultStore",
+    "IntegrationResult",
+    "Integrator",
     "IntegrityAuthorization",
     "IsolationKind",
     "LinkOutcome",
@@ -281,11 +288,13 @@ __all__ = [
     "ModelRequest",
     "ModelResponse",
     "ModelToolCall",
+    "PatchOutcome",
     "PermissionDecision",
     "PermissionEngine",
     "PermissionPolicy",
     "PermissionPrompt",
     "PermissionRequest",
+    "PlanBoard",
     "PlanStatus",
     "PlanStep",
     "Planner",
@@ -304,6 +313,7 @@ __all__ = [
     "RecoveryAction",
     "RecoveryDirective",
     "RecoveryPolicy",
+    "RepositoryScout",
     "ResolvedIdentity",
     "ResourceClaim",
     "ResponseKind",
@@ -311,6 +321,7 @@ __all__ = [
     "RunMetrics",
     "RuntimeEvent",
     "ScheduledBatch",
+    "ScoutedSignals",
     "SessionRecord",
     "SessionState",
     "SessionStore",
@@ -318,11 +329,13 @@ __all__ = [
     "SkillManifest",
     "SkillRegistry",
     "SkillSelection",
+    "SqliteGraphStore",
     "SqliteIdentityDirectory",
     "SqliteMetricsStore",
     "SqliteProjectMemory",
     "SqliteSessionStore",
     "SqliteToolResultStore",
+    "StoredPlan",
     "SubagentBrief",
     "SubagentBudget",
     "SubagentProfile",
@@ -364,6 +377,7 @@ __all__ = [
     "WriteFileTool",
     "classify_outcome",
     "default_strategies",
+    "describe_plan",
     "diagnose",
     "diagnose_result",
     "git_read_tools",
