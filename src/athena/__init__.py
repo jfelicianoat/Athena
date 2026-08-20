@@ -89,6 +89,18 @@ from athena.permissions import (
     PolicyPermissionEngine,
     RiskTier,
 )
+from athena.planning import (
+    DecompositionDecision,
+    DecompositionPolicy,
+    DecompositionSignals,
+    Planner,
+    PlanningError,
+    PlanningLimits,
+    PlanStatus,
+    TaskGraph,
+    TaskNode,
+    parse_plan,
+)
 from athena.process_tools import BashTool, CommandPolicy
 from athena.recovery import RecoveryAction, RecoveryDirective, RecoveryPolicy
 from athena.registry import ToolRegistry
@@ -198,6 +210,9 @@ __all__ = [
     "ContextBuilder",
     "ContextWindowManager",
     "ConversationContext",
+    "DecompositionDecision",
+    "DecompositionPolicy",
+    "DecompositionSignals",
     "EditFileTool",
     "EventBus",
     "EventCheckpoint",
@@ -244,7 +259,11 @@ __all__ = [
     "PermissionPolicy",
     "PermissionPrompt",
     "PermissionRequest",
+    "PlanStatus",
     "PlanStep",
+    "Planner",
+    "PlanningError",
+    "PlanningLimits",
     "PolicyPermissionEngine",
     "ProcessEvent",
     "ProcessState",
@@ -278,7 +297,9 @@ __all__ = [
     "SubagentRunner",
     "TaskBudget",
     "TaskBudgetTracker",
+    "TaskGraph",
     "TaskManager",
+    "TaskNode",
     "TaskRecord",
     "TaskState",
     "Tool",
@@ -310,6 +331,7 @@ __all__ = [
     "git_read_tools",
     "mcp_tools",
     "parse_command",
+    "parse_plan",
     "render_event",
     "workspace_mutation_tools",
 ]

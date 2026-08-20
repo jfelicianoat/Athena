@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import hmac
 import json
+import logging
 import secrets
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -47,10 +48,17 @@ from athena.identity import IdentityDirectory
 from athena.permissions import PermissionDecision
 from athena.tools import ToolResultReference
 from athena.types import JSONObject
+from athena.workspace import Workspace
+
+_logger = logging.getLogger(__name__)
 
 _MAX_HEADER_BYTES = 16 * 1024
 _MAX_BODY_BYTES = 4 * 1024 * 1024
 _SSE_KEEPALIVE_SECONDS = 15.0
+
+#: How many idempotency keys to remember. A retry that arrives long after the map has
+#: turned over is a new request, which is the honest reading of a key nobody kept.
+_IDEMPOTENCY_ENTRIES = 256
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +145,8 @@ class AthenaService:
         self.approvals: ApprovalRegistry = registry.approvals
         self._server: asyncio.Server | None = None
         self._connections: set[asyncio.Task[None]] = set()
+        #: Idempotency key to the run it created, or to the call still creating it.
+        self._idempotency: dict[str, asyncio.Future[str]] = {}
 
     # -- lifecycle --------------------------------------------------------
 
@@ -179,11 +189,18 @@ class AthenaService:
             await self._write(writer, response)
         except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
             pass
-        except Exception as exc:
+        except Exception:
+            # The class name is an internal fact — `KeyError`, `AttributeError` — and
+            # naming it on the wire tells a caller about Athena's insides while telling
+            # them nothing they can act on. It goes to the log; the client gets a code.
+            _logger.exception("service.unhandled_error")
             with contextlib.suppress(Exception):
                 await self._write(
                     writer,
-                    Response(500, error_to_json("internal_error", f"{type(exc).__name__}")),
+                    Response(
+                        500,
+                        error_to_json("internal_error", "Athena failed to handle that request"),
+                    ),
                 )
         finally:
             if task is not None:
@@ -295,6 +312,13 @@ class AthenaService:
         return Response(200, {"runs": [run_summary_to_json(record) for record in records]})
 
     async def _start_run(self, request: Request) -> Response:
+        """Create a run and return its id, without waiting for it to do anything.
+
+        The request is over in milliseconds. Holding it open for the length of an agent
+        run would tie the work's lifetime to a socket's, and sockets die for reasons that
+        have nothing to do with the work — a sleeping laptop, a proxy's idle timeout, a
+        client that was restarted. Progress arrives on the event stream instead.
+        """
         payload = request.json()
         objective = payload.get("objective")
         if not isinstance(objective, str) or not objective.strip():
@@ -302,11 +326,84 @@ class AthenaService:
         root = payload.get("workspace")
         if not isinstance(root, str) or not root:
             raise ToolValidationError("workspace must be a path")
+        key = request.headers.get("idempotency-key", "").strip()
+        if key:
+            return await self._idempotent_start(key, request, objective, root, payload)
+        return await self._create_run(objective, root, payload, status=201)
+
+    async def _idempotent_start(
+        self,
+        key: str,
+        request: Request,
+        objective: str,
+        root: str,
+        payload: JSONObject,
+    ) -> Response:
+        """Create at most one run per `Idempotency-Key`.
+
+        A retry is not a second request. Starting a run is expensive and not reversible in
+        the way a read is — two agents on one workspace is exactly the outcome a client
+        retrying a timed-out POST is trying to avoid.
+
+        The in-flight case is handled with a future rather than a "seen" set, because the
+        window that matters is precisely the one where the first call has not finished:
+        a check-then-act across `await registry.start(...)` would let both callers miss.
+        """
+        del request
+        existing = self._idempotency.get(key)
+        if existing is not None:
+            try:
+                run_id = await asyncio.shield(existing)
+            except asyncio.CancelledError:
+                if not existing.cancelled():
+                    # This request is being cancelled, not the run it was waiting on.
+                    raise
+                # The call we were waiting on failed and withdrew its key. Waiting for a
+                # run that will never exist would be a worse answer than doing the work.
+                existing = None
+            if existing is not None:
+                return Response(
+                    200,
+                    {
+                        "run_id": run_id,
+                        "idempotent_replay": True,
+                        "workspace_id": Workspace.from_path(root).workspace_id,
+                    },
+                )
+
+        pending: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        self._idempotency[key] = pending
+        try:
+            response = await self._create_run(objective, root, payload, status=201)
+            created = (response.payload or {}).get("run_id")
+            if not isinstance(created, str):
+                raise AthenaRuntimeError("A created run has no id to be idempotent about")
+        except BaseException:
+            # A failed attempt must not become a cached answer: the caller is entitled to
+            # retry the same key and actually get a run. Withdrawing the key *and*
+            # cancelling the future is what lets a concurrent waiter fall through above,
+            # instead of blocking on a promise nobody is going to keep.
+            self._idempotency.pop(key, None)
+            if not pending.done():
+                pending.cancel()
+            raise
+        pending.set_result(created)
+        self._trim_idempotency()
+        return response
+
+    def _trim_idempotency(self) -> None:
+        """Keep the map bounded. A retry that arrives an hour later is a new request."""
+        while len(self._idempotency) > _IDEMPOTENCY_ENTRIES:
+            self._idempotency.pop(next(iter(self._idempotency)))
+
+    async def _create_run(
+        self, objective: str, root: str, payload: JSONObject, *, status: int
+    ) -> Response:
         workspace = build_workspace(root, self.config.authorized_workspace)
         options = RunOptions.from_json(payload)
         run_id = await self.registry.start(objective, workspace, options)
         return Response(
-            201,
+            status,
             {
                 "run_id": run_id,
                 "workspace_id": workspace.workspace_id,
@@ -446,20 +543,56 @@ class AthenaService:
         )
         await writer.drain()
         try:
-            record = await self.registry.snapshot(run_id)
-            await _send(
-                writer,
-                "state",
-                {
-                    "subscriber_id": subscriber.subscriber_id,
-                    "controls": subscriber.controls,
-                    "wire_version": WIRE_VERSION,
-                    "snapshot": session_to_json(record) if record else None,
-                    "pending_approvals": [
-                        pending.to_json() for pending in self.approvals.pending_for(run_id)
-                    ],
-                },
-            )
+            # Subscribed already, so anything published from here on is queued. The replay
+            # is read *after* subscribing and de-duplicated against the queue below;
+            # reading it first would leave a gap exactly the width of the snapshot read.
+            resume_from = _last_event_id(request)
+            missed = self.registry.replay(run_id, resume_from) if resume_from is not None else None
+            replayed: set[str] = set()
+
+            if missed is not None:
+                # The client is close enough behind to be caught up event by event, so it
+                # keeps whatever it had derived rather than throwing it away and
+                # rebuilding from a snapshot it did not ask for.
+                await _send(
+                    writer,
+                    "state",
+                    {
+                        "subscriber_id": subscriber.subscriber_id,
+                        "controls": subscriber.controls,
+                        "wire_version": WIRE_VERSION,
+                        "resumed": True,
+                        "snapshot": None,
+                        "pending_approvals": [
+                            pending.to_json() for pending in self.approvals.pending_for(run_id)
+                        ],
+                    },
+                )
+                for missed_event in missed:
+                    replayed.add(missed_event.event_id)
+                    await _send(
+                        writer,
+                        "event",
+                        event_to_json(missed_event),
+                        event_id=missed_event.event_id,
+                    )
+            else:
+                record = await self.registry.snapshot(run_id)
+                await _send(
+                    writer,
+                    "state",
+                    {
+                        "subscriber_id": subscriber.subscriber_id,
+                        "controls": subscriber.controls,
+                        "wire_version": WIRE_VERSION,
+                        "resumed": False,
+                        "snapshot": session_to_json(record) if record else None,
+                        "pending_approvals": [
+                            pending.to_json() for pending in self.approvals.pending_for(run_id)
+                        ],
+                    },
+                )
+
             while True:
                 try:
                     event = await asyncio.wait_for(
@@ -471,11 +604,29 @@ class AthenaService:
                     continue
                 if event is None:
                     break
+                if event.event_id in replayed:
+                    # Queued during the replay window. Sending it twice would make a
+                    # client that counts things count them twice.
+                    continue
                 await _send(writer, "event", event_to_json(event), event_id=event.event_id)
         except (ConnectionResetError, BrokenPipeError):
             pass
         finally:
             self.registry.unsubscribe(subscriber)
+
+
+def _last_event_id(request: Request) -> str | None:
+    """Where a reconnecting client says it got to.
+
+    The header is what the SSE specification defines and what a browser sends by itself on
+    reconnect. The query parameter exists for clients that cannot set headers on the
+    request that opens the stream, which is more of them than one would hope.
+    """
+    header = request.headers.get("last-event-id")
+    if header and header.strip():
+        return header.strip()
+    query = request.query.get("last_event_id")
+    return query.strip() if query and query.strip() else None
 
 
 async def _send(

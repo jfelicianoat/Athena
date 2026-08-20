@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -46,6 +47,14 @@ from athena.workspace import Workspace
 #: How many events a slow client may fall behind before it is dropped rather than allowed
 #: to hold the runtime's memory hostage.
 _SUBSCRIBER_QUEUE_LIMIT = 512
+
+#: How many recent events a run keeps so a client that drops can pick up where it left off.
+#:
+#: Bounded on purpose. An unbounded journal would make the runtime's memory a function of
+#: how long a client stays away, which is not a number the runtime gets to choose. When a
+#: client has been gone longer than this, the snapshot is still there — it just costs a
+#: full resynchronisation instead of a replay.
+_REPLAY_BUFFER_SIZE = 256
 
 #: How long `start` waits for the loop to announce itself before giving up.
 _START_TIMEOUT_SECONDS = 10.0
@@ -119,10 +128,27 @@ class LiveRun:
     prompt: RemotePermissionPrompt | None = None
     subscribers: dict[str, Subscriber] = field(default_factory=dict)
     controller_id: str | None = None
+    #: The tail of this run's event stream, newest last. Ordering here is the ordering the
+    #: bus published in, which is what makes "preserve order per run" a property of the
+    #: transport rather than a hope about scheduling.
+    recent: deque[RuntimeEvent] = field(default_factory=lambda: deque(maxlen=_REPLAY_BUFFER_SIZE))
 
     @property
     def finished(self) -> bool:
         return self.task is not None and self.task.done()
+
+    def replay_after(self, event_id: str) -> tuple[RuntimeEvent, ...] | None:
+        """Events this run published after `event_id`, or `None` if it is too old.
+
+        `None` and `()` mean different things and the caller must tell them apart: an empty
+        tuple is "you are up to date", `None` is "that id fell out of the window, resync".
+        Collapsing them would silently let a client believe it had missed nothing.
+        """
+        buffered = tuple(self.recent)
+        for index, event in enumerate(buffered):
+            if event.event_id == event_id:
+                return buffered[index + 1 :]
+        return None
 
 
 class RunRegistry:
@@ -155,6 +181,10 @@ class RunRegistry:
         run = self._runs.get(event.session_id)
         if run is None:
             return
+        # Recorded before delivery, so an event a slow subscriber never received is still
+        # one it can replay. The buffer is the reason dropping a subscriber is survivable
+        # rather than lossy.
+        run.recent.append(event)
         for subscriber in tuple(run.subscribers.values()):
             try:
                 subscriber.queue.put_nowait(event)
@@ -362,6 +392,13 @@ class RunRegistry:
                 run.task.cancel()
                 with contextlib.suppress(BaseException):
                     await run.task
+
+    def replay(self, run_id: str, last_event_id: str) -> tuple[RuntimeEvent, ...] | None:
+        """What a reconnecting client missed, or `None` if it must resynchronise."""
+        run = self._runs.get(run_id)
+        if run is None:
+            return None
+        return run.replay_after(last_event_id)
 
     def live_ids(self) -> tuple[str, ...]:
         return tuple(self._runs)

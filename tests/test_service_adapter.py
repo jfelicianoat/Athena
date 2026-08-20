@@ -4,8 +4,9 @@ import asyncio
 import json
 import subprocess
 import sys
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -24,7 +25,7 @@ from athena.adapters.service.approvals import (
 )
 from athena.adapters.service.projections import session_to_json
 from athena.cancellation import CancellationToken
-from athena.events import EventName, InMemoryEventBus, ModelEvent
+from athena.events import EventName, InMemoryEventBus, ModelEvent, RuntimeEvent
 from athena.models import (
     ModelCapabilities,
     ModelHealth,
@@ -395,10 +396,13 @@ async def _request(
     *,
     token: str | None = "test-token",
     body: JSONObject | None = None,
+    headers: Mapping[str, str] | None = None,
 ) -> tuple[int, str]:
     reader, writer = await asyncio.open_connection(host, port)
     payload = json.dumps(body).encode("utf-8") if body is not None else b""
     lines = [f"{method} {path} HTTP/1.1", f"Host: {host}:{port}"]
+    for name, value in (headers or {}).items():
+        lines.append(f"{name}: {value}")
     if token:
         lines.append(f"Authorization: Bearer {token}")
     if payload:
@@ -759,5 +763,323 @@ def test_the_published_approval_carries_everything_a_human_needs(tmp_path: Path)
         assert argumentos["content"]["chars"] == 5_000
         assert "sk-abc123456789" not in json.dumps(payload)
         await registry.shutdown()
+
+    asyncio.run(scenario())
+
+
+# ------------------------------------------------------- reconnect, resume, idempotency
+
+
+async def _open_stream(
+    host: str,
+    port: int,
+    run_id: str,
+    *,
+    last_event_id: str | None = None,
+    token: str = "test-token",
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """Open the SSE stream the way a reconnecting client would."""
+    reader, writer = await asyncio.open_connection(host, port)
+    lines = [
+        f"GET /v1/runs/{run_id}/events HTTP/1.1",
+        f"Host: {host}:{port}",
+        f"Authorization: Bearer {token}",
+        "Accept: text/event-stream",
+    ]
+    if last_event_id is not None:
+        lines.append(f"Last-Event-ID: {last_event_id}")
+    writer.write(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1"))
+    await writer.drain()
+    await reader.readuntil(b"\r\n\r\n")
+    return reader, writer
+
+
+async def _read_frame(reader: asyncio.StreamReader) -> tuple[str, str, dict[str, Any]]:
+    """One SSE frame as (event id, event name, payload), skipping keepalives."""
+    event_id = ""
+    name = ""
+    while True:
+        raw = await asyncio.wait_for(reader.readline(), timeout=5.0)
+        line = raw.decode("utf-8").rstrip("\n")
+        if line.startswith(": "):
+            continue
+        if line.startswith("id: "):
+            event_id = line[4:]
+        elif line.startswith("event: "):
+            name = line[7:]
+        elif line.startswith("data: "):
+            payload = json.loads(line[6:])
+            assert isinstance(payload, dict)
+            return event_id, name, payload
+
+
+def test_a_reconnecting_client_resumes_from_the_last_event_it_saw(tmp_path: Path) -> None:
+    """The point of putting ids on the wire.
+
+    Without honouring `Last-Event-ID`, a client that drops for two seconds pays a full
+    resynchronisation and throws away everything it had derived — and anything the
+    snapshot does not happen to capture is simply lost.
+    """
+    root = _sandbox(tmp_path / "repo")
+
+    async def scenario() -> None:
+        registry = _registry(tmp_path, _ScriptedProvider([]))
+        service = AthenaService(registry, _config())
+        host, port = await service.start()
+        try:
+            run_id = await registry.start("Look", Workspace.from_path(root))
+            reader, writer = await _open_stream(host, port, run_id)
+            await _read_frame(reader)  # the state frame
+
+            registry._fan_out(RuntimeEvent(EventName.TOOL_STARTED, run_id, {"i": 1}))
+            first_id, _, _ = await _read_frame(reader)
+            writer.close()
+
+            # Missed while away.
+            for index in (2, 3):
+                registry._fan_out(RuntimeEvent(EventName.TOOL_STARTED, run_id, {"i": index}))
+
+            reader, writer = await _open_stream(host, port, run_id, last_event_id=first_id)
+            _, name, state = await _read_frame(reader)
+            assert name == "state"
+            assert state["resumed"] is True
+            assert state["snapshot"] is None, "a resume does not need a resynchronisation"
+
+            seen = [(await _read_frame(reader))[2]["payload"]["i"] for _ in range(2)]
+            writer.close()
+
+            assert seen == [2, 3], "in order, and only what was missed"
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
+def test_an_unknown_resume_point_falls_back_to_a_snapshot(tmp_path: Path) -> None:
+    # "Up to date" and "too far behind to replay" must not look the same. A client that
+    # was away longer than the buffer has to be told to resynchronise, not reassured.
+    root = _sandbox(tmp_path / "repo")
+
+    async def scenario() -> None:
+        registry = _registry(tmp_path, _ScriptedProvider([]))
+        service = AthenaService(registry, _config())
+        host, port = await service.start()
+        try:
+            run_id = await registry.start("Look", Workspace.from_path(root))
+            reader, writer = await _open_stream(
+                host, port, run_id, last_event_id="an-id-from-another-life"
+            )
+            _, name, state = await _read_frame(reader)
+            writer.close()
+
+            assert name == "state"
+            assert state["resumed"] is False
+            assert state["snapshot"] is not None
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
+def test_events_arriving_during_a_replay_are_not_sent_twice(tmp_path: Path) -> None:
+    # The stream subscribes before reading the buffer, so the window between them is
+    # covered twice. A client that counts things would otherwise count them twice.
+    root = _sandbox(tmp_path / "repo")
+
+    async def scenario() -> None:
+        registry = _registry(tmp_path, _ScriptedProvider([]))
+        service = AthenaService(registry, _config())
+        host, port = await service.start()
+        try:
+            run_id = await registry.start("Look", Workspace.from_path(root))
+            reader, writer = await _open_stream(host, port, run_id)
+            await _read_frame(reader)
+            registry._fan_out(RuntimeEvent(EventName.TOOL_STARTED, run_id, {"i": 1}))
+            first_id, _, _ = await _read_frame(reader)
+            writer.close()
+
+            registry._fan_out(RuntimeEvent(EventName.TOOL_STARTED, run_id, {"i": 2}))
+            reader, writer = await _open_stream(host, port, run_id, last_event_id=first_id)
+            await _read_frame(reader)
+            replayed_id, _, payload = await _read_frame(reader)
+            assert payload["payload"]["i"] == 2
+
+            registry._fan_out(RuntimeEvent(EventName.TOOL_STARTED, run_id, {"i": 3}))
+            next_id, _, following = await _read_frame(reader)
+            writer.close()
+
+            assert next_id != replayed_id
+            assert following["payload"]["i"] == 3
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
+def test_the_replay_buffer_does_not_grow_without_bound(tmp_path: Path) -> None:
+    """A journal sized by how long a client stays away is a journal the runtime cannot
+    afford. Past the window the answer is a snapshot, which always works."""
+    root = _sandbox(tmp_path / "repo")
+
+    async def scenario() -> None:
+        registry = _registry(tmp_path, _ScriptedProvider([]))
+        run_id = await registry.start("Look", Workspace.from_path(root))
+        first = RuntimeEvent(EventName.TOOL_STARTED, run_id, {"i": 0})
+        registry._fan_out(first)
+        for index in range(1, 400):
+            registry._fan_out(RuntimeEvent(EventName.TOOL_STARTED, run_id, {"i": index}))
+
+        assert registry.replay(run_id, first.event_id) is None, "aged out, so resynchronise"
+        await registry.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_a_repeated_create_run_makes_one_run(tmp_path: Path) -> None:
+    """A retry is not a second request.
+
+    Two agents on one workspace is exactly what a client retrying a timed-out POST is
+    trying to avoid, and starting a run is not the kind of thing that can be undone by
+    noticing later.
+    """
+    root = _sandbox(tmp_path / "repo")
+
+    async def scenario() -> None:
+        registry = _registry(tmp_path, _ScriptedProvider([]))
+        service = AthenaService(registry, _config())
+        host, port = await service.start()
+        try:
+            body = {"objective": "Look around", "workspace": str(root), "writes": "off"}
+            first_status, first_body = await _request(
+                host, port, "POST", "/v1/runs", body=body, headers={"Idempotency-Key": "k-1"}
+            )
+            second_status, second_body = await _request(
+                host, port, "POST", "/v1/runs", body=body, headers={"Idempotency-Key": "k-1"}
+            )
+
+            assert first_status == 201
+            assert second_status == 200
+            assert json.loads(first_body)["run_id"] == json.loads(second_body)["run_id"]
+            assert json.loads(second_body)["idempotent_replay"] is True
+            assert len(registry.live_ids()) == 1
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
+def test_two_concurrent_retries_of_one_key_still_make_one_run(tmp_path: Path) -> None:
+    # The window that matters is the one where the first call has not finished. A
+    # check-then-act across `await registry.start(...)` would let both callers miss.
+    root = _sandbox(tmp_path / "repo")
+
+    async def scenario() -> None:
+        registry = _registry(tmp_path, _ScriptedProvider([]))
+        service = AthenaService(registry, _config())
+        host, port = await service.start()
+        try:
+            body = {"objective": "Look around", "workspace": str(root), "writes": "off"}
+            results = await asyncio.gather(
+                *(
+                    _request(
+                        host,
+                        port,
+                        "POST",
+                        "/v1/runs",
+                        body=body,
+                        headers={"Idempotency-Key": "same"},
+                    )
+                    for _ in range(4)
+                )
+            )
+
+            run_ids = {json.loads(payload)["run_id"] for _, payload in results}
+            assert len(run_ids) == 1
+            assert len(registry.live_ids()) == 1
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
+def test_different_keys_make_different_runs(tmp_path: Path) -> None:
+    root = _sandbox(tmp_path / "repo")
+
+    async def scenario() -> None:
+        registry = _registry(tmp_path, _ScriptedProvider([]))
+        service = AthenaService(registry, _config())
+        host, port = await service.start()
+        try:
+            body = {"objective": "Look around", "workspace": str(root), "writes": "off"}
+            for key in ("a", "b"):
+                await _request(
+                    host, port, "POST", "/v1/runs", body=body, headers={"Idempotency-Key": key}
+                )
+
+            assert len(registry.live_ids()) == 2
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
+def test_a_failed_create_does_not_poison_the_key(tmp_path: Path) -> None:
+    # Caching a failure would leave the caller unable to ever succeed with that key, which
+    # turns a transient problem into a permanent one.
+    root = _sandbox(tmp_path / "repo")
+
+    async def scenario() -> None:
+        registry = _registry(tmp_path, _ScriptedProvider([]))
+        service = AthenaService(registry, _config())
+        host, port = await service.start()
+        try:
+            bad = {"objective": "", "workspace": str(root)}
+            status, _ = await _request(
+                host, port, "POST", "/v1/runs", body=bad, headers={"Idempotency-Key": "retry"}
+            )
+            assert status == 400
+
+            good = {"objective": "Look around", "workspace": str(root), "writes": "off"}
+            status, payload = await _request(
+                host, port, "POST", "/v1/runs", body=good, headers={"Idempotency-Key": "retry"}
+            )
+
+            assert status == 201
+            assert json.loads(payload)["run_id"]
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
+def test_an_internal_failure_does_not_name_a_python_exception(tmp_path: Path) -> None:
+    """A caller learns that Athena failed, not how Athena is built.
+
+    `KeyError` on the wire tells someone about the inside of the process and tells them
+    nothing they can act on.
+    """
+    root = _sandbox(tmp_path / "repo")
+
+    async def scenario() -> None:
+        registry = _registry(tmp_path, _ScriptedProvider([]))
+        service = AthenaService(registry, _config())
+
+        async def explode(request: object) -> None:
+            del request
+            raise KeyError("an internal detail nobody outside should read")
+
+        service._route = explode  # type: ignore[assignment, method-assign]
+        host, port = await service.start()
+        try:
+            status, payload = await _request(
+                host, port, "POST", "/v1/runs", body={"objective": "x", "workspace": str(root)}
+            )
+
+            assert status == 500
+            assert "KeyError" not in payload
+            assert "internal detail" not in payload
+            assert json.loads(payload)["error"]["code"] == "internal_error"
+        finally:
+            await service.stop()
 
     asyncio.run(scenario())

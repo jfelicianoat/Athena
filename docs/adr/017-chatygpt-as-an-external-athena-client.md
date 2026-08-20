@@ -81,6 +81,11 @@ it is a mapping, not a design.
 
 ### 5. Reconnection is snapshot-then-tail, not an event log
 
+> **Amended by ADR-021 (2026-08-20).** A bounded in-memory replay buffer now lets a client
+> that sends `Last-Event-ID` be caught up event by event. The reasoning below still holds
+> and still governs the fallback: the buffer is not persisted, is bounded by a constant,
+> and is never the source of truth.
+
 Athena deliberately persists **structured state**, not a transcript (ADR-008, ADR-013).
 Building an event journal to replay would contradict that and duplicate the session store.
 

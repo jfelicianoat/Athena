@@ -38,3 +38,7 @@ of rewritten history.
   [A channel is an adapter, not a feature](019-a-channel-is-an-adapter-not-a-feature.md)
 - ADR-020:
   [Identity is claimed, never inferred](020-identity-is-claimed-never-inferred.md)
+- ADR-021:
+  [Resume by event id, and create runs idempotently](021-resume-by-event-id-and-idempotent-creation.md)
+- ADR-022:
+  [A plan has to be earned, and then it has to survive validation](022-plans-are-earned-and-validated.md)
