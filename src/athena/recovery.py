@@ -13,19 +13,18 @@ from enum import StrEnum
 from athena.errors import (
     AthenaRuntimeError,
     BudgetExceededError,
-    CancellationError,
     ContextOverflowError,
     FatalRuntimeError,
     ModelPermanentError,
     ModelTransientError,
     PermissionDeniedError,
-    ProcessCancelledError,
     ProcessTimeoutError,
     ToolExecutionError,
     ToolValidationError,
     VerificationFailure,
     WorkspaceBoundaryError,
 )
+from athena.state import ExecutionOutcome, classify_outcome
 
 
 class RecoveryAction(StrEnum):
@@ -96,9 +95,16 @@ class RecoveryPolicy:
         self.provider_fallback = provider_fallback
 
     def decide(self, error: AthenaRuntimeError) -> RecoveryDirective:
-        # Cancellation first: it outranks whatever the failing operation was.
-        if isinstance(error, (CancellationError, ProcessCancelledError)):
-            return RecoveryDirective(RecoveryAction.CANCELLED, "The session was cancelled.")
+        # Being stopped outranks whatever the failing operation was, and what counts as
+        # "stopped" is decided in one place so this cannot drift from the loop's answer.
+        outcome = classify_outcome(error)
+        if outcome.is_stopped_deliberately:
+            wording = (
+                "The session ran out of time."
+                if outcome is ExecutionOutcome.TIMED_OUT
+                else "The session was cancelled."
+            )
+            return RecoveryDirective(RecoveryAction.CANCELLED, wording)
         if isinstance(error, WorkspaceBoundaryError):
             return RecoveryDirective(
                 RecoveryAction.ABORT,

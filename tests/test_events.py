@@ -31,7 +31,13 @@ def test_event_bus_filters_orders_and_unsubscribes_handlers() -> None:
 
 
 def test_required_event_vocabulary_is_frozen() -> None:
-    assert {event.value for event in EventName} == {
+    """The H0 names may never be removed. Adding to them is how the runtime grows.
+
+    Asserting equality would mean no milestone could ever name a new fact — which every
+    milestone since H0 has done, `subagent.*` and `recovery.*` among them. What has to hold
+    is that nothing a consumer already depends on quietly disappears.
+    """
+    required = {
         "agent.started",
         "agent.completed",
         "agent.failed",
@@ -66,4 +72,6 @@ def test_required_event_vocabulary_is_frozen() -> None:
         "subagent.failed",
         "subagent.cancelled",
     }
+
+    assert required <= {event.value for event in EventName}
     assert issubclass(AgentEvent, RuntimeEvent)

@@ -1,7 +1,12 @@
 """Foundational contracts for the Athena agent runtime."""
 
 from athena.agent_loop import AgentLoop, AgentLoopConfig, AgentRunResult, AgentRunStatus
-from athena.cancellation import CancellationSource, CancellationToken
+from athena.cancellation import (
+    CancellationReason,
+    CancellationScope,
+    CancellationSource,
+    CancellationToken,
+)
 from athena.channels import (
     HELP_TEXT,
     NEW_INTERACTION_TEXT,
@@ -24,6 +29,8 @@ from athena.concurrency import (
     ScheduledBatch,
 )
 from athena.context import ContextBuilder
+from athena.delegation import DELEGATE_TASK_SPEC, DelegationRequest, narrow
+from athena.diagnosis import FailureDiagnosis, FailureKind, diagnose, diagnose_result
 from athena.errors import AthenaRuntimeError
 from athena.events import (
     AgentEvent,
@@ -44,6 +51,7 @@ from athena.git_tools import (
     GitStatusTool,
     git_read_tools,
 )
+from athena.graph_executor import GraphExecutor, GraphResult, TaskEvidence
 from athena.hooks import (
     Hook,
     HookContext,
@@ -72,6 +80,7 @@ from athena.memory import (
     ProjectMemory,
     WorkingMemory,
 )
+from athena.metrics import AggregateMetrics, MetricsCollector, RunMetrics, SqliteMetricsStore
 from athena.models import (
     ModelCapabilities,
     ModelProvider,
@@ -102,6 +111,12 @@ from athena.planning import (
     parse_plan,
 )
 from athena.process_tools import BashTool, CommandPolicy
+from athena.project_memory import (
+    MemoryKind,
+    ProjectMemoryItem,
+    SqliteProjectMemory,
+)
+from athena.provider_router import ProviderEntry, ProviderRegistry, ProviderRouter
 from athena.recovery import RecoveryAction, RecoveryDirective, RecoveryPolicy
 from athena.registry import ToolRegistry
 from athena.repository_tools import (
@@ -119,7 +134,7 @@ from athena.session_store import (
     SqliteSessionStore,
 )
 from athena.skills import SkillManifest, SkillRegistry, SkillSelection
-from athena.state import AgentState, SessionState
+from athena.state import AgentState, ExecutionOutcome, SessionState, classify_outcome
 from athena.stores import (
     InMemoryToolResultStore,
     SqliteToolResultStore,
@@ -175,6 +190,7 @@ from athena.workspaces import (
 
 __all__ = [
     "CODER_PROFILE",
+    "DELEGATE_TASK_SPEC",
     "EXPLORER_PROFILE",
     "HELP_TEXT",
     "NEW_INTERACTION_TEXT",
@@ -186,10 +202,13 @@ __all__ = [
     "AgentRunResult",
     "AgentRunStatus",
     "AgentState",
+    "AggregateMetrics",
     "AthenaRuntimeError",
     "BackgroundProcess",
     "BackgroundProcessSupervisor",
     "BashTool",
+    "CancellationReason",
+    "CancellationScope",
     "CancellationSource",
     "CancellationToken",
     "ChangeIntegrityPolicy",
@@ -213,11 +232,15 @@ __all__ = [
     "DecompositionDecision",
     "DecompositionPolicy",
     "DecompositionSignals",
+    "DelegationRequest",
     "EditFileTool",
     "EventBus",
     "EventCheckpoint",
     "EventName",
+    "ExecutionOutcome",
     "ExplorerReport",
+    "FailureDiagnosis",
+    "FailureKind",
     "FileEvent",
     "GitCommitTool",
     "GitDiffTool",
@@ -225,6 +248,8 @@ __all__ = [
     "GitShowTool",
     "GitStatusTool",
     "GlobTool",
+    "GraphExecutor",
+    "GraphResult",
     "GrepTool",
     "Hook",
     "HookContext",
@@ -247,6 +272,8 @@ __all__ = [
     "McpTool",
     "McpToolDescriptor",
     "McpToolPolicy",
+    "MemoryKind",
+    "MetricsCollector",
     "MicroCompaction",
     "ModelCapabilities",
     "ModelEvent",
@@ -268,6 +295,10 @@ __all__ = [
     "ProcessEvent",
     "ProcessState",
     "ProjectMemory",
+    "ProjectMemoryItem",
+    "ProviderEntry",
+    "ProviderRegistry",
+    "ProviderRouter",
     "ReadFileTool",
     "ReadRangeTool",
     "RecoveryAction",
@@ -277,6 +308,7 @@ __all__ = [
     "ResourceClaim",
     "ResponseKind",
     "RiskTier",
+    "RunMetrics",
     "RuntimeEvent",
     "ScheduledBatch",
     "SessionRecord",
@@ -287,6 +319,8 @@ __all__ = [
     "SkillRegistry",
     "SkillSelection",
     "SqliteIdentityDirectory",
+    "SqliteMetricsStore",
+    "SqliteProjectMemory",
     "SqliteSessionStore",
     "SqliteToolResultStore",
     "SubagentBrief",
@@ -297,6 +331,7 @@ __all__ = [
     "SubagentRunner",
     "TaskBudget",
     "TaskBudgetTracker",
+    "TaskEvidence",
     "TaskGraph",
     "TaskManager",
     "TaskNode",
@@ -327,9 +362,13 @@ __all__ = [
     "WorkspaceLease",
     "WorkspaceStrategy",
     "WriteFileTool",
+    "classify_outcome",
     "default_strategies",
+    "diagnose",
+    "diagnose_result",
     "git_read_tools",
     "mcp_tools",
+    "narrow",
     "parse_command",
     "parse_plan",
     "render_event",

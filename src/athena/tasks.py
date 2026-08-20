@@ -19,9 +19,15 @@ from enum import StrEnum
 from pathlib import Path
 from uuid import uuid4
 
-from athena.cancellation import CancellationSource, CancellationToken
+from athena.cancellation import (
+    CancellationScope,
+    CancellationSource,
+    CancellationToken,
+    chained_source,
+)
 from athena.errors import AthenaRuntimeError, BudgetExceededError
 from athena.process_tools import _spawn_process, _terminate_tree
+from athena.state import classify_outcome
 from athena.types import JSONObject
 
 
@@ -41,6 +47,10 @@ _TERMINAL = frozenset(
     {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED, TaskState.KILLED}
 )
 _LIVE = frozenset({TaskState.PENDING, TaskState.RUNNING})
+
+#: How long a task gets to notice it was cancelled before it is killed. Long enough for a
+#: body between two awaits, short enough that nobody watches a stuck task for a minute.
+DEFAULT_CANCEL_GRACE_SECONDS = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,14 +210,17 @@ class TaskManager:
         parent_cancellation: CancellationToken | None = None,
     ) -> str:
         task_id = str(uuid4())
-        source = CancellationSource()
         parent_token = parent_cancellation
         if parent_token is None and parent_id is not None:
             parent_source = self._sources.get(parent_id)
             parent_token = parent_source.token if parent_source else None
-        if parent_token is not None:
-            # Chained, not copied: the parent stopping is the child stopping.
-            parent_token.register(source.cancel)
+        if parent_token is None:
+            source = CancellationSource(CancellationScope.TASK)
+        else:
+            # Chained, not copied: the parent stopping is the child stopping, and the
+            # child stopping leaves the parent alone. That asymmetry lives in
+            # `CancellationSource` so every level of the hierarchy gets the same one.
+            source = chained_source(parent_token, CancellationScope.TASK)
         tracker = TaskBudgetTracker(budget)
         self._records[task_id] = TaskRecord(task_id, name, TaskState.PENDING, parent_id)
         self._sources[task_id] = source
@@ -248,7 +261,15 @@ class TaskManager:
             raise BudgetExceededError("Task exceeded its wall-clock budget") from None
         except AthenaRuntimeError as exc:
             await self._teardown(task_id)
-            self._transition(task_id, TaskState.FAILED, error_code=exc.code, message=exc.message)
+            # A body that cooperates stops by raising, and what it raises is a
+            # cancellation. Filing that under FAILED would punish the task for doing
+            # exactly what it was asked to do, and would make a cancelled run look broken.
+            if classify_outcome(exc).is_stopped_deliberately:
+                self._transition(task_id, TaskState.CANCELLED, message=exc.message)
+            else:
+                self._transition(
+                    task_id, TaskState.FAILED, error_code=exc.code, message=exc.message
+                )
             raise
         except Exception as exc:
             await self._teardown(task_id)
@@ -269,13 +290,33 @@ class TaskManager:
             raise AthenaRuntimeError(f"Unknown task: {task_id}")
         return await task
 
-    async def cancel(self, task_id: str) -> None:
-        """Ask a task and its whole subtree to stop."""
+    async def cancel(
+        self, task_id: str, *, grace_seconds: float = DEFAULT_CANCEL_GRACE_SECONDS
+    ) -> None:
+        """Ask a task and its whole subtree to stop, then make sure they did.
+
+        Cancellation is cooperative, and cooperation is not guaranteed: a body that never
+        checks its token would otherwise sit in `running` for ever, which is the state a
+        person waits on and a restart tries to resurrect. So the ask is followed by a
+        bounded wait and then by force — the same shape as SIGTERM before SIGKILL, and for
+        the same reason.
+
+        A task that stops when asked ends `cancelled`. One that had to be killed ends
+        `killed`, because the difference is worth keeping: the second means something in
+        that body ignores its token.
+        """
         for child in self.children_of(task_id):
-            await self.cancel(child)
+            await self.cancel(child, grace_seconds=grace_seconds)
         source = self._sources.get(task_id)
         if source is not None:
             source.cancel()
+        task = self._tasks.get(task_id)
+        if task is None or task.done():
+            return
+        with contextlib.suppress(BaseException):
+            await asyncio.wait_for(asyncio.shield(task), timeout=grace_seconds)
+        if not task.done():
+            await self.kill(task_id)
 
     async def kill(self, task_id: str) -> None:
         """Stop it now, and take its processes with it."""

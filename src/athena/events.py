@@ -33,6 +33,15 @@ class EventName(StrEnum):
     VERIFICATION_CHECK_COMPLETED = "verification.check.completed"
     VERIFICATION_FAILED = "verification.failed"
     VERIFICATION_COMPLETED = "verification.completed"
+    #: The graph level, which is a real level and not a synonym for the run. A task uses a
+    #: subagent; it is not one, and a view that conflated them could not draw the plan.
+    GRAPH_STARTED = "graph.started"
+    GRAPH_COMPLETED = "graph.completed"
+    GRAPH_FAILED = "graph.failed"
+    GRAPH_CANCELLED = "graph.cancelled"
+    TASK_STARTED = "task.started"
+    TASK_COMPLETED = "task.completed"
+    TASK_FAILED = "task.failed"
     SUBAGENT_STARTED = "subagent.started"
     SUBAGENT_COMPLETED = "subagent.completed"
     SUBAGENT_FAILED = "subagent.failed"

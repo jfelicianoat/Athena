@@ -13,6 +13,7 @@ from athena.async_utils import await_cancellable
 from athena.budget import BudgetLimits, RuntimeBudget
 from athena.cancellation import CancellationToken
 from athena.context import ContextBuilder
+from athena.diagnosis import diagnose_result
 from athena.errors import (
     AthenaRuntimeError,
     BudgetExceededError,
@@ -55,7 +56,13 @@ from athena.session_store import (
     SessionStoreError,
 )
 from athena.skills import SkillRegistry, SkillSelection, render_skills
-from athena.state import AgentState, AgentStatus, BudgetState, SessionState
+from athena.state import (
+    AgentState,
+    AgentStatus,
+    BudgetState,
+    SessionState,
+    classify_outcome,
+)
 from athena.tool_executor import ToolExecutor
 from athena.tool_search import TOOL_SEARCH_NAME
 from athena.tools import ToolResultReference
@@ -261,6 +268,10 @@ class AgentLoop:
                 tool_call_ids=tuple(data.seen_call_ids),
             )
         except (CancellationError, ProcessCancelledError) as exc:
+            # Classified rather than assumed: a cancellation raised because a deadline
+            # passed is a timeout, and telling the person their work was abandoned when a
+            # limit they set was reached is the wrong story.
+            outcome = classify_outcome(exc)
             cancelled = self._set_status(data.session, AgentStatus.CANCELLED, exc.code)
             await self._persist(
                 data, workspace, AgentStatus.CANCELLED, "cancelled", {"error_code": exc.code}
@@ -269,7 +280,11 @@ class AgentLoop:
                 AgentEvent(
                     EventName.AGENT_CANCELLED,
                     session_id,
-                    {"error_code": exc.code, "message": exc.message},
+                    {
+                        "error_code": exc.code,
+                        "message": exc.message,
+                        "outcome": outcome.value,
+                    },
                 )
             )
             await self._finish(data, "cancelled", exc.code, exc.message)
@@ -689,6 +704,8 @@ class AgentLoop:
                     "reference_uri": result.reference.uri if result.reference else None,
                 }
             except (CancellationError, ProcessCancelledError):
+                # Being stopped is not a tool failure, so it does not go to the recovery
+                # policy and does not become a recorded error against the task.
                 raise
             except AthenaRuntimeError as exc:
                 directive = self.recovery.decide(exc)
@@ -811,6 +828,29 @@ class AgentLoop:
                 f"Verification still failing after {data.repair_cycles} repair cycle(s): "
                 f"{verification.summary}"
             )
+        # Read the failure before asking anyone to fix it. A wall of pytest output is a
+        # lot to hand a small model; telling it which *kind* of problem this is turns the
+        # next cycle from a guess into a direction.
+        diagnosis = diagnose_result(verification)
+        if not diagnosis.is_worth_repairing:
+            # A missing package or a full disk will not be fixed by editing code, and
+            # spending a cycle letting the model try is how a run burns its budget looking
+            # busy. Stop and say what is actually wrong.
+            await self.event_bus.publish(
+                RecoveryEvent(
+                    EventName.RECOVERY_EXHAUSTED,
+                    session_id,
+                    {
+                        "error_code": "verification_failure",
+                        "repair_cycles": data.repair_cycles,
+                        "diagnosis": diagnosis.kind.value,
+                    },
+                )
+            )
+            raise VerificationFailure(
+                f"{diagnosis.summary} No repair cycle can address this: {diagnosis.guidance}"
+            )
+
         data.repair_cycles += 1
         data.working = data.working.noting(
             decisions=(f"Repair cycle {data.repair_cycles}: {verification.summary}",),
@@ -823,6 +863,7 @@ class AgentLoop:
                 {
                     "action": RecoveryAction.RETURN_EVIDENCE.value,
                     "repair_cycle": data.repair_cycles,
+                    "diagnosis": diagnosis.kind.value,
                 },
             )
         )
@@ -831,6 +872,8 @@ class AgentLoop:
                 ModelRole.USER,
                 "Your change did not pass verification. Do not weaken, skip or delete "
                 "any check. Fix the underlying problem and finish again.\n\n"
+                + diagnosis.render()
+                + "\n\n"
                 + evidence_digest(verification),
             )
         )

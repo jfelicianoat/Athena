@@ -176,13 +176,27 @@ def test_the_window_falls_back_to_recent_turns_when_compaction_is_not_enough() -
     assert "window trimmed" in " ".join(report.reasons)
 
 
-def test_project_memory_is_an_interface_with_no_automatic_implementation() -> None:
-    import athena
+def test_nothing_is_ever_remembered_automatically() -> None:
+    """What H4 actually decided, checked as a rule rather than as an absence.
 
-    assert hasattr(athena, "ProjectMemory")
-    concrete = [
-        name
-        for name in athena.__all__
-        if name.endswith("ProjectMemory") and name != "ProjectMemory"
-    ]
-    assert concrete == [], "H4 deliberately ships no automatic project memory"
+    The original form of this test asserted that no concrete store existed at all, which
+    was true and is no longer: `SqliteProjectMemory` shipped in P5. The decision it was
+    protecting survives intact — a store exists, and there is still no path by which a
+    conclusion becomes a remembered fact without someone asking for it.
+    """
+    import inspect
+
+    import athena
+    from athena.project_memory import SqliteProjectMemory, VerificationState
+
+    assert hasattr(athena, "ProjectMemory"), "the interface is still the contract"
+
+    # `propose` is the only way in, and it hard-codes the weakest standing. An agent that
+    # could write `VERIFIED` would be grading its own homework.
+    assert not hasattr(SqliteProjectMemory, "remember")
+    source = inspect.getsource(SqliteProjectMemory.propose)
+    assert "verification_state" not in source, "propose cannot be argued into a higher state"
+
+    signature = inspect.signature(SqliteProjectMemory.propose)
+    assert "confidence" not in signature.parameters, "the writer does not grade itself"
+    assert VerificationState.PROPOSED.value == "proposed"
