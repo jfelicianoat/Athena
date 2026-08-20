@@ -284,7 +284,7 @@ def test_the_rates_the_report_asks_for_are_computed() -> None:
         _run("a", status="completed"),
         _run("b", status="completed", repair_cycles=2),
         _run("c", status="failed", verification_failures=1),
-        _run("d", status="completed", permission_requests=3, subagents_spawned=2),
+        _run("d", status="completed", permission_requests=3, tasks_total=2),
     ]
 
     summary = aggregate(runs)
@@ -351,12 +351,8 @@ def test_the_two_architectures_can_be_compared(tmp_path: Path) -> None:
         store = SqliteMetricsStore(tmp_path / "metrics.db")
         await store.save(_run("flat-1", status="failed", hierarchical=False, repair_cycles=3))
         await store.save(_run("flat-2", status="completed", hierarchical=False, repair_cycles=1))
-        await store.save(
-            _run("graph-1", status="completed", hierarchical=True, subagents_spawned=3)
-        )
-        await store.save(
-            _run("graph-2", status="completed", hierarchical=True, subagents_spawned=2)
-        )
+        await store.save(_run("graph-1", status="completed", hierarchical=True, tasks_total=3))
+        await store.save(_run("graph-2", status="completed", hierarchical=True, tasks_total=2))
 
         comparison = await store.compare()
         flat = comparison["monoagent"]

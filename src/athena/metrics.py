@@ -55,6 +55,9 @@ class RunMetrics:
     tasks_total: int = 0
     tasks_completed: int = 0
     tasks_failed: int = 0
+    #: Subagents this *session* started. On a parent run this stays zero: a delegate's
+    #: events belong to the delegate, which is the correct attribution and the reason the
+    #: run-level rate above is computed from `tasks_total` instead.
     subagents_spawned: int = 0
 
     repair_cycles: int = 0
@@ -252,7 +255,11 @@ def aggregate(runs: Sequence[RunMetrics]) -> AggregateMetrics:
         #: How often a person had to be asked anything. The number that says whether the
         #: agent is autonomous or merely supervised.
         intervention_rate=sum(1 for run in runs if run.permission_requests) / total,
-        subagent_usage=sum(1 for run in runs if run.subagents_spawned) / total,
+        #: Measured by delegation rather than by `subagents_spawned`, and the difference
+        #: matters: a subagent's own events carry the *child's* session id, so they never
+        #: land on the parent's counters. What the run knows is how many tasks it handed
+        #: out, and in this runtime a task is executed by a subagent.
+        subagent_usage=sum(1 for run in runs if run.tasks_total) / total,
     )
 
 

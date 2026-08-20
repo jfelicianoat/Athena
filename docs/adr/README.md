@@ -42,3 +42,5 @@ of rewritten history.
   [Resume by event id, and create runs idempotently](021-resume-by-event-id-and-idempotent-creation.md)
 - ADR-022:
   [A plan has to be earned, and then it has to survive validation](022-plans-are-earned-and-validated.md)
+- ADR-023:
+  [The executor joins what already existed](023-the-executor-joins-what-already-existed.md)
