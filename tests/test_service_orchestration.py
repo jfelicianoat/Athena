@@ -20,6 +20,7 @@ import pytest
 
 from athena.adapters.service.approvals import PendingApproval
 from athena.adapters.service.orchestration import (
+    ExecutionMode,
     OrchestrationSettings,
     Orchestrator,
     _budgeted,
@@ -219,6 +220,7 @@ def test_one_verifiable_output_stays_on_the_loop(tmp_path: Path) -> None:
     workspace = _sandbox(tmp_path / "repo")
     shape = _orchestrator(tmp_path, planning=True).decide(workspace, "fix a typo", WEAK)
     assert not shape.hierarchical
+    assert shape.mode is ExecutionMode.AUTO
     assert "one verifiable output" in shape.decision.explanation.lower()
 
 
@@ -248,29 +250,72 @@ def test_what_a_caller_supplies_cannot_overrule_what_the_repository_shows(
     assert "has_meaningful_dependencies" in shape.assumed
 
 
-def test_planning_stays_off_however_loudly_it_is_asked_for(tmp_path: Path) -> None:
-    """A client's preference cannot switch on a layer the deployment did not configure.
+def test_direct_never_asks_the_repository_anything(tmp_path: Path) -> None:
+    """`direct` es una orden, no una preferencia: ni se mide ni se delibera.
 
-    The distinction matters because "the operator has not enabled planning" and "this goal
-    does not need planning" are different answers, and only one of them is the client's to
-    overrule.
+    Leer el repositorio para después ignorar la lectura sería trabajo cuyo resultado ya no
+    puede cambiar nada, y dejaría un informe con señales que no se usaron para decidir.
     """
     workspace = _wide_sandbox(tmp_path / "wide")
-    shape = _orchestrator(tmp_path, planning=False).decide(
-        workspace, "rework the parser", STRONG, requested=True
-    )
-    assert not shape.hierarchical
-
-
-def test_a_client_may_decline_the_graph_it_would_have_got(tmp_path: Path) -> None:
-    workspace = _wide_sandbox(tmp_path / "wide")
     shape = _orchestrator(tmp_path, planning=True).decide(
-        workspace, "rework the parser", STRONG, requested=False
+        workspace, "rework the parser", STRONG, mode=ExecutionMode.DIRECT
     )
     assert not shape.hierarchical
-    # The evidence is still reported: the run was not decomposed because it was declined,
-    # which is not the same as the policy having said no.
-    assert shape.decision.decompose
+    assert shape.mode is ExecutionMode.DIRECT
+    assert shape.signals == DecompositionSignals()
+    assert "directly" in shape.decision.explanation
+
+
+def test_hierarchical_overrules_a_policy_that_would_have_said_no(tmp_path: Path) -> None:
+    """Un objetivo simple pedido en modo grafo sale por el grafo.
+
+    Es el modo de las pruebas, el depurado y los benchmarks: quien lo pide quiere observar
+    el grafo, y darle el bucle mediría otra cosa sin decírselo.
+    """
+    workspace = _sandbox(tmp_path / "repo")
+    shape = _orchestrator(tmp_path, planning=True).decide(
+        workspace, "fix a typo", WEAK, mode=ExecutionMode.HIERARCHICAL
+    )
+    assert shape.hierarchical
+    # La política sigue diciendo lo que piensa; lo que cambia es quién decide.
+    assert not shape.decision.decompose
+
+
+def test_a_deployment_without_planning_refuses_the_mode_instead_of_downgrading_it(
+    tmp_path: Path,
+) -> None:
+    """Negarse es más útil que dar un bucle disfrazado de grafo.
+
+    "El operador no ha activado la planificación" y "este objetivo no la necesita" son
+    respuestas distintas, y sólo una de las dos es del cliente. Devolver un run que se
+    presenta como cualquier otro corrompería la medición en vez de fallarla.
+    """
+    workspace = _wide_sandbox(tmp_path / "wide")
+    orquestador = _orchestrator(tmp_path, planning=False)
+
+    with pytest.raises(ToolValidationError, match="auto or direct"):
+        orquestador.decide(workspace, "rework the parser", STRONG, mode=ExecutionMode.HIERARCHICAL)
+
+    # `auto` y `direct` siguen sirviendo: lo que falta es la capa, no el servicio.
+    assert not orquestador.decide(workspace, "rework the parser", STRONG).hierarchical
+
+
+def test_the_mode_travels_with_the_shape_it_produced(tmp_path: Path) -> None:
+    """Lo pedido y lo ocurrido se informan por separado.
+
+    En `auto` no coinciden por casualidad: uno es la pregunta y el otro la respuesta, y un
+    cliente que quiera explicar por qué su run fue como fue necesita los dos.
+    """
+    workspace = _wide_sandbox(tmp_path / "wide")
+    informe = (
+        _orchestrator(tmp_path, planning=True)
+        .decide(workspace, "rework the parser", STRONG)
+        .to_json()
+    )
+
+    assert informe["execution_mode"] == "auto"
+    assert informe["hierarchical"] is True
+    assert informe["reasons"]
 
 
 # ------------------------------------------------------------------ the graph path
@@ -298,7 +343,7 @@ def test_a_graph_run_is_addressable_and_ends_like_any_other(tmp_path: Path) -> N
             RunOptions(
                 writes=CapabilityMode.ALLOW,
                 execution=CapabilityMode.ALLOW,
-                hierarchical=True,
+                execution_mode=ExecutionMode.HIERARCHICAL,
             ),
         )
         try:
@@ -351,7 +396,9 @@ def test_a_run_is_fetchable_before_the_plan_exists(tmp_path: Path) -> None:
         slow = _SlowPlanner()
         registry = _registry(tmp_path, slow, bus)
         run_id = await registry.start(
-            "investigate the addition path", workspace, RunOptions(hierarchical=True)
+            "investigate the addition path",
+            workspace,
+            RunOptions(execution_mode=ExecutionMode.HIERARCHICAL),
         )
         try:
             record = await registry.snapshot(run_id)
@@ -383,32 +430,32 @@ class _SlowPlanner(_Scripted):
         self.released.set()
 
 
-def test_a_refused_plan_runs_directly_instead_of_failing_the_run(tmp_path: Path) -> None:
-    """A plan that cannot be validated is a reason to work directly, not to give up.
+def test_auto_runs_a_refused_plan_directly_instead_of_failing_the_run(tmp_path: Path) -> None:
+    """En `auto`, un plan que no se puede validar es motivo para trabajar directamente.
 
-    The alternative — failing the run because a model returned malformed JSON — would make
-    the planning layer a new way for runs to die, which is a poor trade for a layer whose
-    whole purpose is to make hard goals more likely to succeed.
+    La alternativa —tumbar el run porque un modelo devolvió JSON mal formado— convertiría
+    la capa de planificación en una forma nueva de morir, mal negocio para una capa cuyo
+    propósito entero es que los objetivos difíciles salgan bien más a menudo.
     """
 
     async def scenario() -> None:
-        workspace = _sandbox(tmp_path / "repo")
+        workspace = _wide_sandbox(tmp_path / "wide")
         bus = InMemoryEventBus()
         seen: list[RuntimeEvent] = []
         bus.subscribe(seen.append)
         provider = _Scripted(plan="not a plan at all")
         registry = _registry(tmp_path, provider, bus)
         run_id = await registry.start(
-            "investigate the addition path",
+            "rework the parser across api and core",
             workspace,
-            RunOptions(hierarchical=True, max_iterations=3),
+            RunOptions(max_iterations=3),
         )
         try:
             result = await asyncio.wait_for(registry.wait(run_id), timeout=180)
         finally:
             await registry.shutdown()
 
-        assert provider.planning_requests == 1
+        assert provider.planning_requests == 1, "auto no llegó a intentar el plan"
         assert result.status.value in ("completed", "failed")
         recovery = [
             event
@@ -416,8 +463,87 @@ def test_a_refused_plan_runs_directly_instead_of_failing_the_run(tmp_path: Path)
             if event.name is EventName.RECOVERY_ACTION
             and event.payload.get("action") == "run_directly"
         ]
-        assert recovery, "the fall back to the loop was never announced"
+        assert recovery, "la caída al bucle no se anunció"
         assert EventName.GRAPH_STARTED not in [event.name for event in seen]
+
+    asyncio.run(scenario())
+
+
+def test_hierarchical_keeps_its_promise_when_the_plan_is_refused(tmp_path: Path) -> None:
+    """En `hierarchical`, un plan rechazado no puede acabar en el bucle.
+
+    Quien fija el modo lo hace para saber qué camino corrió. Caer al bucle en silencio
+    dejaría un benchmark comparando el grafo consigo mismo la mitad de las veces. Una
+    tarea que contiene el objetivo entero es un plan verdadero: dice que no se dividió.
+    """
+
+    async def scenario() -> None:
+        workspace = _sandbox(tmp_path / "repo")
+        bus = InMemoryEventBus()
+        seen: list[RuntimeEvent] = []
+        bus.subscribe(seen.append)
+        provider = _Scripted(plan="{ esto no es un plan }")
+        registry = _registry(tmp_path, provider, bus)
+        run_id = await registry.start(
+            "investigate the addition path",
+            workspace,
+            RunOptions(
+                writes=CapabilityMode.ALLOW,
+                execution=CapabilityMode.ALLOW,
+                execution_mode=ExecutionMode.HIERARCHICAL,
+            ),
+        )
+        try:
+            await asyncio.wait_for(registry.wait(run_id), timeout=180)
+        finally:
+            await registry.shutdown()
+
+        names = [event.name for event in seen]
+        assert EventName.GRAPH_STARTED in names, "el modo prometía un grafo"
+        anunciado = [
+            event
+            for event in seen
+            if event.name is EventName.RECOVERY_ACTION
+            and event.payload.get("action") == "whole_goal_as_one_task"
+        ]
+        assert anunciado, "el objetivo sin dividir se ejecutó sin decirlo"
+
+        record = await registry.snapshot(run_id)
+        assert record is not None
+        plan = record.working_memory.current_plan
+        assert [step.description for step in plan] == ["investigate the addition path"]
+
+    asyncio.run(scenario())
+
+
+def test_hierarchical_uses_the_graph_even_when_the_policy_says_it_is_not_worth_it(
+    tmp_path: Path,
+) -> None:
+    """Y sin que la política llegue a impedirlo: el modo ya respondió esa pregunta."""
+
+    async def scenario() -> None:
+        workspace = _sandbox(tmp_path / "repo")
+        bus = InMemoryEventBus()
+        seen: list[RuntimeEvent] = []
+        bus.subscribe(seen.append)
+        provider = _Scripted()
+        registry = _registry(tmp_path, provider, bus)
+        run_id = await registry.start(
+            "investigate the addition path",
+            workspace,
+            RunOptions(
+                writes=CapabilityMode.ALLOW,
+                execution=CapabilityMode.ALLOW,
+                execution_mode=ExecutionMode.HIERARCHICAL,
+            ),
+        )
+        try:
+            await asyncio.wait_for(registry.wait(run_id), timeout=180)
+        finally:
+            await registry.shutdown()
+
+        assert provider.planning_requests == 1
+        assert EventName.GRAPH_STARTED in [event.name for event in seen]
 
     asyncio.run(scenario())
 
@@ -446,7 +572,7 @@ def test_a_task_asks_for_permission_through_the_run_that_owns_it(tmp_path: Path)
         run_id = await registry.start(
             "investigate the addition path",
             workspace,
-            RunOptions(writes=CapabilityMode.ASK, hierarchical=True),
+            RunOptions(writes=CapabilityMode.ASK, execution_mode=ExecutionMode.HIERARCHICAL),
         )
         subscriber = registry.subscribe(run_id, control=True)
         try:

@@ -24,6 +24,7 @@ from athena.adapters.service.approvals import (
     RemotePermissionPrompt,
 )
 from athena.adapters.service.orchestration import (
+    ExecutionMode,
     OrchestrationSettings,
     Orchestrator,
     RunShape,
@@ -82,11 +83,10 @@ class RunOptions:
     max_iterations: int = 12
     max_repair_cycles: int = 2
     session_timeout_seconds: float = 900.0
-    #: Si el cliente quiere plan o no. `None` —lo normal— significa "decídelo tú": la
-    #: forma del run la fijan las señales del repositorio, no una casilla de la interfaz.
-    #: Un cliente puede rechazar un plan o pedirlo, pero pedirlo no enciende una capa de
-    #: planificación que el despliegue no configuró.
-    hierarchical: bool | None = None
+    #: Qué se hace con el objetivo. `auto` —lo normal— deja que decidan las señales del
+    #: repositorio y no una casilla de la interfaz; `hierarchical` y `direct` fijan el
+    #: camino para quien necesita saber cuál corrió.
+    execution_mode: ExecutionMode = ExecutionMode.AUTO
 
     @classmethod
     def from_json(cls, payload: Mapping[str, object]) -> RunOptions:
@@ -105,9 +105,15 @@ class RunOptions:
                 raise ToolValidationError(f"{key} must be a positive integer")
             return raw
 
-        wanted = payload.get("hierarchical")
-        if wanted is not None and not isinstance(wanted, bool):
-            raise ToolValidationError("hierarchical must be a boolean")
+        raw_mode = payload.get("execution_mode", ExecutionMode.AUTO.value)
+        try:
+            # `chosen`, no `mode`: ahí arriba `mode` ya es el lector de capacidades, y
+            # taparlo dejaba el parseo de writes/exec devolviendo un enum de otra cosa.
+            chosen = ExecutionMode(str(raw_mode))
+        except ValueError as exc:
+            raise ToolValidationError(
+                "execution_mode must be one of auto, hierarchical, direct"
+            ) from exc
 
         timeout = payload.get("session_timeout_seconds", 900.0)
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
@@ -121,7 +127,7 @@ class RunOptions:
             if payload.get("max_repair_cycles") is not None
             else 2,
             session_timeout_seconds=float(timeout),
-            hierarchical=wanted,
+            execution_mode=chosen,
         )
 
 
@@ -405,7 +411,7 @@ class RunRegistry:
         run_id = str(uuid4())
         source = CancellationSource()
         self._runs[run_id] = LiveRun(run_id, workspace, settings, source)
-        shape = self.orchestrator.decide(workspace, objective, requested=settings.hierarchical)
+        shape = self.orchestrator.decide(workspace, objective, mode=settings.execution_mode)
 
         started = asyncio.Event()
 

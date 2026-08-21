@@ -33,6 +33,23 @@ from athena.session_store import SqliteSessionStore
 from athena.stores import SqliteToolResultStore
 
 
+def _flag(name: str, *, default: bool) -> bool:
+    """Un interruptor del entorno, leído como afirmación o como negación.
+
+    Un valor que no se reconoce es un error, no una de las dos respuestas. `ATHENA_PLANNING=off`
+    escrito por alguien que quería apagarlo no puede acabar encendiéndolo por no estar en la
+    lista de negaciones.
+    """
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in ("1", "true", "yes", "y", "on", "si", "sí"):
+        return True
+    if raw in ("0", "false", "no", "n", "off"):
+        return False
+    raise ValueError(f"{name} debe ser sí o no, no {raw!r}")
+
+
 def _positive(name: str, default: float) -> float:
     """Un número de segundos del entorno, o el de siempre.
 
@@ -72,7 +89,11 @@ class ServiceSettings:
     #: Si este despliegue puede descomponer objetivos en un grafo de tareas. Apagado por
     #: defecto: la planificación gasta una llamada al modelo antes de empezar a trabajar,
     #: y quien pone en marcha el servicio es quien sabe si su proveedor da para eso.
-    planning: bool = False
+    #: Si este despliegue descompone objetivos cuando la evidencia lo justifica. Encendido:
+    #: en `auto` la decisión cuesta una lectura del repositorio, no una llamada al modelo,
+    #: y sólo se planifica cuando la política ya ha dicho que merece la pena. Se apaga con
+    #: `ATHENA_PLANNING=0` para un despliegue que sólo quiera el bucle.
+    planning: bool = True
     #: Cuánto se espera a una sola respuesta del modelo antes de dar al broker por
     #: perdido. Medido contra este despliegue: planificar tardó 55 s y un turno de coder
     #: 549 s. Con el techo de diez minutos del adaptador, un run falló 51 segundos
@@ -126,13 +147,7 @@ class ServiceSettings:
         if timeout <= 0:
             raise ValueError("ATHENA_REQUEST_TIMEOUT_SECONDS debe ser positivo")
 
-        planning = os.environ.get("ATHENA_PLANNING", "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "si",
-            "sí",
-        )
+        planning = _flag("ATHENA_PLANNING", default=True)
 
         model_wait = _positive("ATHENA_MODEL_WAIT_SECONDS", 900.0)
         task_timeout = _positive("ATHENA_TASK_TIMEOUT_SECONDS", 1800.0)

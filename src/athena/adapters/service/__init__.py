@@ -10,6 +10,7 @@ from athena.adapters.service.approvals import (
     PendingApproval,
     RemotePermissionPrompt,
 )
+from athena.adapters.service.orchestration import ExecutionMode
 from athena.adapters.service.projections import (
     WIRE_VERSION,
     event_to_json,
@@ -25,6 +26,7 @@ __all__ = [
     "ApprovalRegistry",
     "AthenaService",
     "CapabilityMode",
+    "ExecutionMode",
     "PendingApproval",
     "RemotePermissionPrompt",
     "RunOptions",

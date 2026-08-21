@@ -112,13 +112,17 @@ def test_planning_is_switched_on_by_the_deployment_and_persists_its_plans(
     assert (tmp_path / "graphs.db").is_file()
 
 
-def test_planning_stays_off_unless_the_environment_asks_for_it(
+def test_deciding_is_the_normal_behaviour_and_apagarlo_es_lo_explicito(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """La variable se lee como una afirmación, no como una presencia.
+    """`auto` es como corre Athena normalmente, así que no hace falta pedirlo.
 
-    `ATHENA_PLANNING=0` es alguien apagándola a propósito. Tratar cualquier valor como
-    «sí» convertiría ese apagado explícito en lo contrario de lo que dice.
+    Decidir cuesta una lectura del repositorio, no una llamada al modelo: sólo se
+    planifica cuando la política ya ha dicho que merece la pena. Lo que hay que declarar
+    es lo contrario — un despliegue que sólo quiera el bucle.
+
+    Un valor que no se reconoce es un error y no una de las dos respuestas: quien escribe
+    `off` queriendo apagarlo no puede acabar encendiéndolo por no estar en la lista.
     """
     monkeypatch.setenv("ATHENA_BROKER_BASE_URL", "http://127.0.0.1:9")
     monkeypatch.setenv("ATHENA_BROKER_TOKEN", "test-only")
@@ -126,13 +130,18 @@ def test_planning_stays_off_unless_the_environment_asks_for_it(
     monkeypatch.setenv("ATHENA_STATE_DIR", str(tmp_path))
 
     monkeypatch.delenv("ATHENA_PLANNING", raising=False)
-    assert not ServiceSettings.from_environment().planning
+    assert ServiceSettings.from_environment().planning
 
-    monkeypatch.setenv("ATHENA_PLANNING", "0")
-    assert not ServiceSettings.from_environment().planning
+    for apagado in ("0", "false", "no", "off"):
+        monkeypatch.setenv("ATHENA_PLANNING", apagado)
+        assert not ServiceSettings.from_environment().planning, apagado
 
     monkeypatch.setenv("ATHENA_PLANNING", "true")
     assert ServiceSettings.from_environment().planning
+
+    monkeypatch.setenv("ATHENA_PLANNING", "cuando haga falta")
+    with pytest.raises(ValueError, match="ATHENA_PLANNING"):
+        ServiceSettings.from_environment()
 
 
 def test_a_task_may_not_expire_before_the_call_it_is_waiting_on(

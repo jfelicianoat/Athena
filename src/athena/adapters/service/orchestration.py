@@ -24,10 +24,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from enum import StrEnum
 
 from athena.cancellation import CancellationScope, CancellationToken, chained_source
 from athena.delegation import confine
-from athena.errors import AthenaRuntimeError
+from athena.errors import AthenaRuntimeError, ToolValidationError
 from athena.events import EventBus, EventName, RuntimeEvent
 from athena.graph_executor import GraphExecutor, GraphResult
 from athena.graph_store import SqliteGraphStore, StoredPlan
@@ -42,13 +43,19 @@ from athena.planning import (
     PlanningLimits,
     PlanStatus,
     TaskGraph,
+    TaskNode,
 )
 from athena.project_memory import MemoryKind, SqliteProjectMemory, render_for_context
 from athena.scouting import RepositoryScout, merge
 from athena.session_store import SessionRecord, SessionStore
 from athena.state import AgentStatus, ExecutionOutcome
 from athena.stores import ToolResultStore
-from athena.subagents import DEFAULT_PROFILES, SubagentProfile, SubagentRunner
+from athena.subagents import (
+    DEFAULT_PROFILES,
+    SubagentProfile,
+    SubagentRole,
+    SubagentRunner,
+)
 from athena.tasks import TaskManager
 from athena.tools import Tool
 from athena.types import JSONObject
@@ -96,10 +103,33 @@ class OrchestrationSettings:
     task_timeout_seconds: float | None = None
 
 
+class ExecutionMode(StrEnum):
+    """What the caller wants the runtime to do with a goal.
+
+    Three named modes rather than a boolean with three states. `hierarchical: null` reads
+    as "unset", which a client cannot tell apart from "not supported" or "left at the
+    default" — and the difference decides whether a run is planned at all.
+    """
+
+    #: Let the evidence decide. The normal way to run Athena.
+    AUTO = "auto"
+    #: Always execute through a `TaskGraph`, even if the plan holds a single task. Costs
+    #: hand-offs a simple goal does not need, and is worth it when the graph itself is
+    #: what is being observed: tests, debugging, benchmarks, experiments.
+    HIERARCHICAL = "hierarchical"
+    #: Always the loop, whatever the repository looks like.
+    DIRECT = "direct"
+
+
 @dataclass(frozen=True, slots=True)
 class RunShape:
-    """How this run will be executed, and why."""
+    """How this run will be executed, and why.
 
+    `mode` is what was asked for and `hierarchical` is what will happen. They agree except
+    in `AUTO`, where the second is the answer to a question the first only posed.
+    """
+
+    mode: ExecutionMode
     hierarchical: bool
     decision: DecompositionDecision
     signals: DecompositionSignals
@@ -109,6 +139,7 @@ class RunShape:
 
     def to_json(self) -> JSONObject:
         return {
+            "execution_mode": self.mode.value,
             "hierarchical": self.hierarchical,
             "reasons": list(self.decision.reasons),
             "explanation": self.decision.explanation,
@@ -142,23 +173,43 @@ class Orchestrator:
         objective: str,
         supplied: DecompositionSignals | None = None,
         *,
-        requested: bool | None = None,
+        mode: ExecutionMode = ExecutionMode.AUTO,
     ) -> RunShape:
         """Measure, let the caller fill the gaps, and apply the policy.
 
         Never asks a model. The party that would most like the answer to be "yes" is not
-        the party that should be giving it.
+        the party that should be giving it — and in `AUTO` the answer costs a filesystem
+        scan, not a model call, which is what makes `AUTO` affordable as the default.
 
-        `requested` is the client's preference. It may decline a graph it would have got
-        and may ask for one, but it cannot switch on a planning layer the deployment did
-        not configure.
+        `DIRECT` is answered without measuring anything: the reading would change nothing
+        and the caller has already decided.
         """
+        if mode is ExecutionMode.DIRECT:
+            return RunShape(
+                mode,
+                hierarchical=False,
+                decision=DecompositionDecision(
+                    False, (), "The caller asked for the loop directly."
+                ),
+                signals=DecompositionSignals(),
+            )
+        if mode is ExecutionMode.HIERARCHICAL and not self.settings.planning:
+            # Refused rather than quietly downgraded. Somebody who asks for a graph is
+            # usually measuring one, and handing them a loop that reports itself as a run
+            # would corrupt the measurement instead of failing it.
+            raise ToolValidationError(
+                "This deployment does not do hierarchical runs; execution_mode must be "
+                "auto or direct"
+            )
         scouted = self.scout.scout(workspace, objective)
         signals = merge(scouted, supplied) if supplied is not None else scouted.signals
         decision = self.settings.policy.assess(signals)
-        wanted = decision.decompose if requested is None else requested
+        hierarchical = mode is ExecutionMode.HIERARCHICAL or (
+            self.settings.planning and decision.decompose
+        )
         return RunShape(
-            hierarchical=self.settings.planning and wanted,
+            mode,
+            hierarchical=hierarchical,
             decision=decision,
             signals=signals,
             assumed=scouted.assumed,
@@ -227,22 +278,37 @@ class Orchestrator:
         empty = WorkingState(objective=objective)
         await self._persist(run_id, workspace, empty, AgentStatus.RUNNING)
         planner = Planner(self.provider, policy=self.settings.policy, limits=self.settings.limits)
+        graph: TaskGraph | None
         try:
             graph = await planner.plan(
                 objective, shape.signals, cancellation, decided=_settled(shape)
             )
         except AthenaRuntimeError as error:
-            # A refused plan is information, not a failure. The loop can still do this, and
-            # saying so is more useful than failing a run over the shape of a JSON reply.
             _logger.warning("planning.refused code=%s", error.code)
+            graph = None
+            reason = error.code
+        else:
+            reason = "not_worth_decomposing"
+
+        if graph is None:
+            if shape.mode is not ExecutionMode.HIERARCHICAL:
+                # A refused plan is information, not a failure. The loop can still do this,
+                # and saying so is more useful than failing a run over a malformed reply.
+                await self._publish(
+                    run_id,
+                    EventName.RECOVERY_ACTION,
+                    {"action": "run_directly", "reason": reason},
+                )
+                return None
+            # The caller asked for a graph, so a graph is what runs. One task holding the
+            # whole goal is a truthful plan — it says the work was not divided — and it
+            # keeps the guarantee the mode exists for: this path is always the graph path.
             await self._publish(
                 run_id,
                 EventName.RECOVERY_ACTION,
-                {"action": "run_directly", "reason": error.code},
+                {"action": "whole_goal_as_one_task", "reason": reason},
             )
-            return None
-        if graph is None:
-            return None
+            graph = _whole_goal(objective)
 
         if self.settings.board is not None:
             self.settings.board.record(run_id, graph)
@@ -454,6 +520,27 @@ class Orchestrator:
         await self.event_bus.publish(RuntimeEvent(name, run_id, payload))
 
 
+def _whole_goal(objective: str) -> TaskGraph:
+    """The goal as a plan of one task, for a run that must go through the graph.
+
+    Its acceptance criterion is the project's own checks, which is the same thing the
+    executor verifies at the end. Inventing a narrower criterion would let the task report
+    success against a bar nobody set.
+    """
+    return TaskGraph.build(
+        [
+            TaskNode(
+                id="whole",
+                goal=objective,
+                expected_output="The objective, carried out in the workspace.",
+                acceptance_criteria=("The project's own verification commands pass.",),
+                suggested_role=SubagentRole.CODER,
+                toolsets=DEFAULT_PROFILES[SubagentRole.CODER].toolsets,
+            )
+        ]
+    )
+
+
 def _budgeted(profile: SubagentProfile, seconds: float | None) -> SubagentProfile:
     """Dar a una tarea el reloj del despliegue, sin tocar sus otros límites.
 
@@ -487,7 +574,7 @@ def _settled(shape: RunShape) -> DecompositionDecision:
     return DecompositionDecision(
         shape.hierarchical,
         shape.decision.reasons,
-        "Requested by the client rather than argued for by the evidence.",
+        "Requested by the caller rather than argued for by the evidence.",
     )
 
 
@@ -512,4 +599,4 @@ def _with_plan(working: WorkingState, graph: TaskGraph) -> WorkingState:
     return working.with_plan(steps, running)
 
 
-__all__ = ["OrchestrationSettings", "Orchestrator", "RunShape"]
+__all__ = ["ExecutionMode", "OrchestrationSettings", "Orchestrator", "RunShape"]
