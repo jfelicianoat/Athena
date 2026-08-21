@@ -35,6 +35,7 @@ from athena.errors import AthenaRuntimeError, ToolValidationError
 from athena.events import EventBus, EventName, RuntimeEvent
 from athena.git_tools import GitCommitTool, git_read_tools
 from athena.graph_executor import GraphResult
+from athena.graph_store import StoredPlan
 from athena.models import ModelProvider
 from athena.mutation_tools import workspace_mutation_tools
 from athena.permissions import PermissionPolicy, PolicyPermissionEngine
@@ -428,6 +429,12 @@ class RunRegistry:
         return run_id
 
     async def resume(self, run_id: str, workspace: Workspace) -> str:
+        """Pick a stopped run back up, in the shape it actually had.
+
+        A run that was a plan is resumed as a plan. Resuming it on the loop would be a
+        different run wearing the same id: it would redo work whose evidence is already
+        stored, and it would do it without the specialists the plan chose.
+        """
         record = await self.session_store.load(run_id)
         if record is None:
             raise ToolValidationError(f"Unknown run: {run_id}")
@@ -437,12 +444,54 @@ class RunRegistry:
             )
         options = self._runs[run_id].options if run_id in self._runs else RunOptions()
         source = CancellationSource()
+        stored = await self.orchestrator.stored_plan(run_id)
+        if stored is not None:
+            undecided = stored.graph.needs_recovery()
+            if undecided:
+                # Deliberately a refusal. A task that was running when the process died
+                # may have written files or not, and the runtime cannot tell which; both
+                # re-running it and skipping it are decisions with consequences, and
+                # neither is the runtime's to take on somebody's behalf.
+                names = ", ".join(node.id for node in undecided)
+                raise ToolValidationError(
+                    f"Run {run_id} was a plan and these tasks were interrupted with an "
+                    f"unknown outcome: {names}. Somebody has to say what happened to them "
+                    "before the plan can go on."
+                )
+            self._runs[run_id] = LiveRun(run_id, workspace, options, source)
+            self._runs[run_id].task = asyncio.ensure_future(
+                self._continue(run_id, stored, workspace, options, source)
+            )
+            return run_id
+
         self._runs[run_id] = LiveRun(run_id, workspace, options, source)
         loop = self._build(run_id, workspace, options)
         self._runs[run_id].task = asyncio.ensure_future(
             loop.resume(run_id, workspace, source.token)
         )
         return run_id
+
+    async def _continue(
+        self,
+        run_id: str,
+        stored: StoredPlan,
+        workspace: Workspace,
+        options: RunOptions,
+        source: CancellationSource,
+    ) -> AgentRunResult:
+        result = await self.orchestrator.continue_graph(
+            run_id,
+            stored,
+            workspace,
+            {tool.spec.name: tool for tool in self.tools_for(options, self.event_bus)},
+            self.policy_for(options),
+            verification=CommandVerificationPolicy(
+                VerificationPlanner(workspace), event_bus=self.event_bus
+            ),
+            prompt=self._ask(run_id),
+            cancellation=source.token,
+        )
+        return _from_graph(run_id, workspace, result)
 
     async def cancel(self, run_id: str) -> None:
         run = self._require(run_id)

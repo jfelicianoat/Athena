@@ -23,7 +23,9 @@ from athena.adapters.service.orchestration import OrchestrationSettings, Orchest
 from athena.adapters.service.runs import CapabilityMode, RunOptions, RunRegistry
 from athena.cancellation import CancellationSource, CancellationToken
 from athena.context import ContextBuilder
+from athena.errors import ToolValidationError
 from athena.events import EventName, InMemoryEventBus, ModelEvent, RuntimeEvent
+from athena.graph_store import SqliteGraphStore
 from athena.models import (
     ModelCapabilities,
     ModelHealth,
@@ -34,11 +36,12 @@ from athena.models import (
     ModelToolCall,
 )
 from athena.permissions import PermissionDecision
-from athena.planning import DecompositionSignals
-from athena.session_store import SqliteSessionStore
+from athena.planning import DecompositionSignals, PlanStatus, TaskGraph, TaskNode
+from athena.session_store import SessionRecord, SqliteSessionStore
 from athena.state import AgentStatus
 from athena.stores import SqliteToolResultStore
-from athena.working_state import StepStatus
+from athena.subagents import SubagentRole
+from athena.working_state import StepStatus, WorkingState
 from athena.workspace import Workspace
 
 WORKING = "def add(a, b):\n    return a + b\n"
@@ -179,13 +182,14 @@ def _registry(
     bus: InMemoryEventBus,
     *,
     planning: bool = True,
+    graphs: SqliteGraphStore | None = None,
 ) -> RunRegistry:
     return RunRegistry(
         provider,
         bus,
         SqliteSessionStore(tmp_path / "sessions.db"),
         SqliteToolResultStore(tmp_path / "results.db"),
-        orchestration=OrchestrationSettings(planning=planning),
+        orchestration=OrchestrationSettings(planning=planning, graphs=graphs),
     )
 
 
@@ -543,3 +547,118 @@ def test_the_prompt_follows_the_capabilities_the_run_was_actually_given(tmp_path
     )
     assert "read-only" not in _prompt(workspace, *(tool.spec.name for tool in writing))
     assert "read-only" in _prompt(workspace, *(tool.spec.name for tool in reading))
+
+
+# ------------------------------------------------------------------ picking a plan back up
+
+
+async def _seeded(tmp_path: Path, run_id: str, *, running: bool) -> SqliteGraphStore:
+    """A plan already half done, as a restart would have left it.
+
+    `T01` finished and its evidence is recorded; `T02` is either still marked running —
+    which is what a process killed mid-task leaves behind — or waiting its turn.
+    """
+    store = SqliteGraphStore(tmp_path / "graphs.db")
+    graph = TaskGraph.build(
+        [
+            TaskNode(
+                id="T01",
+                goal="describe how addition is implemented",
+                expected_output="the function named",
+                acceptance_criteria=("names a file and a function",),
+                suggested_role=SubagentRole.EXPLORER,
+            ),
+            TaskNode(
+                id="T02",
+                goal="record the result of the addition test",
+                expected_output="a sentence about the test",
+                acceptance_criteria=("states whether it passes",),
+                dependencies=("T01",),
+                suggested_role=SubagentRole.CODER,
+            ),
+        ]
+    )
+    graph.transition("T01", PlanStatus.READY)
+    graph.transition("T01", PlanStatus.RUNNING)
+    graph.transition("T01", PlanStatus.COMPLETED)
+    if running:
+        graph.transition("T02", PlanStatus.READY)
+        graph.transition("T02", PlanStatus.RUNNING)
+    await store.save(run_id, graph, objective="investigate the addition path")
+    return store
+
+
+async def _stopped(tmp_path: Path, run_id: str, workspace: Workspace) -> None:
+    """A session left behind by a runtime that stopped watching it."""
+    sessions = SqliteSessionStore(tmp_path / "sessions.db")
+    await sessions.save(
+        SessionRecord(
+            session_id=run_id,
+            workspace_id=workspace.workspace_id,
+            status=AgentStatus.RECOVERY_PENDING,
+            working_memory=WorkingState(objective="investigate the addition path"),
+        )
+    )
+
+
+def test_a_plan_stopped_between_tasks_carries_on_where_it_stopped(tmp_path: Path) -> None:
+    """Resuming re-runs what was never done, and only that.
+
+    Asking the model for a fresh plan would produce a different one and throw away the
+    evidence the finished tasks had already produced — which is the evidence the run will
+    be judged on.
+    """
+
+    async def scenario() -> None:
+        workspace = _sandbox(tmp_path / "repo")
+        run_id = "run-between"
+        graphs = await _seeded(tmp_path, run_id, running=False)
+        await _stopped(tmp_path, run_id, workspace)
+
+        bus = InMemoryEventBus()
+        seen: list[RuntimeEvent] = []
+        bus.subscribe(seen.append)
+        provider = _Scripted()
+        registry = _registry(tmp_path, provider, bus, graphs=graphs)
+
+        await registry.resume(run_id, workspace)
+        try:
+            await asyncio.wait_for(registry.wait(run_id), timeout=180)
+        finally:
+            await registry.shutdown()
+
+        assert provider.planning_requests == 0, "resuming must not ask for a new plan"
+        started = [
+            event.payload["task_id"] for event in seen if event.name is EventName.TASK_STARTED
+        ]
+        assert started == ["T02"], "the finished task was run again"
+
+        record = await registry.snapshot(run_id)
+        assert record is not None
+        assert record.status is AgentStatus.COMPLETED
+
+    asyncio.run(scenario())
+
+
+def test_a_plan_interrupted_mid_task_is_not_resumed_on_a_guess(tmp_path: Path) -> None:
+    """A task that was running when the process died has an unknown outcome.
+
+    It may have written files and it may not, and the runtime cannot tell. Re-running it
+    and skipping it are both decisions with consequences, so it makes neither: it says
+    which task needs somebody to look, and stops.
+    """
+
+    async def scenario() -> None:
+        workspace = _sandbox(tmp_path / "repo")
+        run_id = "run-midtask"
+        graphs = await _seeded(tmp_path, run_id, running=True)
+        await _stopped(tmp_path, run_id, workspace)
+
+        registry = _registry(tmp_path, _Scripted(), InMemoryEventBus(), graphs=graphs)
+        try:
+            with pytest.raises(ToolValidationError, match="T02"):
+                await registry.resume(run_id, workspace)
+        finally:
+            await registry.shutdown()
+
+    asyncio.run(scenario())

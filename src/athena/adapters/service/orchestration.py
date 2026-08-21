@@ -30,7 +30,7 @@ from athena.delegation import confine
 from athena.errors import AthenaRuntimeError
 from athena.events import EventBus, EventName, RuntimeEvent
 from athena.graph_executor import GraphExecutor, GraphResult
-from athena.graph_store import SqliteGraphStore
+from athena.graph_store import SqliteGraphStore, StoredPlan
 from athena.models import ModelProvider
 from athena.permissions import PermissionPolicy, PermissionPrompt
 from athena.planning import (
@@ -248,6 +248,86 @@ class Orchestrator:
         )
         await self._persist(run_id, workspace, _with_plan(empty, graph), AgentStatus.RUNNING)
 
+        return await self._drive(
+            run_id,
+            objective,
+            workspace,
+            graph,
+            catalog,
+            policy,
+            verification=verification,
+            prompt=prompt,
+            cancellation=cancellation,
+        )
+
+    async def stored_plan(self, run_id: str) -> StoredPlan | None:
+        """El plan que este run dejó a medias, si dejó alguno.
+
+        `recover` marca como pendientes de decisión las tareas que estaban en marcha
+        cuando el proceso murió: no se sabe si llegaron a hacer lo suyo, y esa diferencia
+        no la puede resolver el propio runtime.
+        """
+        if self.settings.graphs is None:
+            return None
+        try:
+            return await self.settings.graphs.recover(run_id)
+        except AthenaRuntimeError as error:
+            _logger.warning("plan.not_recovered code=%s", error.code)
+            return None
+
+    async def continue_graph(
+        self,
+        run_id: str,
+        stored: StoredPlan,
+        workspace: Workspace,
+        catalog: dict[str, Tool],
+        policy: PermissionPolicy,
+        *,
+        verification: VerificationPolicy | None = None,
+        prompt: PermissionPrompt | None = None,
+        cancellation: CancellationToken,
+    ) -> GraphResult:
+        """Seguir un plan donde se quedó, sin volver a planificar.
+
+        Las tareas que ya terminaron no se repiten: el frontal listo del grafo las salta
+        solo. Pedirle otro plan al modelo daría uno distinto y tiraría la evidencia que
+        las tareas hechas ya habían producido.
+        """
+        objective = stored.objective or _first_goal(stored.graph)
+        await self._publish(
+            run_id, EventName.AGENT_STARTED, {"objective": objective, "resumed": True}
+        )
+        return await self._drive(
+            run_id,
+            objective,
+            workspace,
+            stored.graph,
+            catalog,
+            policy,
+            verification=verification,
+            prompt=prompt,
+            cancellation=cancellation,
+        )
+
+    async def _drive(
+        self,
+        run_id: str,
+        objective: str,
+        workspace: Workspace,
+        graph: TaskGraph,
+        catalog: dict[str, Tool],
+        policy: PermissionPolicy,
+        *,
+        verification: VerificationPolicy | None,
+        prompt: PermissionPrompt | None,
+        cancellation: CancellationToken,
+    ) -> GraphResult:
+        """Ejecuta un grafo, venga de planificar o de recuperarlo.
+
+        Una sola forma de armar el ejecutor. Con dos, un run reanudado podría acabar con
+        permisos, perfiles o verificación distintos de los del run original, y nada en las
+        pruebas de ninguno de los dos caminos lo notaría.
+        """
         manager = TaskManager()
         # Los perfiles se recortan a la autoridad de este run. Sin esto, el perfil del
         # coder escribe sin preguntar —así viene definido— y un run creado con «pregunta
@@ -363,6 +443,16 @@ class Orchestrator:
 
     async def _publish(self, run_id: str, name: EventName, payload: JSONObject) -> None:
         await self.event_bus.publish(RuntimeEvent(name, run_id, payload))
+
+
+def _first_goal(graph: TaskGraph) -> str:
+    """Con qué nombrar un plan cuyo objetivo no se guardó.
+
+    Un plan viejo puede no traerlo. El objetivo de su primera tarea describe mal el
+    conjunto, pero describe algo real; inventar una frase sería peor.
+    """
+    nodes = graph.topological_order()
+    return nodes[0].goal if nodes else "Plan sin objetivo registrado"
 
 
 def _settled(shape: RunShape) -> DecompositionDecision:
