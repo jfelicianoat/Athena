@@ -121,6 +121,32 @@ class ExecutionMode(StrEnum):
     DIRECT = "direct"
 
 
+class ShapeReason(StrEnum):
+    """Why a run ended up with the shape it has, in a value that survives rewording.
+
+    The sentences beside these are for people and will be rewritten; a count of how often
+    a deployment falls back for want of a planner must not depend on the wording holding
+    still. Anything that aggregates reads this and never the prose.
+    """
+
+    #: The caller required the loop.
+    CALLER_REQUIRED_DIRECT = "caller_required_direct"
+    #: The caller required a graph.
+    CALLER_REQUIRED_HIERARCHICAL = "caller_required_hierarchical"
+    #: `auto`, and this deployment has no planning layer to offer.
+    PLANNING_UNAVAILABLE = "planning_unavailable"
+    #: `auto`, and the evidence about the goal did not argue for decomposing it.
+    POLICY_DECLINED = "policy_declined"
+    #: `auto`, and the plan that came back is worth executing as a graph.
+    POLICY_ENDORSED = "policy_endorsed"
+    #: `auto`, and the plan is valid but buys nothing a loop does not already do.
+    PLAN_NOT_WORTHWHILE = "plan_not_worthwhile"
+    #: `auto`, and no usable plan came back, so the goal runs directly.
+    PLAN_REFUSED = "plan_refused"
+    #: `hierarchical`, and no usable plan came back, so the whole goal is one task.
+    NO_USABLE_PLAN = "no_usable_plan"
+
+
 @dataclass(frozen=True, slots=True)
 class RunShape:
     """How this run will be executed, and why.
@@ -139,24 +165,33 @@ class RunShape:
     hierarchical: bool
     decision: DecompositionDecision
     signals: DecompositionSignals
+    code: ShapeReason = ShapeReason.POLICY_ENDORSED
     reason: str = ""
     #: What the scout could not establish, carried so a client can show it rather than
     #: being told a guess was a measurement.
     assumed: tuple[str, ...] = ()
 
     def to_json(self) -> JSONObject:
+        """The four fields anything counting needs, plus the sentences people read.
+
+        `policy_verdict` is `decompose` or `decline` rather than the policy's sentence:
+        the sentence is next to it under `policy_explanation`, and a dashboard grouping
+        runs by what the policy thought should not have to match prose to do it.
+        """
         return {
             "execution_mode": self.mode.value,
             "executed_as": "hierarchical" if self.hierarchical else "direct",
+            "reason_code": self.code.value,
             "reason": self.reason,
+            "policy_verdict": "decompose" if self.decision.decompose else "decline",
+            "policy_explanation": self.decision.explanation,
             "criteria_met": list(self.decision.reasons),
-            "policy_verdict": self.decision.explanation,
             "assumed_signals": list(self.assumed),
         }
 
-    def as_decided(self, *, hierarchical: bool, reason: str) -> RunShape:
+    def as_decided(self, *, hierarchical: bool, code: ShapeReason, reason: str) -> RunShape:
         """The same run, once something later settled what it will actually do."""
-        return replace(self, hierarchical=hierarchical, reason=reason)
+        return replace(self, hierarchical=hierarchical, code=code, reason=reason)
 
 
 class Orchestrator:
@@ -203,6 +238,7 @@ class Orchestrator:
                 hierarchical=False,
                 decision=DecompositionDecision(False, (), declined),
                 signals=DecompositionSignals(),
+                code=ShapeReason.CALLER_REQUIRED_DIRECT,
                 reason=declined,
             )
         if mode is ExecutionMode.HIERARCHICAL and not self.settings.planning:
@@ -219,31 +255,49 @@ class Orchestrator:
         signals = merge(scouted, supplied) if supplied is not None else scouted.signals
         decision = self.settings.policy.assess(signals)
         if mode is ExecutionMode.HIERARCHICAL:
-            hierarchical, reason = True, "The caller required hierarchical execution."
+            hierarchical, code, reason = (
+                True,
+                ShapeReason.CALLER_REQUIRED_HIERARCHICAL,
+                "The caller required hierarchical execution.",
+            )
         elif not self.settings.planning:
-            hierarchical, reason = (
+            hierarchical, code, reason = (
                 False,
-                (
-                    "auto -> direct: this deployment has planning switched off, so the loop "
-                    "is the best strategy available."
-                ),
+                ShapeReason.PLANNING_UNAVAILABLE,
+                "auto -> direct: this deployment has planning switched off, so the loop "
+                "is the best strategy available.",
             )
         elif decision.decompose:
-            hierarchical, reason = True, decision.explanation
+            hierarchical, code, reason = (
+                True,
+                ShapeReason.POLICY_ENDORSED,
+                decision.explanation,
+            )
         else:
-            hierarchical, reason = False, f"auto -> direct: {decision.explanation}"
+            hierarchical, code, reason = (
+                False,
+                ShapeReason.POLICY_DECLINED,
+                f"auto -> direct: {decision.explanation}",
+            )
         return RunShape(
             mode,
             hierarchical=hierarchical,
             decision=decision,
             signals=signals,
+            code=code,
             reason=reason,
             assumed=scouted.assumed,
         )
 
     async def announce(self, run_id: str, shape: RunShape) -> None:
         """Report a shape that was settled before any planning happened."""
-        await self._decided(run_id, shape, hierarchical=shape.hierarchical, reason=shape.reason)
+        await self._decided(
+            run_id,
+            shape,
+            hierarchical=shape.hierarchical,
+            code=shape.code,
+            reason=shape.reason,
+        )
 
     # -- context -----------------------------------------------------------
 
@@ -325,7 +379,12 @@ class Orchestrator:
                 # A refused plan is information, not a failure. The loop can still do this,
                 # and saying so is more useful than failing a run over a malformed reply.
                 await self._decided(
-                    run_id, shape, hierarchical=False, reason=f"auto -> direct: {reason}"
+                    run_id,
+                    shape,
+                    hierarchical=False,
+                    code=ShapeReason.PLAN_REFUSED,
+                    reason=f"auto -> direct: no usable plan came back ({reason}), so "
+                    "the goal runs on the loop.",
                 )
                 return None
             # The caller asked for a graph, so a graph is what runs. One task holding the
@@ -336,11 +395,14 @@ class Orchestrator:
                 run_id,
                 shape,
                 hierarchical=True,
+                code=ShapeReason.NO_USABLE_PLAN,
                 reason=f"hierarchical: no usable plan ({reason}), so the whole goal runs "
                 "as one task.",
             )
         elif shape.mode is ExecutionMode.HIERARCHICAL:
-            await self._decided(run_id, shape, hierarchical=True, reason=shape.reason)
+            await self._decided(
+                run_id, shape, hierarchical=True, code=shape.code, reason=shape.reason
+            )
         else:
             # The plan exists and is valid; whether it is worth executing as a graph is a
             # different question, and the policy owns it. Asking it here rather than inside
@@ -352,10 +414,17 @@ class Orchestrator:
                     run_id,
                     shape,
                     hierarchical=False,
+                    code=ShapeReason.PLAN_NOT_WORTHWHILE,
                     reason=f"auto -> direct: {worth.explanation}",
                 )
                 return None
-            await self._decided(run_id, shape, hierarchical=True, reason=worth.explanation)
+            await self._decided(
+                run_id,
+                shape,
+                hierarchical=True,
+                code=ShapeReason.POLICY_ENDORSED,
+                reason=worth.explanation,
+            )
 
         if self.settings.board is not None:
             self.settings.board.record(run_id, graph)
@@ -487,15 +556,26 @@ class Orchestrator:
         return result
 
     async def _decided(
-        self, run_id: str, shape: RunShape, *, hierarchical: bool, reason: str
+        self,
+        run_id: str,
+        shape: RunShape,
+        *,
+        hierarchical: bool,
+        code: ShapeReason,
+        reason: str,
     ) -> None:
         """Say once, when the answer is final, how this run will execute and why.
 
         Once: a run that announced a shape before planning and a different one after would
         leave whoever is counting having to guess which announcement to believe.
         """
-        settled = shape.as_decided(hierarchical=hierarchical, reason=reason)
-        _logger.info("plan.decided mode=%s as=%s", settled.mode.value, hierarchical)
+        settled = shape.as_decided(hierarchical=hierarchical, code=code, reason=reason)
+        _logger.info(
+            "plan.decided requested=%s selected=%s code=%s",
+            settled.mode.value,
+            "hierarchical" if hierarchical else "direct",
+            code.value,
+        )
         await self._publish(run_id, EventName.PLAN_DECIDED, settled.to_json())
 
     # -- keeping the run addressable ---------------------------------------

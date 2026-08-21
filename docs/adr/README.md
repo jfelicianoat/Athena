@@ -44,3 +44,5 @@ of rewritten history.
   [A plan has to be earned, and then it has to survive validation](022-plans-are-earned-and-validated.md)
 - ADR-023:
   [The executor joins what already existed](023-the-executor-joins-what-already-existed.md)
+- ADR-024:
+  [Execution mode is asked for; the shape is reported](024-execution-mode-is-asked-for-and-the-shape-is-reported.md)

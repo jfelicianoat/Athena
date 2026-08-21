@@ -23,6 +23,7 @@ from athena.adapters.service.orchestration import (
     ExecutionMode,
     OrchestrationSettings,
     Orchestrator,
+    ShapeReason,
     _budgeted,
 )
 from athena.adapters.service.runs import CapabilityMode, RunOptions, RunRegistry
@@ -951,11 +952,13 @@ def test_auto_with_planning_off_runs_direct_and_says_why(tmp_path: Path) -> None
         assert EventName.GRAPH_STARTED not in [event.name for event in seen]
         forma = _shape_of(seen)
         assert forma["executed_as"] == "direct"
+        assert forma["reason_code"] == ShapeReason.PLANNING_UNAVAILABLE.value
         assert "planning switched off" in str(forma["reason"])
         # Y el veredicto de la política sigue siendo el suyo, que aquí dice lo contrario
         # de lo que se hizo. Informar sólo de uno de los dos dejaría a este run
         # explicándose con una conclusión sobre la que no actuó.
-        assert "worth its overhead" in str(forma["policy_verdict"])
+        assert forma["policy_verdict"] == "decompose"
+        assert "worth its overhead" in str(forma["policy_explanation"])
 
         # La forma se decide antes de que nadie pueda suscribirse, así que un cliente que
         # sólo escuchase el flujo no la vería nunca. El registro la guarda para el marco
@@ -1013,6 +1016,7 @@ def test_auto_runs_a_single_task_plan_on_the_loop(tmp_path: Path) -> None:
         assert EventName.GRAPH_STARTED not in [event.name for event in seen]
         forma = _shape_of(seen)
         assert forma["executed_as"] == "direct"
+        assert forma["reason_code"] == ShapeReason.PLAN_NOT_WORTHWHILE.value
         assert "one sequence for one specialist" in str(forma["reason"])
 
     asyncio.run(scenario())
@@ -1045,7 +1049,9 @@ def test_hierarchical_runs_a_single_task_plan_through_the_graph(tmp_path: Path) 
         assert EventName.GRAPH_STARTED in [event.name for event in seen]
         started = [event for event in seen if event.name is EventName.TASK_STARTED]
         assert [event.payload["task_id"] for event in started] == ["solo"]
-        assert _shape_of(seen)["executed_as"] == "hierarchical"
+        forma = _shape_of(seen)
+        assert forma["executed_as"] == "hierarchical"
+        assert forma["reason_code"] == ShapeReason.CALLER_REQUIRED_HIERARCHICAL.value
 
     asyncio.run(scenario())
 
@@ -1091,6 +1097,70 @@ def test_auto_runs_a_chain_of_microtasks_on_the_loop(tmp_path: Path) -> None:
         assert EventName.GRAPH_STARTED not in [event.name for event in seen]
         forma = _shape_of(seen)
         assert forma["executed_as"] == "direct"
+        assert forma["reason_code"] == ShapeReason.PLAN_NOT_WORTHWHILE.value
         assert "5 task(s)" in str(forma["reason"])
+
+    asyncio.run(scenario())
+
+
+# ------------------------------------------------------------------ invariantes
+
+
+def test_a_hierarchical_shape_is_never_chosen_without_a_planner(tmp_path: Path) -> None:
+    """La invariante: si se ejecuta como grafo, la planificación estaba disponible.
+
+    Recorrida sobre todas las combinaciones en vez de sobre la que uno recuerda, porque el
+    caso que rompería esto es justo el que no se le ocurre a nadie. Con la capa apagada,
+    `hierarchical` no llega a producir forma —se rechaza antes—, así que la invariante se
+    lee entera aquí: ninguna forma jerárquica sale de un despliegue sin planificador.
+    """
+    estrecho = _sandbox(tmp_path / "repo")
+    ancho = _wide_sandbox(tmp_path / "wide")
+
+    for planning in (True, False):
+        orquestador = _orchestrator(tmp_path, planning=planning)
+        for workspace in (estrecho, ancho):
+            for señales in (WEAK, STRONG):
+                for mode in ExecutionMode:
+                    if mode is ExecutionMode.HIERARCHICAL and not planning:
+                        with pytest.raises(ToolValidationError):
+                            orquestador.decide(workspace, "haz algo", señales, mode=mode)
+                        continue
+                    shape = orquestador.decide(workspace, "haz algo", señales, mode=mode)
+                    assert not shape.hierarchical or planning, (
+                        f"forma jerárquica sin planificador: {mode} {señales}"
+                    )
+                    # Y la forma siempre viene con su código: sin él, contar por qué se
+                    # eligió cada estrategia obligaría a leer prosa.
+                    assert shape.code in ShapeReason
+
+
+def test_a_refused_hierarchical_request_creates_no_run_at_all(tmp_path: Path) -> None:
+    """Un `hierarchical` imposible falla antes de que exista el run.
+
+    Ni huérfano ni a medias: cero runs. Al revés, cada petición rechazada dejaba uno
+    registrado que nadie iba a ejecutar ni a cerrar, contado en `/v1/health` hasta el
+    reinicio del servicio.
+    """
+
+    async def scenario() -> None:
+        workspace = _sandbox(tmp_path / "repo")
+        bus = InMemoryEventBus()
+        seen: list[RuntimeEvent] = []
+        bus.subscribe(seen.append)
+        registry = _registry(tmp_path, _Scripted(), bus, planning=False)
+        try:
+            for _ in range(3):
+                with pytest.raises(ToolValidationError, match="auto or direct"):
+                    await registry.start(
+                        "investigate the addition path",
+                        workspace,
+                        RunOptions(execution_mode=ExecutionMode.HIERARCHICAL),
+                    )
+            assert registry.live_ids() == ()
+            assert await registry.list() == (), "no debería haber sesión que recuperar"
+            assert seen == [], "un run que no existe no publica nada"
+        finally:
+            await registry.shutdown()
 
     asyncio.run(scenario())

@@ -44,6 +44,21 @@ class RunMetrics:
     #: field the whole comparison in the report turns on.
     hierarchical: bool = False
 
+    #: What was asked for, what was chosen, what the policy thought, and why — the four
+    #: values a comparison between strategies groups by.
+    #:
+    #: Plain strings because this module is core and the vocabulary belongs to the service
+    #: that publishes it. Recording what the event said is this module's job; knowing what
+    #: it means is not.
+    #:
+    #: Distinct from `hierarchical` above, which is observed from a graph actually
+    #: starting. That one says what happened; these say what was decided, and a run that
+    #: never got that far still has an answer for them.
+    requested_mode: str = ""
+    selected_shape: str = ""
+    policy_verdict: str = ""
+    reason_code: str = ""
+
     model_calls: int = 0
     model_failures: int = 0
     tool_calls: int = 0
@@ -187,6 +202,11 @@ class MetricsCollector:
 
         if event.name is EventName.GRAPH_STARTED:
             metrics.hierarchical = True
+        if event.name is EventName.PLAN_DECIDED:
+            metrics.requested_mode = _text(event.payload, "execution_mode")
+            metrics.selected_shape = _text(event.payload, "executed_as")
+            metrics.policy_verdict = _text(event.payload, "policy_verdict")
+            metrics.reason_code = _text(event.payload, "reason_code")
         counter = _COUNTERS.get(event.name)
         if counter is not None:
             setattr(metrics, counter, getattr(metrics, counter) + 1)
@@ -223,6 +243,12 @@ class MetricsCollector:
 
     def reset(self) -> None:
         self._runs.clear()
+
+
+def _text(payload: JSONObject, key: str) -> str:
+    """A string from a payload, or nothing. Never the repr of whatever was there."""
+    value = payload.get(key)
+    return value if isinstance(value, str) else ""
 
 
 def _count(payload: JSONObject, key: str) -> int:

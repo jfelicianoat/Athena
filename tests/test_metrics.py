@@ -397,3 +397,53 @@ def test_the_json_shape_is_flat_enough_to_chart() -> None:
     assert payload["model_calls"] == 3
     assert isinstance(payload["duration_ms"], int)
     assert isinstance(payload["started_at"], str)
+
+
+def test_the_shape_decision_is_recorded_for_counting() -> None:
+    """Las cuatro columnas de la comparación, sin parsear prosa.
+
+    Los códigos existen para esto: la frase que acompaña a cada decisión se reescribirá,
+    y un recuento de cuántas veces un despliegue cae al bucle por no tener planificador
+    no puede depender de que la redacción no cambie.
+    """
+    collector = MetricsCollector()
+    collector.observe(
+        RuntimeEvent(
+            EventName.PLAN_DECIDED,
+            "run-1",
+            {
+                "execution_mode": "auto",
+                "executed_as": "direct",
+                "reason_code": "plan_not_worthwhile",
+                "reason": "auto -> direct: the plan holds 1 task(s) in one sequence…",
+                "policy_verdict": "decompose",
+                "policy_explanation": "Decomposition is worth its overhead here: …",
+            },
+        )
+    )
+
+    metrics = collector.all()[0]
+    assert metrics.requested_mode == "auto"
+    assert metrics.selected_shape == "direct"
+    assert metrics.policy_verdict == "decompose"
+    assert metrics.reason_code == "plan_not_worthwhile"
+    # `hierarchical` es otra cosa y sigue siendo otra cosa: se observa del grafo al
+    # arrancar, no de lo que se decidió. Este run decidió no ser un grafo y no lo fue.
+    assert not metrics.hierarchical
+
+
+def test_a_decision_with_nothing_useful_in_it_records_nothing() -> None:
+    """Un payload sin los campos no deja basura en las métricas.
+
+    `observe` no puede lanzar —lo dice su contrato— así que la otra forma de fallar sería
+    guardar el `repr` de lo que hubiera y contaminar el recuento con valores que no son
+    de nadie.
+    """
+    collector = MetricsCollector()
+    collector.observe(
+        RuntimeEvent(EventName.PLAN_DECIDED, "run-2", {"executed_as": 7, "reason_code": None})
+    )
+
+    metrics = collector.all()[0]
+    assert metrics.selected_shape == ""
+    assert metrics.reason_code == ""
