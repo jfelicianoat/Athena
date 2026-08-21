@@ -30,6 +30,13 @@ from athena_desktop.config import (
     resolve_token,
 )
 from athena_desktop.runtime import RunConfiguration, run_athena
+from athena_desktop.service import (
+    ManagedAthenaService,
+    ManagedServiceRequest,
+    ServiceAlreadyRunning,
+    default_service_state_dir,
+    start_managed_service,
+)
 
 _PROVIDER_LABELS = {
     "AI_Broker": ProviderKind.AI_BROKER,
@@ -59,6 +66,8 @@ class AthenaDesktopApp:
         self.messages: queue.Queue[tuple[str, object]] = queue.Queue()
         self.worker: threading.Thread | None = None
         self.cancellation: CancellationSource | None = None
+        self.managed_service: ManagedAthenaService | None = None
+        self.service_worker: threading.Thread | None = None
         self.closing = False
 
         self.workspace = tk.StringVar(value=self.settings.workspace)
@@ -72,6 +81,9 @@ class AthenaDesktopApp:
         self.timeout = tk.StringVar(value=f"{self.settings.timeout_seconds:g}")
         self.status = tk.StringVar(value="Lista para empezar")
         self.provider_hint = tk.StringVar()
+        self.service_status = tk.StringVar(value="Servicio detenido")
+        self.service_url = tk.StringVar(value="")
+        self.service_token = tk.StringVar(value="")
 
         self._configure_window()
         self._build_ui()
@@ -186,6 +198,8 @@ class AthenaDesktopApp:
         ttk.Entry(second, textvariable=self.timeout, width=8).pack(side=tk.RIGHT)
 
     def _build_work_area(self, parent: ttk.Frame) -> None:
+        self._build_service_area(parent)
+
         objective_frame = ttk.LabelFrame(
             parent, text="¿Qué quieres que haga?", style="Section.TLabelframe"
         )
@@ -221,6 +235,55 @@ class AthenaDesktopApp:
         notebook.add(activity_tab, text="Actividad")
         self.answer = self._text_panel(answer_tab, font=("Segoe UI", 10))
         self.activity = self._text_panel(activity_tab, font=("Cascadia Mono", 9))
+
+    def _build_service_area(self, parent: ttk.Frame) -> None:
+        service = ttk.LabelFrame(
+            parent, text="Servicio local para ChatyGPT", style="Section.TLabelframe"
+        )
+        service.pack(fill=tk.X, pady=(0, 12))
+        body = ttk.Frame(service, padding=10)
+        body.pack(fill=tk.X)
+
+        heading = ttk.Frame(body)
+        heading.pack(fill=tk.X)
+        ttk.Label(heading, textvariable=self.service_status, style="Status.TLabel").pack(
+            side=tk.LEFT
+        )
+        self.service_start_button = ttk.Button(
+            heading, text="Iniciar servicio", command=self._start_service
+        )
+        self.service_start_button.pack(side=tk.RIGHT)
+        self.service_stop_button = ttk.Button(
+            heading, text="Detener", command=self._stop_service, state=tk.DISABLED
+        )
+        self.service_stop_button.pack(side=tk.RIGHT, padx=(0, 8))
+
+        connection = ttk.Frame(body)
+        connection.pack(fill=tk.X, pady=(9, 0))
+        ttk.Label(connection, text="URL").pack(side=tk.LEFT)
+        ttk.Entry(connection, textvariable=self.service_url, state="readonly").pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0)
+        )
+
+        credential = ttk.Frame(body)
+        credential.pack(fill=tk.X, pady=(7, 0))
+        ttk.Label(credential, text="Token de Athena").pack(side=tk.LEFT)
+        ttk.Entry(credential, textvariable=self.service_token, state="readonly").pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8)
+        )
+        self.copy_service_token_button = ttk.Button(
+            credential, text="Copiar", command=self._copy_service_token, state=tk.DISABLED
+        )
+        self.copy_service_token_button.pack(side=tk.RIGHT)
+        ttk.Label(
+            body,
+            text=(
+                "Esta credencial es distinta del token de AI_Broker. Athena la genera "
+                "al iniciar el servicio y no la guarda en disco."
+            ),
+            style="Subtitle.TLabel",
+            wraplength=650,
+        ).pack(fill=tk.X, pady=(7, 0))
 
     @staticmethod
     def _field_label(parent: ttk.Frame, text: str) -> None:
@@ -327,6 +390,80 @@ class AthenaDesktopApp:
         else:
             self.messages.put(("result", result))
 
+    def _start_service(self) -> None:
+        if self.service_worker is not None and self.service_worker.is_alive():
+            return
+        if self.managed_service is not None and self.managed_service.process.poll() is None:
+            return
+        try:
+            settings = self._settings_from_form()
+            if settings.provider is not ProviderKind.AI_BROKER:
+                raise ValueError("El servicio gestionado necesita AI_Broker como proveedor")
+            broker_token = resolve_token(settings.provider, self.token.get())
+            request = ManagedServiceRequest(
+                broker_base_url=settings.base_url,
+                broker_token=broker_token,
+                preferred_model=settings.model,
+                state_dir=default_service_state_dir(),
+            )
+            self.store.save(settings)
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("No se puede iniciar el servicio", str(exc), parent=self.root)
+            return
+
+        self.service_status.set("Iniciando servicio…")
+        self.service_start_button.configure(state=tk.DISABLED)
+        self.service_stop_button.configure(state=tk.DISABLED)
+        self.copy_service_token_button.configure(state=tk.DISABLED)
+        self.service_worker = threading.Thread(
+            target=self._start_service_worker,
+            args=(request,),
+            name="athena-desktop-service-start",
+            daemon=True,
+        )
+        self.service_worker.start()
+
+    def _start_service_worker(self, request: ManagedServiceRequest) -> None:
+        try:
+            service = start_managed_service(request)
+        except ServiceAlreadyRunning as exc:
+            self.messages.put(("service_existing", exc))
+        except BaseException as exc:
+            self.messages.put(("service_error", exc))
+        else:
+            self.messages.put(("service_started", service))
+
+    def _stop_service(self) -> None:
+        service = self.managed_service
+        if service is None:
+            return
+        self.service_status.set("Deteniendo servicio…")
+        self.service_stop_button.configure(state=tk.DISABLED)
+        self.service_worker = threading.Thread(
+            target=self._stop_service_worker,
+            args=(service,),
+            name="athena-desktop-service-stop",
+            daemon=True,
+        )
+        self.service_worker.start()
+
+    def _stop_service_worker(self, service: ManagedAthenaService) -> None:
+        try:
+            service.stop()
+        except BaseException as exc:
+            self.messages.put(("service_error", exc))
+        else:
+            self.messages.put(("service_stopped", service))
+
+    def _copy_service_token(self) -> None:
+        token = self.service_token.get()
+        if not token:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(token)
+        self.root.update_idletasks()
+        self.service_status.set("Token copiado al portapapeles")
+
     def _request_permission(self, request: PermissionRequest) -> PermissionDecision:
         question = _PermissionQuestion(request, threading.Event())
         self.messages.put(("permission", question))
@@ -349,6 +486,14 @@ class AthenaDesktopApp:
                 self._show_result(payload)
             elif kind == "error" and isinstance(payload, BaseException):
                 self._show_error(payload)
+            elif kind == "service_started" and isinstance(payload, ManagedAthenaService):
+                self._show_service_started(payload)
+            elif kind == "service_stopped" and isinstance(payload, ManagedAthenaService):
+                self._show_service_stopped(payload)
+            elif kind == "service_existing" and isinstance(payload, ServiceAlreadyRunning):
+                self._show_existing_service(payload)
+            elif kind == "service_error" and isinstance(payload, BaseException):
+                self._show_service_error(payload)
         if not self.closing:
             self.root.after(75, self._drain_messages)
 
@@ -404,6 +549,51 @@ class AthenaDesktopApp:
         self._finish_run()
         messagebox.showerror("Athena", str(error), parent=self.root)
 
+    def _show_service_started(self, service: ManagedAthenaService) -> None:
+        self.managed_service = service
+        self.service_url.set(service.endpoint.base_url)
+        self.service_token.set(service.endpoint.token)
+        self.service_status.set("Servicio disponible")
+        self.service_start_button.configure(state=tk.DISABLED)
+        self.service_stop_button.configure(state=tk.NORMAL)
+        self.copy_service_token_button.configure(state=tk.NORMAL)
+
+    def _show_service_stopped(self, service: ManagedAthenaService) -> None:
+        if self.managed_service is service:
+            self.managed_service = None
+        self.service_url.set("")
+        self.service_token.set("")
+        self.service_status.set("Servicio detenido")
+        self.service_start_button.configure(state=tk.NORMAL)
+        self.service_stop_button.configure(state=tk.DISABLED)
+        self.copy_service_token_button.configure(state=tk.DISABLED)
+
+    def _show_existing_service(self, service: ServiceAlreadyRunning) -> None:
+        self.managed_service = None
+        self.service_url.set(service.base_url)
+        self.service_token.set("")
+        self.service_status.set("Servicio iniciado por otra aplicación")
+        self.service_start_button.configure(state=tk.NORMAL)
+        self.service_stop_button.configure(state=tk.DISABLED)
+        self.copy_service_token_button.configure(state=tk.DISABLED)
+        messagebox.showinfo(
+            "Servicio de Athena ya iniciado",
+            (
+                f"Athena ya está funcionando en {service.base_url}.\n\n"
+                "Esta ventana no la inició y por seguridad no puede recuperar su token ni "
+                "detenerla. La aplicación que inició el servicio —por ejemplo ChatyGPT— "
+                "debe conservar el token anunciado por Athena."
+            ),
+            parent=self.root,
+        )
+
+    def _show_service_error(self, error: BaseException) -> None:
+        self.service_status.set("Error del servicio")
+        self.service_start_button.configure(state=tk.NORMAL)
+        self.service_stop_button.configure(state=tk.DISABLED)
+        self.copy_service_token_button.configure(state=tk.DISABLED)
+        messagebox.showerror("Servicio de Athena", str(error), parent=self.root)
+
     def _cancel(self) -> None:
         if self.cancellation is not None:
             self.cancellation.cancel()
@@ -432,6 +622,8 @@ class AthenaDesktopApp:
         self.closing = True
         if self.cancellation is not None:
             self.cancellation.cancel()
+        if self.managed_service is not None:
+            self.managed_service.stop()
         self.root.destroy()
 
 

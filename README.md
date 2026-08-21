@@ -87,16 +87,37 @@ credential as `x-admin-token`; OpenAI-compatible endpoints receive a Bearer toke
 For AI_Broker, Athena translates its tool definitions and the model's decisions through a
 structured JSON contract. Tool execution and permission decisions remain inside Athena.
 
+Athena Desktop also manages the local service used by ChatyGPT. **Iniciar servicio** starts
+it with the provider settings shown in the window. Once Athena is listening, the window
+shows both its local URL and its newly generated service token; **Copiar** places that token
+on the clipboard. The broker token and the Athena service token are different credentials.
+The latter lives only for that service process and disappears from the window when it stops.
+If another application already owns a healthy Athena service on the configured port, the
+desktop reports it as externally managed instead of starting or stopping a second instance.
+Only the application that launched that process can know the one-time startup token.
+
 ## ChatyGPT service
 
 ChatyGPT communicates with Athena through its loopback-only HTTP service. The
 recommended launcher is `ChatyGPT\Arrancar ChatyGPT.bat`, which configures and starts the
 service automatically. For a manual development launch, define
-`ATHENA_BROKER_BASE_URL`, `ATHENA_BROKER_TOKEN`, and `ATHENA_SERVICE_TOKEN`, then run:
+`ATHENA_BROKER_BASE_URL` and `ATHENA_BROKER_TOKEN`, then run:
 
 ```text
 python -m athena_service
 ```
+
+Athena generates a fresh bearer token and, only after opening the socket, writes one
+machine-readable startup line to stdout:
+
+```text
+ATHENA_SERVICE_READY {"base_url":"http://127.0.0.1:8770","token":"..."}
+```
+
+A managing application such as ChatyGPT captures that line from the child process instead
+of searching logs or reading a credential file. A manual launch displays the same line so
+the user can copy it. `ATHENA_SERVICE_TOKEN` remains an optional explicit override, useful
+for controlled development, but is no longer required.
 
 The service listens on `127.0.0.1:8770` by default. `ATHENA_SERVICE_PORT` and
 `ATHENA_STATE_DIR` may override the port and durable state directory. Do not publish this

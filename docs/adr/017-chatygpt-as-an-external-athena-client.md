@@ -65,6 +65,12 @@ The service binds to `127.0.0.1` only and requires a bearer token generated at s
 start — the same shape the user already accepts from AI_Broker, and ChatyGPT already stores
 a Broker credential with DPAPI in `secrets.rs`.
 
+The executable announces that generated credential exactly once, after the listening
+socket exists, as an `ATHENA_SERVICE_READY` JSON line on stdout. A managed parent captures
+the pipe; a manual launch leaves the line visible for copying. The token is never written
+to the settings or state databases. This startup handshake is also what Athena Desktop
+uses, so manual and ChatyGPT-managed launches do not have competing token flows.
+
 ### 4. Transport: SSE for events, POST for intents
 
 Athena has no API today, so this is a choice rather than a discovery.

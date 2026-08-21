@@ -2,8 +2,9 @@
 
 El adaptador HTTP y el runtime ya existen en ``athena.adapters.service``. Este
 módulo se limita a ensamblarlos con AI_Broker, la persistencia local y una
-configuración recibida mediante variables de entorno. No imprime ni persiste
-ninguna credencial.
+configuración recibida mediante variables de entorno. Cuando el socket ya está
+abierto anuncia una vez la URL y el token por stdout para que el proceso que lo
+inició pueda capturarlos; la credencial nunca se persiste.
 """
 
 from __future__ import annotations
@@ -11,8 +12,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import secrets
 import signal
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +25,7 @@ from athena.adapters.ai_broker import (
 )
 from athena.adapters.openai_compatible import OpenAICompatibleModelProvider
 from athena.adapters.service import AthenaService, RunRegistry, ServiceConfig
+from athena.adapters.service.launch import ServiceEndpoint, service_ready_line
 from athena.adapters.service.orchestration import OrchestrationSettings
 from athena.events import InMemoryEventBus
 from athena.graph_store import SqliteGraphStore
@@ -113,7 +117,7 @@ class ServiceSettings:
         if not broker_token:
             raise ValueError("ATHENA_BROKER_TOKEN no está configurado")
         if not service_token:
-            raise ValueError("ATHENA_SERVICE_TOKEN no está configurado")
+            service_token = secrets.token_urlsafe(32)
 
         state_value = os.environ.get("ATHENA_STATE_DIR", "").strip()
         if state_value:
@@ -127,7 +131,7 @@ class ServiceSettings:
             port = int(port_value)
         except ValueError as exc:
             raise ValueError("ATHENA_SERVICE_PORT debe ser un número") from exc
-        if not 1 <= port <= 65535:
+        if not 0 <= port <= 65535:
             raise ValueError("ATHENA_SERVICE_PORT está fuera de rango")
 
         preferred = os.environ.get("ATHENA_PREFERRED_MODEL", "").strip() or None
@@ -247,9 +251,14 @@ def build_service(settings: ServiceSettings) -> AthenaService:
     )
 
 
-async def serve(settings: ServiceSettings) -> None:
+async def serve(
+    settings: ServiceSettings,
+    *,
+    announce: Callable[[str], None] | None = None,
+    stop: asyncio.Event | None = None,
+) -> None:
     service = build_service(settings)
-    stopped = asyncio.Event()
+    stopped = stop or asyncio.Event()
     loop = asyncio.get_running_loop()
     for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
         signum = getattr(signal, name, None)
@@ -260,7 +269,10 @@ async def serve(settings: ServiceSettings) -> None:
         with contextlib.suppress(NotImplementedError, RuntimeError):
             loop.add_signal_handler(signum, stopped.set)
 
-    await service.start()
+    host, port = await service.start()
+    endpoint = ServiceEndpoint(f"http://{host}:{port}", settings.service_token)
+    if announce is not None:
+        announce(service_ready_line(endpoint))
     try:
         await stopped.wait()
     finally:
@@ -270,7 +282,7 @@ async def serve(settings: ServiceSettings) -> None:
 def main() -> int:
     try:
         settings = ServiceSettings.from_environment()
-        asyncio.run(serve(settings))
+        asyncio.run(serve(settings, announce=lambda line: print(line, flush=True)))
     except KeyboardInterrupt:
         return 0
     except (OSError, ValueError) as exc:

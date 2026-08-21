@@ -5,10 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from athena_service import ServiceSettings, build_orchestration, build_service
+from athena.adapters.service.launch import parse_service_ready
+from athena_service import ServiceSettings, build_orchestration, build_service, serve
 
 
-def test_service_settings_require_the_three_connection_secrets(
+def test_service_settings_require_broker_credentials_and_generate_the_service_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     for name in (
@@ -20,6 +21,50 @@ def test_service_settings_require_the_three_connection_secrets(
 
     with pytest.raises(ValueError, match="ATHENA_BROKER_BASE_URL"):
         ServiceSettings.from_environment()
+
+    monkeypatch.setenv("ATHENA_BROKER_BASE_URL", "http://127.0.0.1:8765")
+    monkeypatch.setenv("ATHENA_BROKER_TOKEN", "broker-secret")
+
+    first = ServiceSettings.from_environment()
+    second = ServiceSettings.from_environment()
+
+    assert first.service_token
+    assert second.service_token
+    assert first.service_token != second.service_token
+
+
+def test_service_announces_the_generated_token_after_opening_the_port(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def scenario() -> None:
+        settings = ServiceSettings(
+            broker_base_url="http://127.0.0.1:9",
+            broker_token="test-only",
+            service_token="generated-service-token",
+            state_dir=tmp_path,
+            port=0,
+        )
+        ready = asyncio.Event()
+        announced: list[str] = []
+
+        async def stop_after_announcement() -> None:
+            while not announced:
+                await asyncio.sleep(0)
+            ready.set()
+
+        waiter = asyncio.create_task(stop_after_announcement())
+        task = asyncio.create_task(
+            serve(settings, announce=lambda line: announced.append(line), stop=ready)
+        )
+        await asyncio.wait_for(waiter, timeout=2)
+        await asyncio.wait_for(task, timeout=2)
+
+        endpoint = parse_service_ready(announced[0])
+        assert endpoint is not None
+        assert endpoint.token == "generated-service-token"
+        assert endpoint.base_url.startswith("http://127.0.0.1:")
+
+    asyncio.run(scenario())
 
 
 def test_service_is_assembled_for_chatygpt_without_persisting_tokens(tmp_path: Path) -> None:
