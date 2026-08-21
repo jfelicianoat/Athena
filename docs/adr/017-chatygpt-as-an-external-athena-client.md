@@ -320,6 +320,36 @@ Two things the build changed about the design:
   *before* it writes, so returning on the earlier event would hand a client an id that
   answers 404 for its first few milliseconds.
 
+## Who owns the service credential
+
+Athena Service owns it, and there are exactly two ways it gets one:
+
+| `ATHENA_SERVICE_TOKEN` | What happens | Who is in charge |
+| --- | --- | --- |
+| set | that credential is used as given | whoever set it |
+| absent | a CSPRNG credential is minted per start | Athena, announced once |
+
+The variable stays optional on purpose. A deployment that wants to govern the credential
+itself — rotate it, share it between processes, know it before the service exists — sets
+it; a managed child does not, and its parent reads the credential off the handshake. What
+must not happen is a third pattern where several parties mint credentials for the same
+instance and each assumes theirs is the live one.
+
+**Do not re-mint the credential of an instance you did not start.** A launcher that finds
+Athena already listening has found somebody else's process: rotating its credential would
+break whichever client is using it, and cannot work anyway — the credential is fixed for
+the life of that process. The correct response to "Athena is alive but my stored
+credential fails" is to say so and ask for an explicit re-link.
+
+### What "never persisted" means, precisely
+
+Athena writes the credential to none of its databases and none of its configuration. It
+does transmit it once on stdout, which means **redirecting that stream persists it**: the
+file belongs to whoever redirected, and Athena cannot know they did. A parent capturing
+the pipe holds it in memory; `python -m athena_service > service.log` has just written a
+credential to disk. The property Athena can guarantee is narrower and is tested: after the
+`ATHENA_SERVICE_READY` line, the credential never appears in its output again.
+
 ## Resolution of the open questions
 
 | Question | Resolution | Decided by |

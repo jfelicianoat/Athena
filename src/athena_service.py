@@ -2,9 +2,25 @@
 
 El adaptador HTTP y el runtime ya existen en ``athena.adapters.service``. Este
 módulo se limita a ensamblarlos con AI_Broker, la persistencia local y una
-configuración recibida mediante variables de entorno. Cuando el socket ya está
-abierto anuncia una vez la URL y el token por stdout para que el proceso que lo
-inició pueda capturarlos; la credencial nunca se persiste.
+configuración recibida mediante variables de entorno.
+
+Athena Service es la fuente principal de la credencial del servicio:
+
+- con ``ATHENA_SERVICE_TOKEN`` puesta, usa la credencial que le den, que es como se
+  gobierna desde fuera —un lanzador que la genera él, un despliegue que la rota, una
+  prueba que necesita saberla de antemano—;
+- sin ella, genera una efímera con ``secrets.token_urlsafe`` y la anuncia una sola vez.
+  Es el camino normal para un proceso gestionado: nadie tiene que inventar una credencial
+  ni acordarla de antemano.
+
+El anuncio es una línea ``ATHENA_SERVICE_READY`` por stdout, escrita **después** de que
+el socket exista, para que quien lo lea sepa que ya puede conectarse.
+
+Sobre persistencia, con precisión: Athena no guarda la credencial en ninguna de sus bases
+de datos ni en su configuración. Lo que sí hace es transmitirla por stdout, así que
+**redirigir esa salida a un fichero la persiste** —el fichero es de quien redirige, y
+Athena no puede saberlo—. Un padre que captura la tubería la recibe en memoria; quien
+lanza el servicio a mano con ``> servicio.log`` acaba de escribir su credencial en disco.
 """
 
 from __future__ import annotations
@@ -117,6 +133,9 @@ class ServiceSettings:
         if not broker_token:
             raise ValueError("ATHENA_BROKER_TOKEN no está configurado")
         if not service_token:
+            # Ausente significa «genérala tú», no «arranca sin credencial». Es el camino
+            # normal de un proceso gestionado: quien lo lanza recoge la credencial del
+            # handshake en vez de tener que acordarla antes de que exista el servicio.
             service_token = secrets.token_urlsafe(32)
 
         state_value = os.environ.get("ATHENA_STATE_DIR", "").strip()

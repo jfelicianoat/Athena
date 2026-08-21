@@ -276,6 +276,14 @@ class AthenaService:
                     "runs": len(self.registry.live_ids()),
                 },
             )
+        if path == "/v1/auth/check" and method == "GET":
+            # Deliberadamente vacío y barato. Sirve para una sola pregunta —«¿vale esta
+            # credencial?»— y responderla con datos invitaría a sondearlo por ellos.
+            #
+            # Existe porque `/v1/health` no puede contestarla: es público a propósito, y
+            # un cliente que dedujese de un 200 que está autenticado se anunciaría como
+            # conectado mientras todo lo demás le devuelve 401.
+            return Response(200, {"authenticated": True, "wire_version": WIRE_VERSION})
         if path == "/v1/runs" and method == "GET":
             return await self._list_runs(request)
         if path == "/v1/runs" and method == "POST":

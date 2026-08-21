@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -241,3 +242,88 @@ def test_planning_hands_its_clock_to_the_tasks(tmp_path: Path) -> None:
     orchestration = build_orchestration(_settings(tmp_path, planning=True))
 
     assert orchestration.task_timeout_seconds == 1800.0
+
+
+def test_liveness_and_authentication_are_different_questions(tmp_path: Path) -> None:
+    """`/v1/health` dice que Athena vive; `/v1/auth/check` dice si te conoce.
+
+    Hacen falta las dos por separado. `/v1/health` es público a propósito —un sondeo de
+    vida que exigiese credencial no sirve para saber si hay que arrancar el servicio— y
+    por eso no puede usarse para concluir que un cliente está autenticado. Cuando se usaba
+    para eso, la aplicación se anunciaba conectada mientras cada operación devolvía 401.
+    """
+
+    async def scenario() -> None:
+        service = build_service(
+            ServiceSettings(
+                broker_base_url="http://127.0.0.1:9",
+                broker_token="test-only",
+                service_token="la-buena",
+                state_dir=tmp_path,
+                port=0,
+            )
+        )
+        host, port = await service.start()
+        try:
+
+            async def pedir(ruta: str, credencial: str | None) -> int:
+                reader, writer = await asyncio.open_connection(host, port)
+                cabeceras = f"GET {ruta} HTTP/1.1\r\nHost: localhost\r\n"
+                if credencial is not None:
+                    cabeceras += f"Authorization: Bearer {credencial}\r\n"
+                writer.write((cabeceras + "\r\n").encode())
+                await writer.drain()
+                crudo = await reader.read()
+                writer.close()
+                await writer.wait_closed()
+                return int(crudo.split(b"\r\n")[0].split(b" ")[1])
+
+            # Vivo, y lo dice sin que nadie se identifique.
+            assert await pedir("/v1/health", None) == 200
+            # La misma instancia, preguntada por la credencial, distingue los tres casos.
+            assert await pedir("/v1/auth/check", None) == 401
+            assert await pedir("/v1/auth/check", "la-mala") == 401
+            assert await pedir("/v1/auth/check", "la-buena") == 200
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
+def test_the_check_answers_the_one_question_and_carries_nothing_else(tmp_path: Path) -> None:
+    """Sin datos del servicio: un endpoint barato al que se puede llamar a menudo.
+
+    Devolver runs, versiones o rutas lo convertiría en algo que se sondea por sus datos, y
+    un cliente acabaría dependiendo de que una comprobación de credencial le informe.
+    """
+
+    async def scenario() -> None:
+        service = build_service(
+            ServiceSettings(
+                broker_base_url="http://127.0.0.1:9",
+                broker_token="test-only",
+                service_token="la-buena",
+                state_dir=tmp_path,
+                port=0,
+            )
+        )
+        host, port = await service.start()
+        try:
+            reader, writer = await asyncio.open_connection(host, port)
+            writer.write(
+                b"GET /v1/auth/check HTTP/1.1\r\nHost: localhost\r\n"
+                b"Authorization: Bearer la-buena\r\n\r\n"
+            )
+            await writer.drain()
+            crudo = await reader.read()
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await service.stop()
+
+        cuerpo = json.loads(crudo.split(b"\r\n\r\n", 1)[1])
+        assert cuerpo == {"authenticated": True, "wire_version": 1}
+        # Y la credencial no viaja de vuelta, ni siquiera para confirmarla.
+        assert b"la-buena" not in crudo.split(b"\r\n\r\n", 1)[1]
+
+    asyncio.run(scenario())
