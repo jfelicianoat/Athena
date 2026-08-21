@@ -26,6 +26,8 @@ import asyncio
 import http.client
 import json
 from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass
+from typing import cast
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -44,6 +46,7 @@ from athena.models import (
     ModelRequest,
     ModelResponse,
     ModelRole,
+    ModelToolCall,
     ModelUsage,
 )
 from athena.types import JSONObject, JSONValue
@@ -54,13 +57,27 @@ _POLL_INTERVAL_SECONDS = 1.0
 
 #: How long a single HTTP call may take. Not how long a task may take — that is the
 #: caller's timeout, and conflating them would make a slow model look like a dead broker.
-_REQUEST_TIMEOUT_SECONDS = 30.0
+#:
+#: Ninety seconds, not thirty. A broker with a full queue answers `/health` in eight
+#: seconds and `/api/v1/queue` in twenty; a poll that arrives while a 30B model is loading
+#: waits behind it. At thirty seconds those turn into `TimeoutError`, which the adapter
+#: correctly reports as transient — and after two retries the run dies of a busy server
+#: rather than of anything being wrong.
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 90.0
 
 #: States the broker reports. Anything not listed is treated as still working, because a
 #: state this adapter does not recognise is not evidence that the task ended.
 _SUCCEEDED = frozenset({"succeeded", "completed", "done"})
 _FAILED = frozenset({"failed", "error", "rejected"})
 _CANCELLED = frozenset({"cancelled", "canceled", "expired", "timeout"})
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedRequest:
+    prompt: str
+    output_schema: JSONObject | None
+    allowed_tools: frozenset[str]
+    tool_choice_required: bool = False
 
 
 class AiBrokerModelProvider(ModelProvider):
@@ -74,6 +91,7 @@ class AiBrokerModelProvider(ModelProvider):
         preferred_model: str | None = None,
         poll_interval_seconds: float = _POLL_INTERVAL_SECONDS,
         max_wait_seconds: float = 600.0,
+        request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
     ) -> None:
         parsed = urlsplit(base_url.rstrip("/"))
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -84,6 +102,9 @@ class AiBrokerModelProvider(ModelProvider):
         self._preferred_model = preferred_model
         self._poll = max(0.1, poll_interval_seconds)
         self._max_wait = max_wait_seconds
+        #: Configurable because how slow "slow but alive" is depends on the deployment: a
+        #: broker sharing a GPU with something else is not a broken broker.
+        self._request_timeout = max(1.0, request_timeout_seconds)
 
     # -- the port ----------------------------------------------------------
 
@@ -91,9 +112,10 @@ class AiBrokerModelProvider(ModelProvider):
         self, request: ModelRequest, cancellation: CancellationToken
     ) -> ModelResponse:
         cancellation.raise_if_cancelled()
-        task_id = await self._submit(request, cancellation)
+        prepared = _prepare_request(request)
+        task_id = await self._submit(request, prepared, cancellation)
         try:
-            return await self._await_result(task_id, cancellation)
+            return await self._await_result(task_id, prepared, cancellation)
         except BaseException:
             # A task nobody is waiting for is a task the broker will still dispatch, and
             # pay for. Cancelling on the way out is the difference between abandoning a
@@ -110,7 +132,10 @@ class AiBrokerModelProvider(ModelProvider):
         yield  # pragma: no cover - unreachable, and required to keep this a generator
 
     def capabilities(self) -> ModelCapabilities:
-        return ModelCapabilities(streaming=False, tool_calls=False, structured_output=True)
+        # AI_Broker accepts prompts plus a JSON output schema. The adapter translates
+        # Athena's native tool interface into that structured contract and translates the
+        # model's decision back into ModelToolCall objects. Athena still executes them.
+        return ModelCapabilities(streaming=False, tool_calls=True, structured_output=True)
 
     async def health(self, cancellation: CancellationToken) -> ModelHealth:
         cancellation.raise_if_cancelled()
@@ -127,14 +152,22 @@ class AiBrokerModelProvider(ModelProvider):
 
     # -- the bridge --------------------------------------------------------
 
-    async def _submit(self, request: ModelRequest, cancellation: CancellationToken) -> str:
+    async def _submit(
+        self,
+        request: ModelRequest,
+        prepared: _PreparedRequest,
+        cancellation: CancellationToken,
+    ) -> str:
         """One task, with an idempotency key so a retried submission is not a second task."""
         body: dict[str, JSONValue] = {
             "idempotency_key": str(uuid4()),
-            "content": {"prompt": _flatten(request)},
+            "content": {"prompt": prepared.prompt},
         }
-        if request.response_schema is not None:
-            body["output"] = {"format": "json", "json_schema": dict(request.response_schema)}
+        if prepared.output_schema is not None:
+            body["output"] = {
+                "format": "json",
+                "json_schema": dict(prepared.output_schema),
+            }
         model = request.model or self._preferred_model
         if model:
             # Named, not imposed: the broker may still route elsewhere, and it is the
@@ -153,7 +186,12 @@ class AiBrokerModelProvider(ModelProvider):
             raise ModelPermanentError("AI_Broker accepted the task without naming it")
         return task_id
 
-    async def _await_result(self, task_id: str, cancellation: CancellationToken) -> ModelResponse:
+    async def _await_result(
+        self,
+        task_id: str,
+        prepared: _PreparedRequest,
+        cancellation: CancellationToken,
+    ) -> ModelResponse:
         """Poll until the task ends, the caller stops, or the wait runs out."""
         waited = 0.0
         while True:
@@ -167,7 +205,11 @@ class AiBrokerModelProvider(ModelProvider):
                 raise ModelTransientError(f"AI_Broker returned HTTP {status} while polling")
             state = str(payload.get("status", "")).lower()
             if state in _SUCCEEDED:
-                return _response_from(payload)
+                return _response_from(
+                    payload,
+                    prepared.allowed_tools,
+                    tool_choice_required=prepared.tool_choice_required,
+                )
             if state in _FAILED:
                 raise ModelPermanentError(
                     "AI_Broker could not complete the task",
@@ -217,7 +259,7 @@ class AiBrokerModelProvider(ModelProvider):
             if self._url.scheme == "https"
             else http.client.HTTPConnection
         )
-        connection = connection_type(self._host, self._url.port, timeout=_REQUEST_TIMEOUT_SECONDS)
+        connection = connection_type(self._host, self._url.port, timeout=self._request_timeout)
         unsubscribe = cancellation.register(connection.close) if cancellation is not None else None
         # `x-admin-token`, not `Authorization`. The broker's own clients use it, and a
         # bearer header sails past its health endpoint while every write returns 403 —
@@ -258,12 +300,129 @@ def _flatten(request: ModelRequest) -> str:
             ModelRole.ASSISTANT: "Assistant",
             ModelRole.TOOL: "Tool",
         }.get(message.role, "User")
+        if message.role is ModelRole.TOOL:
+            identity = message.name or "unknown"
+            correlation = f" for {message.tool_call_id}" if message.tool_call_id else ""
+            label = f"Tool {identity} result{correlation}"
         if message.content.strip():
             parts.append(f"{label}: {message.content.strip()}")
+        if message.tool_calls:
+            calls = [
+                {
+                    "call_id": call.call_id,
+                    "name": call.name,
+                    "arguments": dict(call.arguments),
+                }
+                for call in message.tool_calls
+            ]
+            parts.append(
+                "Assistant requested tool calls: "
+                + json.dumps(calls, ensure_ascii=False, separators=(",", ":"))
+            )
     return "\n\n".join(parts)
 
 
-def _response_from(payload: JSONObject) -> ModelResponse:
+def _prepare_request(request: ModelRequest) -> _PreparedRequest:
+    contracts = _tool_contracts(request.tools)
+    prompt = _flatten(request)
+    if not contracts:
+        return _PreparedRequest(prompt, request.response_schema, frozenset())
+
+    tool_choice_required = request.options.get("tool_choice") == "required"
+    tools_json = json.dumps(request.tools, ensure_ascii=False, separators=(",", ":"))
+    protocol = (
+        "You control Athena through the tools listed below. Athena, not you, executes each "
+        "tool and applies its permission policy. Return exactly one JSON object matching "
+        "the supplied schema. Use kind=tool_calls when an action or more information is "
+        "needed, and include only listed tool names with valid arguments. Never claim a "
+        "tool ran before Athena returns its result. Use kind=message only when the objective "
+        "is complete and put the final answer in message.\n\nAvailable tools:\n" + tools_json
+    )
+    if tool_choice_required:
+        protocol += (
+            "\n\nA tool call is mandatory on this turn. Return kind=tool_calls; "
+            "kind=message is not permitted."
+        )
+    return _PreparedRequest(
+        f"{prompt}\n\nSystem tool protocol: {protocol}",
+        _decision_schema(
+            contracts,
+            request.response_schema,
+            tool_choice_required=tool_choice_required,
+        ),
+        frozenset(name for name, _ in contracts),
+        tool_choice_required,
+    )
+
+
+def _tool_contracts(
+    tools: tuple[JSONObject, ...],
+) -> tuple[tuple[str, JSONObject], ...]:
+    contracts: list[tuple[str, JSONObject]] = []
+    for definition in tools:
+        function = definition.get("function")
+        if not isinstance(function, Mapping):
+            continue
+        name = function.get("name")
+        parameters = function.get("parameters")
+        if not isinstance(name, str) or not name or not isinstance(parameters, Mapping):
+            continue
+        contracts.append((name, parameters))
+    return tuple(contracts)
+
+
+def _decision_schema(
+    contracts: tuple[tuple[str, JSONObject], ...],
+    response_schema: JSONObject | None,
+    *,
+    tool_choice_required: bool = False,
+) -> JSONObject:
+    names = [name for name, _ in contracts]
+    message_schema: JSONObject = response_schema or {"type": "string"}
+    kind_values = ["tool_calls"] if tool_choice_required else ["message", "tool_calls"]
+    required = (
+        ["kind", "tool_calls"]
+        if tool_choice_required
+        else [
+            "kind",
+            "message",
+            "tool_calls",
+        ]
+    )
+    return {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string", "enum": kind_values},
+            "message": dict(message_schema),
+            "tool_calls": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "call_id": {"type": "string"},
+                        "name": {"type": "string", "enum": names},
+                        # The full per-tool schemas remain in the prompt. Athena validates
+                        # arguments again before permission or execution, while this broad
+                        # object keeps the broker contract portable across model vendors.
+                        "arguments": {"type": "object"},
+                    },
+                    "required": ["name", "arguments"],
+                    "additionalProperties": False,
+                },
+                "minItems": 1 if tool_choice_required else 0,
+            },
+        },
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
+def _response_from(
+    payload: JSONObject,
+    allowed_tools: frozenset[str] = frozenset(),
+    *,
+    tool_choice_required: bool = False,
+) -> ModelResponse:
     """Read the answer out of a completed task.
 
     Everything lives under `result`: `assistant_content` is the text, `model_used.model`
@@ -284,6 +443,18 @@ def _response_from(payload: JSONObject) -> ModelResponse:
             content = value
             break
 
+    tool_calls: tuple[ModelToolCall, ...] = ()
+    finish_reason = "stop"
+    if allowed_tools:
+        decision = _structured_decision(result, payload, content)
+        content, tool_calls = _parse_decision(
+            decision,
+            allowed_tools,
+            tool_choice_required=tool_choice_required,
+        )
+        if tool_calls:
+            finish_reason = "tool_calls"
+
     model = "ai-broker"
     used = result.get("model_used")
     if isinstance(used, dict) and isinstance(used.get("model"), str):
@@ -296,7 +467,91 @@ def _response_from(payload: JSONObject) -> ModelResponse:
             input_tokens=_count(usage, "tokens_input", "input_tokens", "prompt_tokens"),
             output_tokens=_count(usage, "tokens_output", "output_tokens", "completion_tokens"),
         )
-    return ModelResponse(content=content, model=model, finish_reason="stop", usage=tokens)
+    return ModelResponse(
+        content=content,
+        model=model,
+        finish_reason=finish_reason,
+        tool_calls=tool_calls,
+        usage=tokens,
+    )
+
+
+def _structured_decision(
+    result: Mapping[str, JSONValue], payload: JSONObject, content: str
+) -> JSONObject:
+    candidates = [
+        result.get("structured_output"),
+        result.get("output"),
+        result.get("json"),
+        payload.get("structured_output"),
+        payload.get("output"),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, Mapping) and "kind" in candidate:
+            return candidate
+    decoded = _decode_json_object(content)
+    if decoded is None:
+        raise ModelPermanentError(
+            "AI_Broker model did not return the structured Athena tool decision"
+        )
+    return decoded
+
+
+def _decode_json_object(content: str) -> JSONObject | None:
+    candidate = content.strip()
+    if candidate.startswith("```"):
+        lines = candidate.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        candidate = "\n".join(lines).strip()
+    try:
+        decoded = json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+    return cast(JSONObject, decoded) if isinstance(decoded, Mapping) else None
+
+
+def _parse_decision(
+    decision: JSONObject,
+    allowed_tools: frozenset[str],
+    *,
+    tool_choice_required: bool = False,
+) -> tuple[str, tuple[ModelToolCall, ...]]:
+    kind = decision.get("kind")
+    if kind == "message":
+        if tool_choice_required:
+            raise ModelTransientError(
+                "AI_Broker returned a final message when Athena required a tool call"
+            )
+        message = decision.get("message", "")
+        content = message if isinstance(message, str) else json.dumps(message, ensure_ascii=False)
+        if not content.strip():
+            raise ModelPermanentError("AI_Broker returned an empty final message")
+        return content, ()
+    if kind != "tool_calls":
+        raise ModelPermanentError("AI_Broker returned an unknown Athena decision kind")
+    raw_calls = decision.get("tool_calls")
+    if not isinstance(raw_calls, list) or not raw_calls:
+        raise ModelPermanentError("AI_Broker returned an empty tool decision")
+    calls = tuple(_parse_tool_call(value, allowed_tools) for value in raw_calls)
+    return "", calls
+
+
+def _parse_tool_call(value: JSONValue, allowed_tools: frozenset[str]) -> ModelToolCall:
+    if not isinstance(value, Mapping):
+        raise ModelPermanentError("AI_Broker returned a malformed tool call")
+    name = value.get("name")
+    arguments = value.get("arguments")
+    if not isinstance(name, str) or name not in allowed_tools:
+        raise ModelPermanentError("AI_Broker selected a tool Athena did not offer")
+    if not isinstance(arguments, Mapping):
+        raise ModelPermanentError("AI_Broker returned malformed tool arguments")
+    call_id = value.get("call_id")
+    if not isinstance(call_id, str) or not call_id.strip():
+        call_id = str(uuid4())
+    return ModelToolCall(call_id, name, arguments)
 
 
 def _count(usage: Mapping[str, JSONValue], *keys: str) -> int:
@@ -315,4 +570,4 @@ def _detail(payload: JSONObject) -> str:
     return ""
 
 
-__all__ = ["AiBrokerModelProvider"]
+__all__ = ["DEFAULT_REQUEST_TIMEOUT_SECONDS", "AiBrokerModelProvider"]

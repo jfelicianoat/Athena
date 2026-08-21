@@ -54,6 +54,54 @@ athena D:\path\to\repository --objective "Explain the authentication flow"
 The recommended investigation sequence is `Glob -> Grep -> ReadRange`. By default the
 runtime offers only read-only tools.
 
+## Desktop application
+
+Athena includes a native desktop interface for Windows. It can select a project, configure
+AI_Broker or an OpenAI-compatible endpoint, choose capability permissions, start a run,
+show its result and activity, resolve individual approval requests, and cancel work.
+
+Install the project and open the application:
+
+```text
+python -m pip install -e .
+athena-desktop
+```
+
+On Windows, you can also open `iniciar-athena.bat` from File Explorer. The launcher uses
+the project's virtual environment when available and otherwise looks for an installed
+Python graphical launcher.
+
+Alternatively, from a source checkout:
+
+```text
+python -m athena_desktop
+```
+
+The desktop window uses Python's native Tcl/Tk component. On Windows, keep the
+`Tcl/Tk and IDLE` option enabled in the official Python installer.
+
+Preferences are stored under `%LOCALAPPDATA%\Athena\settings.json`. Tokens are deliberately
+excluded: enter one for the current application session, or provide `ATHENA_BROKER_TOKEN`
+for AI_Broker and `ATHENA_API_KEY` for OpenAI-compatible providers. AI_Broker receives its
+credential as `x-admin-token`; OpenAI-compatible endpoints receive a Bearer token.
+For AI_Broker, Athena translates its tool definitions and the model's decisions through a
+structured JSON contract. Tool execution and permission decisions remain inside Athena.
+
+## ChatyGPT service
+
+ChatyGPT communicates with Athena through its loopback-only HTTP service. The
+recommended launcher is `ChatyGPT\Arrancar ChatyGPT.bat`, which configures and starts the
+service automatically. For a manual development launch, define
+`ATHENA_BROKER_BASE_URL`, `ATHENA_BROKER_TOKEN`, and `ATHENA_SERVICE_TOKEN`, then run:
+
+```text
+python -m athena_service
+```
+
+The service listens on `127.0.0.1:8770` by default. `ATHENA_SERVICE_PORT` and
+`ATHENA_STATE_DIR` may override the port and durable state directory. Do not publish this
+endpoint on the LAN; authentication is required even though it is bound to loopback.
+
 ## Verification and self-repair
 
 A run completes only when the project's own checks pass. Athena discovers those commands

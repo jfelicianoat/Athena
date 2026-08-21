@@ -34,6 +34,14 @@ class StepStatus(StrEnum):
 class PlanStep:
     description: str
     status: StepStatus = StepStatus.PENDING
+    #: The task this step came from, when it came from one.
+    #:
+    #: A plan the loop wrote for itself has no ids — its steps are prose, and inventing
+    #: identifiers for them would let something downstream believe it can address one.
+    #: A plan that came from a `TaskGraph` does, and carrying it is what lets a client
+    #: that reconnects match the steps in the snapshot to the task events it goes on to
+    #: receive, instead of drawing the same task twice.
+    task_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +159,7 @@ class WorkingState:
             PlanStep(
                 description=str(step.get("description", "")),
                 status=StepStatus(str(step.get("status", StepStatus.PENDING.value))),
+                task_id=_optional_str(step.get("task_id")),
             )
             for step in _objects(payload.get("current_plan"))
         )

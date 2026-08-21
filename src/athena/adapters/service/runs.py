@@ -23,12 +23,18 @@ from athena.adapters.service.approvals import (
     PendingApproval,
     RemotePermissionPrompt,
 )
-from athena.agent_loop import AgentLoop, AgentLoopConfig, AgentRunResult
+from athena.adapters.service.orchestration import (
+    OrchestrationSettings,
+    Orchestrator,
+    RunShape,
+)
+from athena.agent_loop import AgentLoop, AgentLoopConfig, AgentRunResult, AgentRunStatus
 from athena.cancellation import CancellationSource
 from athena.context import ContextBuilder
 from athena.errors import AthenaRuntimeError, ToolValidationError
 from athena.events import EventBus, EventName, RuntimeEvent
 from athena.git_tools import GitCommitTool, git_read_tools
+from athena.graph_executor import GraphResult
 from athena.models import ModelProvider
 from athena.mutation_tools import workspace_mutation_tools
 from athena.permissions import PermissionPolicy, PolicyPermissionEngine
@@ -37,7 +43,7 @@ from athena.registry import ToolRegistry
 from athena.repository_tools import repository_read_tools
 from athena.security import redact_sensitive
 from athena.session_store import SessionRecord, SessionStore
-from athena.state import AgentStatus
+from athena.state import AgentStatus, ExecutionOutcome, SessionState
 from athena.stores import ToolResultStore
 from athena.tool_executor import ToolExecutor
 from athena.tools import Tool
@@ -75,6 +81,11 @@ class RunOptions:
     max_iterations: int = 12
     max_repair_cycles: int = 2
     session_timeout_seconds: float = 900.0
+    #: Si el cliente quiere plan o no. `None` —lo normal— significa "decídelo tú": la
+    #: forma del run la fijan las señales del repositorio, no una casilla de la interfaz.
+    #: Un cliente puede rechazar un plan o pedirlo, pero pedirlo no enciende una capa de
+    #: planificación que el despliegue no configuró.
+    hierarchical: bool | None = None
 
     @classmethod
     def from_json(cls, payload: Mapping[str, object]) -> RunOptions:
@@ -93,6 +104,10 @@ class RunOptions:
                 raise ToolValidationError(f"{key} must be a positive integer")
             return raw
 
+        wanted = payload.get("hierarchical")
+        if wanted is not None and not isinstance(wanted, bool):
+            raise ToolValidationError("hierarchical must be a boolean")
+
         timeout = payload.get("session_timeout_seconds", 900.0)
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
             raise ToolValidationError("session_timeout_seconds must be a positive number")
@@ -105,6 +120,7 @@ class RunOptions:
             if payload.get("max_repair_cycles") is not None
             else 2,
             session_timeout_seconds=float(timeout),
+            hierarchical=wanted,
         )
 
 
@@ -164,6 +180,7 @@ class RunRegistry:
         approvals: ApprovalRegistry | None = None,
         delivery_timeout_seconds: float | None = None,
         approval_timeout_seconds: float | None = None,
+        orchestration: OrchestrationSettings | None = None,
     ) -> None:
         self.provider = provider
         self.event_bus = event_bus
@@ -172,6 +189,9 @@ class RunRegistry:
         self.approvals = approvals or ApprovalRegistry()
         self.delivery_timeout_seconds = delivery_timeout_seconds
         self.approval_timeout_seconds = approval_timeout_seconds
+        self.orchestrator = Orchestrator(
+            provider, event_bus, session_store, result_store, orchestration
+        )
         self._runs: dict[str, LiveRun] = {}
         event_bus.subscribe(self._fan_out)
 
@@ -241,8 +261,16 @@ class RunRegistry:
             tools.append(BashTool(event_bus=event_bus))
         return tuple(tools)
 
-    def _build(self, run_id: str, workspace: Workspace, options: RunOptions) -> AgentLoop:
-        registry = ToolRegistry(self.tools_for(options, self.event_bus))
+    def _ask(self, run_id: str) -> RemotePermissionPrompt:
+        """El canal por el que este run pregunta, sea cual sea su forma.
+
+        Uno por run y no uno por bucle: un run jerárquico que se crease el suyo aparte
+        dejaría a `resolve_permission` contestando a un registro que ya nadie escucha, y
+        la aprobación se perdería sin que nada lo dijese.
+        """
+        existing = self._runs[run_id].prompt
+        if existing is not None:
+            return existing
         prompt = RemotePermissionPrompt(
             self.approvals,
             run_id,
@@ -260,14 +288,29 @@ class RunRegistry:
             ),
         )
         self._runs[run_id].prompt = prompt
+        return prompt
+
+    @staticmethod
+    def policy_for(options: RunOptions) -> PermissionPolicy:
+        """La autoridad de un run, dicha una vez.
+
+        La usan el bucle y el grafo. Escrita dos veces, bastaría con tocar una para que un
+        run jerárquico tuviese permisos que su equivalente monoagente no tiene, y nada en
+        las pruebas de ninguno de los dos lo notaría.
+        """
+        return PermissionPolicy(
+            allow_workspace_writes=options.writes is CapabilityMode.ALLOW,
+            allow_local_execution=options.execution is CapabilityMode.ALLOW,
+        )
+
+    def _build(
+        self, run_id: str, workspace: Workspace, options: RunOptions, notes: str = ""
+    ) -> AgentLoop:
+        registry = ToolRegistry(self.tools_for(options, self.event_bus))
+        prompt = self._ask(run_id)
         executor = ToolExecutor(
             registry,
-            PolicyPermissionEngine(
-                PermissionPolicy(
-                    allow_workspace_writes=options.writes is CapabilityMode.ALLOW,
-                    allow_local_execution=options.execution is CapabilityMode.ALLOW,
-                )
-            ),
+            PolicyPermissionEngine(self.policy_for(options)),
             self.result_store,
             self.event_bus,
             prompt=prompt,
@@ -276,7 +319,7 @@ class RunRegistry:
             self.provider,
             registry,
             executor,
-            ContextBuilder(workspace),
+            ContextBuilder(workspace, notes=notes),
             self.event_bus,
             verification=CommandVerificationPolicy(
                 VerificationPlanner(workspace), event_bus=self.event_bus
@@ -309,21 +352,59 @@ class RunRegistry:
         )
         self._fan_out(event)
 
+    async def _execute(
+        self,
+        run_id: str,
+        objective: str,
+        workspace: Workspace,
+        options: RunOptions,
+        shape: RunShape,
+        source: CancellationSource,
+    ) -> AgentRunResult:
+        """Ejecuta el run con la forma decidida, y con el bucle si el plan no sale.
+
+        Que un plan no llegue a existir no es motivo para fallar: significa que este
+        objetivo se hace directamente, que es como se hacía antes de que hubiera planes.
+        """
+        prompt = self._ask(run_id)
+        # Lo recordado se pide una vez y se reparte: dos consultas a la memoria por el
+        # mismo objetivo darían la misma respuesta y costarían el doble.
+        notes = await self.orchestrator.recall(workspace.workspace_id, objective)
+        if shape.hierarchical:
+            catalog = {tool.spec.name: tool for tool in self.tools_for(options, self.event_bus)}
+            result = await self.orchestrator.run_graph(
+                run_id,
+                objective,
+                workspace,
+                shape,
+                catalog,
+                self.policy_for(options),
+                verification=CommandVerificationPolicy(
+                    VerificationPlanner(workspace), event_bus=self.event_bus
+                ),
+                prompt=prompt,
+                cancellation=source.token,
+            )
+            if result is not None:
+                return _from_graph(run_id, workspace, result)
+        loop = self._build(run_id, workspace, options, notes)
+        return await loop.run(objective, workspace, source.token, session_id=run_id)
+
     async def start(
         self, objective: str, workspace: Workspace, options: RunOptions | None = None
     ) -> str:
         """Begin a run and return only once it is genuinely addressable.
 
-        Returning the id before the loop has persisted anything would hand a client an
+        Returning the id before the run has persisted anything would hand a client an
         identifier that answers 404 for its first few milliseconds. The signal to wait for
-        is `session.persisted`, not `agent.started`: the loop announces itself *before* it
-        writes, so the earlier event would still race the store.
+        is `session.persisted`, not `agent.started`: both shapes announce themselves
+        *before* they write, so the earlier event would still race the store.
         """
         settings = options or RunOptions()
         run_id = str(uuid4())
         source = CancellationSource()
         self._runs[run_id] = LiveRun(run_id, workspace, settings, source)
-        loop = self._build(run_id, workspace, settings)
+        shape = self.orchestrator.decide(workspace, objective, requested=settings.hierarchical)
 
         started = asyncio.Event()
 
@@ -333,7 +414,7 @@ class RunRegistry:
 
         unsubscribe = self.event_bus.subscribe(note, (EventName.SESSION_PERSISTED,))
         self._runs[run_id].task = asyncio.ensure_future(
-            loop.run(objective, workspace, source.token, session_id=run_id)
+            self._execute(run_id, objective, workspace, settings, shape, source)
         )
         try:
             await asyncio.wait_for(started.wait(), timeout=_START_TIMEOUT_SECONDS)
@@ -408,6 +489,28 @@ class RunRegistry:
         if run is None:
             raise ToolValidationError(f"Unknown or finished run: {run_id}")
         return run
+
+
+def _from_graph(run_id: str, workspace: Workspace, result: GraphResult) -> AgentRunResult:
+    """El resultado de un plan, dicho en el vocabulario del bucle.
+
+    Quien espera un run no debería tener que preguntar de qué forma se ejecutó. La
+    respuesta es la de las tareas que dejaron algo escrito, no un veredicto propio: un
+    grafo no tiene nada que contar que sus tareas no hayan demostrado ya.
+    """
+    status = {
+        ExecutionOutcome.COMPLETED: AgentRunStatus.COMPLETED,
+        ExecutionOutcome.FAILED: AgentRunStatus.FAILED,
+        ExecutionOutcome.CANCELLED: AgentRunStatus.CANCELLED,
+        ExecutionOutcome.TIMED_OUT: AgentRunStatus.FAILED,
+    }[result.outcome]
+    answer = "\n".join(item.summary for item in result.evidence if item.summary)
+    return AgentRunResult(
+        status,
+        SessionState(session_id=run_id, workspace_id=workspace.workspace_id),
+        answer=answer or None,
+        verification=result.goal_verification,
+    )
 
 
 def build_workspace(

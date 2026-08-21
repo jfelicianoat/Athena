@@ -14,6 +14,10 @@ dependencies = []
 
 [project.scripts]
 athena = "athena.cli:main"
+athena-service = "athena_service:main"
+
+[project.gui-scripts]
+athena-desktop = "athena_desktop.app:main"
 
 [project.optional-dependencies]
 dev = [

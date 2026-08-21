@@ -34,9 +34,18 @@ class ProjectContext:
 class ContextBuilder:
     """Builds model context without copying the repository into the prompt."""
 
-    def __init__(self, workspace: Workspace, *, limits: ContextLimits | None = None) -> None:
+    def __init__(
+        self,
+        workspace: Workspace,
+        *,
+        limits: ContextLimits | None = None,
+        notes: str = "",
+    ) -> None:
         self.workspace = workspace
         self.limits = limits or ContextLimits()
+        #: Lo que se sabe de este proyecto de antes y no está en el repositorio. Llega ya
+        #: etiquetado con su grado de certeza; aquí no se decide si creérselo.
+        self.notes = notes.strip()
 
     async def inspect_project(
         self,
@@ -63,7 +72,7 @@ class ContextBuilder:
         discovered_paths: tuple[str, ...] = (),
     ) -> ModelRequest:
         project = await self.inspect_project(cancellation, discovered_paths)
-        system = self._render(project, important_state)
+        system = self._render(project, important_state, tool_definitions, self.notes)
         messages = (
             ModelMessage(ModelRole.SYSTEM, system),
             ModelMessage(ModelRole.USER, objective),
@@ -171,17 +180,60 @@ class ContextBuilder:
         return value[:maximum] + "\n…[truncated]"
 
     @staticmethod
-    def _render(project: ProjectContext, important_state: JSONObject) -> str:
+    def _render(
+        project: ProjectContext,
+        important_state: JSONObject,
+        tools: tuple[JSONObject, ...] = (),
+        notes: str = "",
+    ) -> str:
+        """The system message, derived from the tools the run actually has.
+
+        It used to say "investigating a repository with read-only tools. Never claim to
+        modify files", which was true when the runtime had only readers. It has not been
+        true since `write_file`, `edit_file` and `bash` were added, and a run authorised to
+        write was being told in its first sentence that it could not — the only place in
+        the system where the model was misinformed about its own capabilities.
+
+        Derived rather than configured: the sentence is computed from the same tool list
+        the request carries, so the two cannot drift apart.
+        """
+        names = {name for tool in tools if isinstance(name := tool.get("name"), str)}
+        can_write = bool(names & {"write_file", "edit_file"})
+        can_execute = "bash" in names
+        if can_write and can_execute:
+            role = (
+                "You are Athena, a coding agent working in a repository. You can read it, "
+                "change it with write_file and edit_file, and run commands with bash."
+            )
+        elif can_write:
+            role = (
+                "You are Athena, a coding agent working in a repository. You can read it "
+                "and change it with write_file and edit_file. You cannot run commands, so "
+                "do not claim anything was executed."
+            )
+        elif can_execute:
+            role = (
+                "You are Athena, investigating a repository. You can read it and run "
+                "commands with bash, but you cannot modify files: never claim you did."
+            )
+        else:
+            role = (
+                "You are Athena, investigating a repository with read-only tools. "
+                "Never claim to modify files or to have run anything."
+            )
         instruction_text = "\n\n".join(
             f"[{path}]\n{content}" for path, content in project.instructions
         )
+        remembered = f"\n{notes}\n" if notes else ""
         return (
-            "You are Athena, investigating a repository with read-only tools. "
-            "Never claim to modify files. Prefer Glob → Grep → ReadRange; use ReadFile only "
-            "for a known small file. Finish with a non-empty answer and no tool calls.\n\n"
+            f"{role} "
+            "Find things with glob and grep before reading; use read_range for a known "
+            "region and read_file only for a small file. Finish with a non-empty answer "
+            "and no tool calls.\n\n"
             f"Workspace root: {project.workspace_root}\n"
             f"Git context: {json.dumps(project.git, ensure_ascii=False)}\n"
             f"Important session state: {json.dumps(important_state, ensure_ascii=False)}\n"
+            f"{remembered}"
             "Project instructions, root first and more specific last:\n"
             f"{instruction_text or '(none)'}"
         )

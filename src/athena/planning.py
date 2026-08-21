@@ -909,13 +909,22 @@ class Planner:
         objective: str,
         signals: DecompositionSignals,
         cancellation: CancellationToken,
+        *,
+        decided: DecompositionDecision | None = None,
     ) -> TaskGraph | None:
         """A validated graph, or `None` meaning "run this on the loop as it is".
 
         `None` is a real answer and the common one. Returning an empty graph instead would
         make every caller check for a special case that means the same thing.
+
+        `decided` is for callers that have already put this question to the policy — the
+        service asks before it starts a run, so that it can tell a client which shape it is
+        getting. Asking twice is not a safety measure: a caller that weighed the answer
+        against something the policy cannot see, such as an explicit request, would have
+        its conclusion silently reversed here, and the run would come out monoagent while
+        everything upstream said otherwise.
         """
-        decision = self.should_decompose(signals)
+        decision = decided if decided is not None else self.should_decompose(signals)
         if not decision.decompose:
             return None
         cancellation.raise_if_cancelled()

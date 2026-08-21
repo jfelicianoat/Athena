@@ -291,7 +291,14 @@ class GraphExecutor:
             await self._publish(
                 EventName.TASK_STARTED,
                 run_id,
-                {"task_id": node.id, "role": node.suggested_role.value, "goal": node.goal},
+                {
+                    "task_id": node.id,
+                    "role": node.suggested_role.value,
+                    "goal": node.goal,
+                    # Las dependencias viajan con el evento porque quien dibuja el plan
+                    # las necesita antes de tener el grafo, y puede que no lo tenga nunca.
+                    "dependencies": list(node.dependencies),
+                },
                 correlation_id=node.id,
             )
             evidence = await self._delegate(node, graph, workspace, cancellation, run_id)

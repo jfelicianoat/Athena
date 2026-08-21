@@ -93,6 +93,7 @@ class AgentLoopConfig:
     max_tool_calls: int = 100
     max_repair_cycles: int = 2
     capture_baseline: bool = True
+    require_workspace_change: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,6 +392,11 @@ class AgentLoop:
                 cancellation=cancellation,
                 discovered_paths=tuple(sorted(data.discovered_paths)),
             )
+            if self.config.require_workspace_change and not data.working.files_modified:
+                request = replace(
+                    request,
+                    options={**dict(request.options), "tool_choice": "required"},
+                )
             response = await self._complete(request, cancellation, data, budget)
             data.history.append(
                 ModelMessage(
@@ -748,6 +754,36 @@ class AgentLoop:
         """Verify the work. Returns None when a repair cycle should run instead."""
         if response.finish_reason not in ("stop", "done") or not response.content.strip():
             raise VerificationFailure("Model response did not satisfy terminal conditions")
+        if self.config.require_workspace_change and not data.working.files_modified:
+            data.working = data.working.noting(
+                decisions=(
+                    "A final response was refused because the objective requires a workspace "
+                    "change and no file has been modified.",
+                ),
+                remaining_work=(
+                    "Use an offered workspace mutation tool and confirm its successful result.",
+                ),
+            )
+            data.history.append(
+                ModelMessage(
+                    ModelRole.USER,
+                    "The objective explicitly requires creating or modifying a file, but no "
+                    "workspace file has changed. Do not return a final answer yet. Use one of "
+                    "Athena's offered write or edit tools with the required content, wait for "
+                    "its result, and only then finish.",
+                )
+            )
+            await self.event_bus.publish(
+                RecoveryEvent(
+                    EventName.RECOVERY_ACTION,
+                    data.session.session_id,
+                    {
+                        "action": "require_workspace_change",
+                        "reason": "No successful file mutation was observed.",
+                    },
+                )
+            )
+            return None
         data.session = replace(
             data.session,
             agent=replace(data.session.agent, status=AgentStatus.VERIFYING),
