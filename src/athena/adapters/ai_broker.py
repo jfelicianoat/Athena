@@ -454,7 +454,12 @@ def _response_from(
     tool_calls: tuple[ModelToolCall, ...] = ()
     finish_reason = "stop"
     if allowed_tools:
-        decision = _structured_decision(result, payload, content)
+        decision = _structured_decision(
+            result,
+            payload,
+            content,
+            tool_choice_required=tool_choice_required,
+        )
         content, tool_calls = _parse_decision(
             decision,
             allowed_tools,
@@ -485,7 +490,11 @@ def _response_from(
 
 
 def _structured_decision(
-    result: Mapping[str, JSONValue], payload: JSONObject, content: str
+    result: Mapping[str, JSONValue],
+    payload: JSONObject,
+    content: str,
+    *,
+    tool_choice_required: bool = False,
 ) -> JSONObject:
     candidates = [
         result.get("structured_output"),
@@ -499,8 +508,12 @@ def _structured_decision(
             return candidate
     decoded = _decode_json_object(content)
     if decoded is None:
-        raise ModelPermanentError(
-            "AI_Broker model did not return the structured Athena tool decision"
+        excerpt = content.strip().replace("\x00", "")[:2_000]
+        error_type = ModelTransientError if tool_choice_required else ModelPermanentError
+        suffix = f" Model response: {excerpt}" if excerpt else ""
+        raise error_type(
+            "AI_Broker model did not return the structured Athena tool decision." + suffix,
+            details={"model_response": excerpt},
         )
     return decoded
 

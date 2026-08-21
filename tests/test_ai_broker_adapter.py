@@ -193,6 +193,27 @@ def test_ai_broker_retries_when_a_required_tool_turn_returns_an_empty_message() 
     asyncio.run(scenario())
 
 
+def test_ai_broker_preserves_plain_model_response_when_a_tool_was_required() -> None:
+    async def scenario() -> None:
+        refusal = "No puedo crear el archivo solicitado."
+        provider = _StubBroker({"assistant_content": refusal})
+
+        with pytest.raises(ModelTransientError) as failure:
+            await provider.complete(
+                ModelRequest(
+                    messages=(ModelMessage(ModelRole.USER, "Crea un archivo"),),
+                    tools=(_write_tool(),),
+                    options={"tool_choice": "required"},
+                ),
+                CancellationSource().token,
+            )
+
+        assert failure.value.details["model_response"] == refusal
+        assert refusal in failure.value.message
+
+    asyncio.run(scenario())
+
+
 def test_ai_broker_cannot_invent_authority_for_an_unoffered_tool() -> None:
     async def scenario() -> None:
         provider = _StubBroker(
