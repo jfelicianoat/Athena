@@ -562,6 +562,7 @@ class AthenaService:
                         "controls": subscriber.controls,
                         "wire_version": WIRE_VERSION,
                         "resumed": True,
+                        "shape": self.registry.shape_of(run_id),
                         "snapshot": None,
                         "pending_approvals": [
                             pending.to_json() for pending in self.approvals.pending_for(run_id)
@@ -586,6 +587,7 @@ class AthenaService:
                         "controls": subscriber.controls,
                         "wire_version": WIRE_VERSION,
                         "resumed": False,
+                        "shape": self.registry.shape_of(run_id),
                         "snapshot": session_to_json(record) if record else None,
                         "pending_approvals": [
                             pending.to_json() for pending in self.approvals.pending_for(run_id)

@@ -535,6 +535,28 @@ def _check_limits(nodes: Mapping[str, TaskNode], limits: PlanningLimits) -> None
             )
 
 
+def _has_independent_pair(graph: TaskGraph) -> bool:
+    """Whether any two tasks could be in flight at once.
+
+    Transitive, not immediate: a task depending on a task that depends on a third waits
+    for the third too, and a check that only read the direct dependencies would call that
+    chain concurrent.
+    """
+    reachable: dict[str, set[str]] = {}
+    for node in graph.topological_order():
+        inherited: set[str] = set()
+        for dependency in node.dependencies:
+            inherited.add(dependency)
+            inherited |= reachable.get(dependency, set())
+        reachable[node.id] = inherited
+    ids = list(reachable)
+    return any(
+        other not in reachable[one] and one not in reachable[other]
+        for index, one in enumerate(ids)
+        for other in ids[index + 1 :]
+    )
+
+
 def _leaves(nodes: Mapping[str, TaskNode]) -> tuple[TaskNode, ...]:
     parents = {node.parent_id for node in nodes.values() if node.parent_id is not None}
     return tuple(node for node in nodes.values() if node.id not in parents)
@@ -766,6 +788,47 @@ class DecompositionPolicy:
             )
         return DecompositionDecision(
             True, reasons, "Decomposition is worth its overhead here: " + "; ".join(reasons)
+        )
+
+    def assess_plan(self, graph: TaskGraph) -> DecompositionDecision:
+        """Whether *this* plan earns the overhead, now that there is one to look at.
+
+        A separate question from `assess`, and asked later. `assess` weighs evidence about
+        a goal before anybody has decomposed it; this weighs the decomposition that came
+        back. A model asked to divide work will divide it, and the result can be a list of
+        steps rather than a graph — which the loop already knows how to work through, one
+        after another, without the hand-offs.
+
+        Structural, and not a count. "More than one task" is not the signal: five tasks in
+        a chain, all for the same specialist, is a to-do list. What a graph actually buys
+        is two things the loop cannot do —
+
+        - **concurrency**: two tasks neither of which waits for the other really do run at
+          the same time, and that is wall-clock a loop cannot recover;
+        - **specialisation**: tasks with different roles carry different authority, and an
+          explorer that cannot write is a guarantee, not a hint.
+
+        — so a plan offering neither is executed directly, whatever its shape. Validity is
+        `TaskGraph.build`'s question and it has already answered it: this one is only about
+        worth.
+        """
+        benefits: list[str] = []
+        if _has_independent_pair(graph):
+            benefits.append("tasks that can run at the same time")
+        if len({node.suggested_role for node in graph.nodes}) > 1:
+            benefits.append("work for more than one specialist")
+        if not benefits:
+            return DecompositionDecision(
+                False,
+                (),
+                f"The plan holds {len(graph)} task(s) in one sequence for one specialist, "
+                "so a graph would add hand-offs and buy nothing the loop does not already "
+                "do.",
+            )
+        return DecompositionDecision(
+            True,
+            tuple(benefits),
+            "This plan is worth executing as a graph: " + "; ".join(benefits),
         )
 
 

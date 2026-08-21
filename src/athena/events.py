@@ -33,6 +33,10 @@ class EventName(StrEnum):
     VERIFICATION_CHECK_COMPLETED = "verification.check.completed"
     VERIFICATION_FAILED = "verification.failed"
     VERIFICATION_COMPLETED = "verification.completed"
+    #: Which shape a run will execute in, and why. Published once, when the answer is
+    #: final — which for a goal that was planned is after the plan came back, because a
+    #: plan can turn out not to be worth executing as one.
+    PLAN_DECIDED = "plan.decided"
     #: The graph level, which is a real level and not a synonym for the run. A task uses a
     #: subagent; it is not one, and a view that conflated them could not draw the plan.
     GRAPH_STARTED = "graph.started"

@@ -127,12 +127,19 @@ class RunShape:
 
     `mode` is what was asked for and `hierarchical` is what will happen. They agree except
     in `AUTO`, where the second is the answer to a question the first only posed.
+
+    `reason` is separate from `decision.explanation` because they answer different
+    questions and can disagree. A deployment with planning switched off runs a goal on the
+    loop while the policy still holds that decomposing it was worth it — and reporting the
+    policy's sentence there would have the run explain itself with a verdict that is not
+    the one it acted on.
     """
 
     mode: ExecutionMode
     hierarchical: bool
     decision: DecompositionDecision
     signals: DecompositionSignals
+    reason: str = ""
     #: What the scout could not establish, carried so a client can show it rather than
     #: being told a guess was a measurement.
     assumed: tuple[str, ...] = ()
@@ -140,11 +147,16 @@ class RunShape:
     def to_json(self) -> JSONObject:
         return {
             "execution_mode": self.mode.value,
-            "hierarchical": self.hierarchical,
-            "reasons": list(self.decision.reasons),
-            "explanation": self.decision.explanation,
+            "executed_as": "hierarchical" if self.hierarchical else "direct",
+            "reason": self.reason,
+            "criteria_met": list(self.decision.reasons),
+            "policy_verdict": self.decision.explanation,
             "assumed_signals": list(self.assumed),
         }
+
+    def as_decided(self, *, hierarchical: bool, reason: str) -> RunShape:
+        """The same run, once something later settled what it will actually do."""
+        return replace(self, hierarchical=hierarchical, reason=reason)
 
 
 class Orchestrator:
@@ -185,18 +197,20 @@ class Orchestrator:
         and the caller has already decided.
         """
         if mode is ExecutionMode.DIRECT:
+            declined = "The caller required the loop, so nothing was measured."
             return RunShape(
                 mode,
                 hierarchical=False,
-                decision=DecompositionDecision(
-                    False, (), "The caller asked for the loop directly."
-                ),
+                decision=DecompositionDecision(False, (), declined),
                 signals=DecompositionSignals(),
+                reason=declined,
             )
         if mode is ExecutionMode.HIERARCHICAL and not self.settings.planning:
-            # Refused rather than quietly downgraded. Somebody who asks for a graph is
-            # usually measuring one, and handing them a loop that reports itself as a run
-            # would corrupt the measurement instead of failing it.
+            # Refused rather than quietly downgraded. `HIERARCHICAL` is a requirement, not
+            # a preference: somebody who asks for a graph is usually measuring one, and a
+            # loop that reported itself as a run would corrupt the measurement instead of
+            # failing it. `AUTO` asks for the best available strategy, so the same missing
+            # layer is a fallback there rather than a broken promise.
             raise ToolValidationError(
                 "This deployment does not do hierarchical runs; execution_mode must be "
                 "auto or direct"
@@ -204,16 +218,32 @@ class Orchestrator:
         scouted = self.scout.scout(workspace, objective)
         signals = merge(scouted, supplied) if supplied is not None else scouted.signals
         decision = self.settings.policy.assess(signals)
-        hierarchical = mode is ExecutionMode.HIERARCHICAL or (
-            self.settings.planning and decision.decompose
-        )
+        if mode is ExecutionMode.HIERARCHICAL:
+            hierarchical, reason = True, "The caller required hierarchical execution."
+        elif not self.settings.planning:
+            hierarchical, reason = (
+                False,
+                (
+                    "auto -> direct: this deployment has planning switched off, so the loop "
+                    "is the best strategy available."
+                ),
+            )
+        elif decision.decompose:
+            hierarchical, reason = True, decision.explanation
+        else:
+            hierarchical, reason = False, f"auto -> direct: {decision.explanation}"
         return RunShape(
             mode,
             hierarchical=hierarchical,
             decision=decision,
             signals=signals,
+            reason=reason,
             assumed=scouted.assumed,
         )
+
+    async def announce(self, run_id: str, shape: RunShape) -> None:
+        """Report a shape that was settled before any planning happened."""
+        await self._decided(run_id, shape, hierarchical=shape.hierarchical, reason=shape.reason)
 
     # -- context -----------------------------------------------------------
 
@@ -294,21 +324,38 @@ class Orchestrator:
             if shape.mode is not ExecutionMode.HIERARCHICAL:
                 # A refused plan is information, not a failure. The loop can still do this,
                 # and saying so is more useful than failing a run over a malformed reply.
-                await self._publish(
-                    run_id,
-                    EventName.RECOVERY_ACTION,
-                    {"action": "run_directly", "reason": reason},
+                await self._decided(
+                    run_id, shape, hierarchical=False, reason=f"auto -> direct: {reason}"
                 )
                 return None
             # The caller asked for a graph, so a graph is what runs. One task holding the
             # whole goal is a truthful plan — it says the work was not divided — and it
             # keeps the guarantee the mode exists for: this path is always the graph path.
-            await self._publish(
-                run_id,
-                EventName.RECOVERY_ACTION,
-                {"action": "whole_goal_as_one_task", "reason": reason},
-            )
             graph = _whole_goal(objective)
+            await self._decided(
+                run_id,
+                shape,
+                hierarchical=True,
+                reason=f"hierarchical: no usable plan ({reason}), so the whole goal runs "
+                "as one task.",
+            )
+        elif shape.mode is ExecutionMode.HIERARCHICAL:
+            await self._decided(run_id, shape, hierarchical=True, reason=shape.reason)
+        else:
+            # The plan exists and is valid; whether it is worth executing as a graph is a
+            # different question, and the policy owns it. Asking it here rather than inside
+            # `TaskGraph.build` keeps validity and worth apart: a structurally fine plan
+            # that buys nothing is not an invalid plan.
+            worth = self.settings.policy.assess_plan(graph)
+            if not worth.decompose:
+                await self._decided(
+                    run_id,
+                    shape,
+                    hierarchical=False,
+                    reason=f"auto -> direct: {worth.explanation}",
+                )
+                return None
+            await self._decided(run_id, shape, hierarchical=True, reason=worth.explanation)
 
         if self.settings.board is not None:
             self.settings.board.record(run_id, graph)
@@ -438,6 +485,18 @@ class Orchestrator:
 
         await self._finish(run_id, workspace, objective, result)
         return result
+
+    async def _decided(
+        self, run_id: str, shape: RunShape, *, hierarchical: bool, reason: str
+    ) -> None:
+        """Say once, when the answer is final, how this run will execute and why.
+
+        Once: a run that announced a shape before planning and a different one after would
+        leave whoever is counting having to guess which announcement to believe.
+        """
+        settled = shape.as_decided(hierarchical=hierarchical, reason=reason)
+        _logger.info("plan.decided mode=%s as=%s", settled.mode.value, hierarchical)
+        await self._publish(run_id, EventName.PLAN_DECIDED, settled.to_json())
 
     # -- keeping the run addressable ---------------------------------------
 

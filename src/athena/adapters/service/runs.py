@@ -49,6 +49,7 @@ from athena.state import AgentStatus, ExecutionOutcome, SessionState
 from athena.stores import ToolResultStore
 from athena.tool_executor import ToolExecutor
 from athena.tools import Tool
+from athena.types import JSONObject
 from athena.verification import CommandVerificationPolicy, VerificationPlanner
 from athena.workspace import Workspace
 
@@ -151,6 +152,12 @@ class LiveRun:
     prompt: RemotePermissionPrompt | None = None
     subscribers: dict[str, Subscriber] = field(default_factory=dict)
     controller_id: str | None = None
+    #: Cómo se decidió ejecutar este run, tal y como se anunció.
+    #:
+    #: Guardado además de publicado porque se decide antes de que nadie pueda suscribirse:
+    #: un cliente que sólo escuchase el flujo no lo vería nunca, y es justo lo que quiere
+    #: saber quien pregunta por qué su objetivo no se planificó.
+    shape: JSONObject | None = None
     #: The tail of this run's event stream, newest last. Ordering here is the ordering the
     #: bus published in, which is what makes "preserve order per run" a property of the
     #: transport rather than a hope about scheduling.
@@ -212,6 +219,10 @@ class RunRegistry:
         # one it can replay. The buffer is the reason dropping a subscriber is survivable
         # rather than lossy.
         run.recent.append(event)
+        if event.name is EventName.PLAN_DECIDED:
+            # El registro se entera de la forma por donde se entera todo el mundo, en vez
+            # de que el orquestador tenga que conocer al registro para contárselo.
+            run.shape = dict(event.payload)
         for subscriber in tuple(run.subscribers.values()):
             try:
                 subscriber.queue.put_nowait(event)
@@ -242,6 +253,11 @@ class RunRegistry:
             run.controller_id = None
         with contextlib.suppress(asyncio.QueueFull):
             subscriber.queue.put_nowait(None)
+
+    def shape_of(self, run_id: str) -> JSONObject | None:
+        """La forma anunciada de un run vivo, si ya se anunció."""
+        run = self._runs.get(run_id)
+        return None if run is None else run.shape
 
     def has_client(self, run_id: str) -> bool:
         run = self._runs.get(run_id)
@@ -377,6 +393,10 @@ class RunRegistry:
         # Lo recordado se pide una vez y se reparte: dos consultas a la memoria por el
         # mismo objetivo darían la misma respuesta y costarían el doble.
         notes = await self.orchestrator.recall(workspace.workspace_id, objective)
+        if not shape.hierarchical:
+            # La forma ya está decidida sin haber planificado, así que se anuncia aquí. Un
+            # run que se planifica la anuncia más tarde, cuando el plan permite juzgarla.
+            await self.orchestrator.announce(run_id, shape)
         if shape.hierarchical:
             catalog = {tool.spec.name: tool for tool in self.tools_for(options, self.event_bus)}
             result = await self.orchestrator.run_graph(
@@ -408,10 +428,14 @@ class RunRegistry:
         *before* they write, so the earlier event would still race the store.
         """
         settings = options or RunOptions()
+        # La forma se decide antes de que exista el run. Al revés, una petición rechazada
+        # —pedir grafo donde no hay planificación— dejaba un run vivo que nadie iba a
+        # ejecutar ni a cerrar, contado en `/v1/health` y ocupando memoria hasta el
+        # reinicio.
+        shape = self.orchestrator.decide(workspace, objective, mode=settings.execution_mode)
         run_id = str(uuid4())
         source = CancellationSource()
         self._runs[run_id] = LiveRun(run_id, workspace, settings, source)
-        shape = self.orchestrator.decide(workspace, objective, mode=settings.execution_mode)
 
         started = asyncio.Event()
 

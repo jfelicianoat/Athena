@@ -41,11 +41,18 @@ from athena.models import (
     ModelToolCall,
 )
 from athena.permissions import PermissionDecision
-from athena.planning import DecompositionSignals, PlanStatus, TaskGraph, TaskNode
+from athena.planning import (
+    DecompositionPolicy,
+    DecompositionSignals,
+    PlanStatus,
+    TaskGraph,
+    TaskNode,
+)
 from athena.session_store import SessionRecord, SqliteSessionStore
 from athena.state import AgentStatus
 from athena.stores import SqliteToolResultStore
 from athena.subagents import DEFAULT_PROFILES, SubagentRole
+from athena.types import JSONObject
 from athena.working_state import StepStatus, WorkingState
 from athena.workspace import Workspace
 
@@ -263,7 +270,7 @@ def test_direct_never_asks_the_repository_anything(tmp_path: Path) -> None:
     assert not shape.hierarchical
     assert shape.mode is ExecutionMode.DIRECT
     assert shape.signals == DecompositionSignals()
-    assert "directly" in shape.decision.explanation
+    assert "nothing was measured" in shape.reason
 
 
 def test_hierarchical_overrules_a_policy_that_would_have_said_no(tmp_path: Path) -> None:
@@ -281,14 +288,17 @@ def test_hierarchical_overrules_a_policy_that_would_have_said_no(tmp_path: Path)
     assert not shape.decision.decompose
 
 
-def test_a_deployment_without_planning_refuses_the_mode_instead_of_downgrading_it(
+def test_a_required_capability_fails_loud_and_an_optional_one_falls_back(
     tmp_path: Path,
 ) -> None:
-    """Negarse es más útil que dar un bucle disfrazado de grafo.
+    """La misma capa ausente, dos respuestas, porque no se pidió igual.
 
-    "El operador no ha activado la planificación" y "este objetivo no la necesita" son
-    respuestas distintas, y sólo una de las dos es del cliente. Devolver un run que se
-    presenta como cualquier otro corrompería la medición en vez de fallarla.
+    En `hierarchical` la planificación es un requisito: quien la exige suele estar
+    midiéndola, y un bucle que se presentase como el run pedido corrompería la medición
+    en vez de fallarla. En `auto` no es un requisito sino una optimización —«elige la
+    mejor estrategia disponible»— y el bucle es una estrategia perfectamente válida.
+
+    Lo que no cambia entre los dos casos es que quede dicho por qué.
     """
     workspace = _wide_sandbox(tmp_path / "wide")
     orquestador = _orchestrator(tmp_path, planning=False)
@@ -296,8 +306,14 @@ def test_a_deployment_without_planning_refuses_the_mode_instead_of_downgrading_i
     with pytest.raises(ToolValidationError, match="auto or direct"):
         orquestador.decide(workspace, "rework the parser", STRONG, mode=ExecutionMode.HIERARCHICAL)
 
-    # `auto` y `direct` siguen sirviendo: lo que falta es la capa, no el servicio.
-    assert not orquestador.decide(workspace, "rework the parser", STRONG).hierarchical
+    degradado = orquestador.decide(workspace, "rework the parser", STRONG)
+    assert not degradado.hierarchical
+    assert "auto -> direct" in degradado.reason
+    assert "planning switched off" in degradado.reason
+    # Y la política sigue diciendo lo suyo, que es distinto de lo que se hizo: sin esta
+    # separación el run se explicaría con un veredicto sobre el que no actuó.
+    assert degradado.decision.decompose
+    assert degradado.to_json()["executed_as"] == "direct"
 
 
 def test_the_mode_travels_with_the_shape_it_produced(tmp_path: Path) -> None:
@@ -314,8 +330,9 @@ def test_the_mode_travels_with_the_shape_it_produced(tmp_path: Path) -> None:
     )
 
     assert informe["execution_mode"] == "auto"
-    assert informe["hierarchical"] is True
-    assert informe["reasons"]
+    assert informe["executed_as"] == "hierarchical"
+    assert informe["criteria_met"]
+    assert informe["reason"]
 
 
 # ------------------------------------------------------------------ the graph path
@@ -457,13 +474,8 @@ def test_auto_runs_a_refused_plan_directly_instead_of_failing_the_run(tmp_path: 
 
         assert provider.planning_requests == 1, "auto no llegó a intentar el plan"
         assert result.status.value in ("completed", "failed")
-        recovery = [
-            event
-            for event in seen
-            if event.name is EventName.RECOVERY_ACTION
-            and event.payload.get("action") == "run_directly"
-        ]
-        assert recovery, "la caída al bucle no se anunció"
+        forma = _shape_of(seen)
+        assert forma["executed_as"] == "direct", "la caída al bucle no se anunció"
         assert EventName.GRAPH_STARTED not in [event.name for event in seen]
 
     asyncio.run(scenario())
@@ -500,13 +512,11 @@ def test_hierarchical_keeps_its_promise_when_the_plan_is_refused(tmp_path: Path)
 
         names = [event.name for event in seen]
         assert EventName.GRAPH_STARTED in names, "el modo prometía un grafo"
-        anunciado = [
-            event
-            for event in seen
-            if event.name is EventName.RECOVERY_ACTION
-            and event.payload.get("action") == "whole_goal_as_one_task"
-        ]
-        assert anunciado, "el objetivo sin dividir se ejecutó sin decirlo"
+        forma = _shape_of(seen)
+        assert forma["executed_as"] == "hierarchical"
+        assert "no usable plan" in str(forma["reason"]), (
+            "el objetivo sin dividir se ejecutó sin decirlo"
+        )
 
         record = await registry.snapshot(run_id)
         assert record is not None
@@ -813,3 +823,274 @@ def test_a_task_gets_the_deployment_clock_and_keeps_its_other_limits(
     # Sin medida no se toca nada: el presupuesto del perfil es la respuesta correcta
     # cuando nadie ha medido este despliegue.
     assert _budgeted(original, None) is original
+
+
+# ------------------------------------------------------ ¿merece la pena este plan?
+
+
+def _plan_of(*tasks: tuple[str, str, tuple[str, ...]]) -> TaskGraph:
+    """Un grafo a partir de (id, rol, dependencias), para juzgar formas de plan."""
+    return TaskGraph.build(
+        [
+            TaskNode(
+                id=task_id,
+                goal=f"do {task_id}",
+                expected_output=f"{task_id} done",
+                acceptance_criteria=(f"{task_id} is checkable",),
+                dependencies=dependencies,
+                suggested_role=SubagentRole(role),
+            )
+            for task_id, role, dependencies in tasks
+        ]
+    )
+
+
+def test_one_task_is_a_plan_that_buys_nothing() -> None:
+    """Válido como grafo, y aun así trabajo para el bucle.
+
+    `TaskGraph.build` ya dijo que es correcto, que es su pregunta. Si merece la pena
+    ejecutarlo como grafo es otra, y la contesta la política.
+    """
+    verdict = DecompositionPolicy().assess_plan(_plan_of(("T01", "coder", ())))
+    assert not verdict.decompose
+    assert "one sequence for one specialist" in verdict.explanation
+
+
+def test_a_chain_of_microtasks_is_a_to_do_list_not_a_graph() -> None:
+    """El número de nodos no es la señal.
+
+    Cinco tareas del mismo especialista, cada una esperando a la anterior, es la lista de
+    pasos que el bucle ya recorre — con hand-offs añadidos y sin nada a cambio.
+    """
+    cadena = _plan_of(
+        ("T01", "coder", ()),
+        ("T02", "coder", ("T01",)),
+        ("T03", "coder", ("T02",)),
+        ("T04", "coder", ("T03",)),
+        ("T05", "coder", ("T04",)),
+    )
+    verdict = DecompositionPolicy().assess_plan(cadena)
+    assert not verdict.decompose
+    assert "5 task(s)" in verdict.explanation
+
+
+def test_work_that_can_happen_at_once_earns_the_graph() -> None:
+    verdict = DecompositionPolicy().assess_plan(
+        _plan_of(("T01", "coder", ()), ("T02", "coder", ()))
+    )
+    assert verdict.decompose
+    assert "at the same time" in verdict.explanation
+
+
+def test_a_chain_of_different_specialists_earns_it_too() -> None:
+    """Sin concurrencia, pero con autoridades distintas.
+
+    Un explorer que no puede escribir es una garantía, no una sugerencia, y el bucle no
+    tiene forma de dársela a una parte del trabajo y no a otra.
+    """
+    verdict = DecompositionPolicy().assess_plan(
+        _plan_of(("T01", "explorer", ()), ("T02", "coder", ("T01",)))
+    )
+    assert verdict.decompose
+    assert "more than one specialist" in verdict.explanation
+
+
+def test_a_dependency_two_steps_away_is_still_a_dependency() -> None:
+    """Lo transitivo cuenta: si sólo se miraran las dependencias directas, una cadena
+    de tres pasaría por concurrente porque la primera y la tercera no se nombran."""
+    verdict = DecompositionPolicy().assess_plan(
+        _plan_of(("T01", "coder", ()), ("T02", "coder", ("T01",)), ("T03", "coder", ("T02",)))
+    )
+    assert not verdict.decompose
+
+
+# ------------------------------------------------------ los cuatro casos, de extremo a extremo
+
+
+def _one_task_plan() -> str:
+    return json.dumps(
+        {
+            "tasks": [
+                {
+                    "id": "solo",
+                    "goal": "fix the addition",
+                    "expected_output": "calc.add returns the sum",
+                    "acceptance_criteria": ["the addition test passes"],
+                    "suggested_role": "coder",
+                }
+            ]
+        }
+    )
+
+
+def _shape_of(seen: list[RuntimeEvent]) -> JSONObject:
+    decisions = [event for event in seen if event.name is EventName.PLAN_DECIDED]
+    assert len(decisions) == 1, f"se anunció la forma {len(decisions)} veces"
+    return decisions[0].payload
+
+
+def test_auto_with_planning_off_runs_direct_and_says_why(tmp_path: Path) -> None:
+    """Caso 1: la capa no está, `auto` degrada, y el motivo queda registrado."""
+
+    async def scenario() -> None:
+        workspace = _wide_sandbox(tmp_path / "wide")
+        bus = InMemoryEventBus()
+        seen: list[RuntimeEvent] = []
+        bus.subscribe(seen.append)
+        provider = _Scripted()
+        registry = _registry(tmp_path, provider, bus, planning=False)
+        run_id = await registry.start(
+            "rework the parser across api and core", workspace, RunOptions(max_iterations=3)
+        )
+        try:
+            await asyncio.wait_for(registry.wait(run_id), timeout=180)
+        finally:
+            await registry.shutdown()
+
+        assert provider.planning_requests == 0, "degradar no debería costar una llamada"
+        assert EventName.GRAPH_STARTED not in [event.name for event in seen]
+        forma = _shape_of(seen)
+        assert forma["executed_as"] == "direct"
+        assert "planning switched off" in str(forma["reason"])
+        # Y el veredicto de la política sigue siendo el suyo, que aquí dice lo contrario
+        # de lo que se hizo. Informar sólo de uno de los dos dejaría a este run
+        # explicándose con una conclusión sobre la que no actuó.
+        assert "worth its overhead" in str(forma["policy_verdict"])
+
+        # La forma se decide antes de que nadie pueda suscribirse, así que un cliente que
+        # sólo escuchase el flujo no la vería nunca. El registro la guarda para el marco
+        # de estado, que es lo que recibe cualquiera que se conecte, tarde o pronto.
+        assert registry.shape_of(run_id) == forma
+
+    asyncio.run(scenario())
+
+
+def test_hierarchical_with_planning_off_is_refused_before_the_run_exists(
+    tmp_path: Path,
+) -> None:
+    """Caso 2: exigirlo sin que exista es un 400, no un run que miente sobre su forma."""
+
+    async def scenario() -> None:
+        workspace = _sandbox(tmp_path / "repo")
+        registry = _registry(tmp_path, _Scripted(), InMemoryEventBus(), planning=False)
+        try:
+            with pytest.raises(ToolValidationError, match="auto or direct"):
+                await registry.start(
+                    "investigate the addition path",
+                    workspace,
+                    RunOptions(execution_mode=ExecutionMode.HIERARCHICAL),
+                )
+            assert registry.live_ids() == (), "un run rechazado no debería quedar vivo"
+        finally:
+            await registry.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_auto_runs_a_single_task_plan_on_the_loop(tmp_path: Path) -> None:
+    """Caso 3: el plan es válido y aun así se ejecuta directo.
+
+    El plan se pidió porque las señales lo justificaban; lo que vino de vuelta no reparte
+    trabajo. Ejecutarlo como grafo sería pagar los hand-offs por respeto al procedimiento.
+    """
+
+    async def scenario() -> None:
+        workspace = _wide_sandbox(tmp_path / "wide")
+        bus = InMemoryEventBus()
+        seen: list[RuntimeEvent] = []
+        bus.subscribe(seen.append)
+        provider = _Scripted(plan=_one_task_plan())
+        registry = _registry(tmp_path, provider, bus)
+        run_id = await registry.start(
+            "rework the parser across api and core", workspace, RunOptions(max_iterations=3)
+        )
+        try:
+            await asyncio.wait_for(registry.wait(run_id), timeout=180)
+        finally:
+            await registry.shutdown()
+
+        assert provider.planning_requests == 1, "auto sí debía intentar el plan"
+        assert EventName.GRAPH_STARTED not in [event.name for event in seen]
+        forma = _shape_of(seen)
+        assert forma["executed_as"] == "direct"
+        assert "one sequence for one specialist" in str(forma["reason"])
+
+    asyncio.run(scenario())
+
+
+def test_hierarchical_runs_a_single_task_plan_through_the_graph(tmp_path: Path) -> None:
+    """Caso 4: el mismo plan, exigido como grafo, se ejecuta como grafo."""
+
+    async def scenario() -> None:
+        workspace = _sandbox(tmp_path / "repo")
+        bus = InMemoryEventBus()
+        seen: list[RuntimeEvent] = []
+        bus.subscribe(seen.append)
+        provider = _Scripted(plan=_one_task_plan())
+        registry = _registry(tmp_path, provider, bus)
+        run_id = await registry.start(
+            "investigate the addition path",
+            workspace,
+            RunOptions(
+                writes=CapabilityMode.ALLOW,
+                execution=CapabilityMode.ALLOW,
+                execution_mode=ExecutionMode.HIERARCHICAL,
+            ),
+        )
+        try:
+            await asyncio.wait_for(registry.wait(run_id), timeout=180)
+        finally:
+            await registry.shutdown()
+
+        assert EventName.GRAPH_STARTED in [event.name for event in seen]
+        started = [event for event in seen if event.name is EventName.TASK_STARTED]
+        assert [event.payload["task_id"] for event in started] == ["solo"]
+        assert _shape_of(seen)["executed_as"] == "hierarchical"
+
+    asyncio.run(scenario())
+
+
+def test_auto_runs_a_chain_of_microtasks_on_the_loop(tmp_path: Path) -> None:
+    """Caso 5: varias tareas, ningún beneficio, y aun así el bucle.
+
+    Es el caso que un recuento de nodos daría por bueno: hay cinco tareas. Ninguna puede
+    empezar hasta que acabe la anterior y todas son para el mismo especialista.
+    """
+
+    async def scenario() -> None:
+        workspace = _wide_sandbox(tmp_path / "wide")
+        bus = InMemoryEventBus()
+        seen: list[RuntimeEvent] = []
+        bus.subscribe(seen.append)
+        cadena = json.dumps(
+            {
+                "tasks": [
+                    {
+                        "id": f"T{index:02d}",
+                        "goal": f"step {index}",
+                        "expected_output": f"step {index} finished",
+                        "acceptance_criteria": [f"step {index} is checkable"],
+                        "dependencies": [] if index == 1 else [f"T{index - 1:02d}"],
+                        "suggested_role": "coder",
+                    }
+                    for index in range(1, 6)
+                ]
+            }
+        )
+        provider = _Scripted(plan=cadena)
+        registry = _registry(tmp_path, provider, bus)
+        run_id = await registry.start(
+            "rework the parser across api and core", workspace, RunOptions(max_iterations=3)
+        )
+        try:
+            await asyncio.wait_for(registry.wait(run_id), timeout=180)
+        finally:
+            await registry.shutdown()
+
+        assert provider.planning_requests == 1
+        assert EventName.GRAPH_STARTED not in [event.name for event in seen]
+        forma = _shape_of(seen)
+        assert forma["executed_as"] == "direct"
+        assert "5 task(s)" in str(forma["reason"])
+
+    asyncio.run(scenario())
