@@ -22,7 +22,7 @@ know which shape executed — and one that stops at `agent.completed` must still
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
 from athena.cancellation import CancellationScope, CancellationToken, chained_source
@@ -48,7 +48,7 @@ from athena.scouting import RepositoryScout, merge
 from athena.session_store import SessionRecord, SessionStore
 from athena.state import AgentStatus, ExecutionOutcome
 from athena.stores import ToolResultStore
-from athena.subagents import DEFAULT_PROFILES, SubagentRunner
+from athena.subagents import DEFAULT_PROFILES, SubagentProfile, SubagentRunner
 from athena.tasks import TaskManager
 from athena.tools import Tool
 from athena.types import JSONObject
@@ -88,6 +88,12 @@ class OrchestrationSettings:
     memory: SqliteProjectMemory | None = None
     graphs: SqliteGraphStore | None = None
     board: PlanBoard | None = None
+    #: Cuánto puede durar una tarea del plan, si el despliegue lo sabe mejor que el
+    #: perfil. Los presupuestos por defecto —cinco minutos para explorar, diez para
+    #: escribir— se escribieron pensando en modelos que contestan en segundos, y una sola
+    #: llamada a un modelo local de 30B medida contra este broker tardó nueve minutos.
+    #: `None` deja el presupuesto del perfil, que es lo correcto cuando nadie mide nada.
+    task_timeout_seconds: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,7 +340,10 @@ class Orchestrator:
         # antes de escribir» escribiría igualmente en cuanto se planificase: la elección
         # del cliente la anularía en silencio una constante del módulo de subagentes.
         profiles = {
-            role: confine(profile, policy, frozenset(catalog))
+            role: _budgeted(
+                confine(profile, policy, frozenset(catalog)),
+                self.settings.task_timeout_seconds,
+            )
             for role, profile in DEFAULT_PROFILES.items()
         }
         runner = SubagentRunner(
@@ -443,6 +452,17 @@ class Orchestrator:
 
     async def _publish(self, run_id: str, name: EventName, payload: JSONObject) -> None:
         await self.event_bus.publish(RuntimeEvent(name, run_id, payload))
+
+
+def _budgeted(profile: SubagentProfile, seconds: float | None) -> SubagentProfile:
+    """Dar a una tarea el reloj del despliegue, sin tocar sus otros límites.
+
+    Sólo el reloj. Las iteraciones y las llamadas a herramienta acotan cuánto *hace* un
+    delegado, y eso no cambia porque el modelo sea lento; el tiempo sí.
+    """
+    if seconds is None:
+        return profile
+    return replace(profile, budget=replace(profile.budget, timeout_seconds=seconds))
 
 
 def _first_goal(graph: TaskGraph) -> str:

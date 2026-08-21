@@ -133,3 +133,57 @@ def test_planning_stays_off_unless_the_environment_asks_for_it(
 
     monkeypatch.setenv("ATHENA_PLANNING", "true")
     assert ServiceSettings.from_environment().planning
+
+
+def test_a_task_may_not_expire_before_the_call_it_is_waiting_on(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Una tarea con menos reloj que su llamada al modelo no termina ni su primer turno.
+
+    Se comprueba al arrancar, no al usarse: un plazo mal puesto tiene que impedir que el
+    servicio abra el puerto, en vez de aparecer media hora después dentro de un run.
+    """
+    monkeypatch.setenv("ATHENA_BROKER_BASE_URL", "http://127.0.0.1:9")
+    monkeypatch.setenv("ATHENA_BROKER_TOKEN", "test-only")
+    monkeypatch.setenv("ATHENA_SERVICE_TOKEN", "service-test-only")
+    monkeypatch.setenv("ATHENA_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("ATHENA_MODEL_WAIT_SECONDS", "900")
+    monkeypatch.setenv("ATHENA_TASK_TIMEOUT_SECONDS", "300")
+
+    with pytest.raises(ValueError, match="ATHENA_TASK_TIMEOUT_SECONDS"):
+        ServiceSettings.from_environment()
+
+
+def test_the_deployment_sets_how_slow_slow_is(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Los plazos por defecto son de este despliegue, no del adaptador.
+
+    El techo de diez minutos del adaptador hizo fallar un run cincuenta y un segundos
+    después de que el broker hubiese contestado. Contra un modelo local de 30B, nueve
+    minutos por turno no es un broker roto: es el martes.
+    """
+    monkeypatch.setenv("ATHENA_BROKER_BASE_URL", "http://127.0.0.1:9")
+    monkeypatch.setenv("ATHENA_BROKER_TOKEN", "test-only")
+    monkeypatch.setenv("ATHENA_SERVICE_TOKEN", "service-test-only")
+    monkeypatch.setenv("ATHENA_STATE_DIR", str(tmp_path))
+    for name in ("ATHENA_MODEL_WAIT_SECONDS", "ATHENA_TASK_TIMEOUT_SECONDS"):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = ServiceSettings.from_environment()
+    assert settings.model_wait_seconds == 900.0
+    assert settings.task_timeout_seconds == 1800.0
+
+    monkeypatch.setenv("ATHENA_MODEL_WAIT_SECONDS", "60")
+    assert ServiceSettings.from_environment().model_wait_seconds == 60.0
+
+    monkeypatch.setenv("ATHENA_MODEL_WAIT_SECONDS", "cuando toque")
+    with pytest.raises(ValueError, match="ATHENA_MODEL_WAIT_SECONDS"):
+        ServiceSettings.from_environment()
+
+
+def test_planning_hands_its_clock_to_the_tasks(tmp_path: Path) -> None:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    orchestration = build_orchestration(_settings(tmp_path, planning=True))
+
+    assert orchestration.task_timeout_seconds == 1800.0

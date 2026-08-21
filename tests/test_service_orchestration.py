@@ -19,7 +19,11 @@ from pathlib import Path
 import pytest
 
 from athena.adapters.service.approvals import PendingApproval
-from athena.adapters.service.orchestration import OrchestrationSettings, Orchestrator
+from athena.adapters.service.orchestration import (
+    OrchestrationSettings,
+    Orchestrator,
+    _budgeted,
+)
 from athena.adapters.service.runs import CapabilityMode, RunOptions, RunRegistry
 from athena.cancellation import CancellationSource, CancellationToken
 from athena.context import ContextBuilder
@@ -40,7 +44,7 @@ from athena.planning import DecompositionSignals, PlanStatus, TaskGraph, TaskNod
 from athena.session_store import SessionRecord, SqliteSessionStore
 from athena.state import AgentStatus
 from athena.stores import SqliteToolResultStore
-from athena.subagents import SubagentRole
+from athena.subagents import DEFAULT_PROFILES, SubagentRole
 from athena.working_state import StepStatus, WorkingState
 from athena.workspace import Workspace
 
@@ -662,3 +666,24 @@ def test_a_plan_interrupted_mid_task_is_not_resumed_on_a_guess(tmp_path: Path) -
             await registry.shutdown()
 
     asyncio.run(scenario())
+
+
+def test_a_task_gets_the_deployment_clock_and_keeps_its_other_limits(
+    tmp_path: Path,
+) -> None:
+    """El reloj lo pone el despliegue; el resto del presupuesto, el perfil.
+
+    Las iteraciones y las llamadas a herramienta acotan cuánto *hace* un delegado, y eso
+    no cambia porque el modelo tarde. Subirlas junto con el tiempo dejaría que una tarea
+    lenta hiciese además más cosas, que es una decisión distinta y que nadie pidió.
+    """
+    del tmp_path
+    original = DEFAULT_PROFILES[SubagentRole.CODER]
+    ampliado = _budgeted(original, 1800.0)
+
+    assert ampliado.budget.timeout_seconds == 1800.0
+    assert ampliado.budget.max_iterations == original.budget.max_iterations
+    assert ampliado.budget.max_tool_calls == original.budget.max_tool_calls
+    # Sin medida no se toca nada: el presupuesto del perfil es la respuesta correcta
+    # cuando nadie ha medido este despliegue.
+    assert _budgeted(original, None) is original

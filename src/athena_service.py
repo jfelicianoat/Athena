@@ -33,6 +33,24 @@ from athena.session_store import SqliteSessionStore
 from athena.stores import SqliteToolResultStore
 
 
+def _positive(name: str, default: float) -> float:
+    """Un número de segundos del entorno, o el de siempre.
+
+    Se valida al arrancar y no al usarse: un plazo mal escrito debe impedir que el
+    servicio abra el puerto, no aparecer media hora después dentro de un run.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} debe ser un número") from exc
+    if value <= 0:
+        raise ValueError(f"{name} debe ser positivo")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class ServiceSettings:
     broker_base_url: str
@@ -55,6 +73,14 @@ class ServiceSettings:
     #: defecto: la planificación gasta una llamada al modelo antes de empezar a trabajar,
     #: y quien pone en marcha el servicio es quien sabe si su proveedor da para eso.
     planning: bool = False
+    #: Cuánto se espera a una sola respuesta del modelo antes de dar al broker por
+    #: perdido. Medido contra este despliegue: planificar tardó 55 s y un turno de coder
+    #: 549 s. Con el techo de diez minutos del adaptador, un run falló 51 segundos
+    #: después de que el broker hubiese contestado, que es la peor forma de fallar.
+    model_wait_seconds: float = 900.0
+    #: Cuánto puede durar una tarea del plan. Tiene que caber más de una llamada al
+    #: modelo, o una tarea no llega a terminar ni su primer turno.
+    task_timeout_seconds: float = 1800.0
 
     @classmethod
     def from_environment(cls) -> ServiceSettings:
@@ -108,6 +134,15 @@ class ServiceSettings:
             "sí",
         )
 
+        model_wait = _positive("ATHENA_MODEL_WAIT_SECONDS", 900.0)
+        task_timeout = _positive("ATHENA_TASK_TIMEOUT_SECONDS", 1800.0)
+        if task_timeout < model_wait:
+            raise ValueError(
+                "ATHENA_TASK_TIMEOUT_SECONDS no puede ser menor que "
+                "ATHENA_MODEL_WAIT_SECONDS: una tarea que expira antes que la llamada "
+                "que la ocupa no termina nunca su primer turno"
+            )
+
         return cls(
             broker_base_url=broker_url,
             broker_token=broker_token,
@@ -119,6 +154,8 @@ class ServiceSettings:
             fallback_model=fallback_model,
             request_timeout_seconds=timeout,
             planning=planning,
+            model_wait_seconds=model_wait,
+            task_timeout_seconds=task_timeout,
         )
 
 
@@ -135,6 +172,7 @@ def build_provider(settings: ServiceSettings) -> ModelProvider:
         settings.broker_token,
         preferred_model=settings.preferred_model,
         request_timeout_seconds=settings.request_timeout_seconds,
+        max_wait_seconds=settings.model_wait_seconds,
     )
     if not settings.fallback_base_url or not settings.fallback_model:
         return broker
@@ -169,6 +207,7 @@ def build_orchestration(settings: ServiceSettings) -> OrchestrationSettings:
         memory=memory,
         graphs=SqliteGraphStore(settings.state_dir / "graphs.db"),
         board=PlanBoard(),
+        task_timeout_seconds=settings.task_timeout_seconds,
     )
 
 
