@@ -10,7 +10,9 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from athena.adapters.service.launch import ServiceEndpoint, parse_service_ready
@@ -33,12 +35,33 @@ class ManagedServiceRequest:
     port: int = 8770
 
 
+class ServiceState(StrEnum):
+    """How a managed service stands, in the terms its owner cares about."""
+
+    RUNNING = "running"
+    #: Its owner asked it to stop and it did. Not a failure, whatever the exit code.
+    STOPPED = "stopped"
+    #: It stopped on its own. That *is* a failure, and the exit code says something.
+    FAILED = "failed"
+
+
 @dataclass(slots=True)
 class ManagedAthenaService:
     endpoint: ServiceEndpoint
     process: subprocess.Popen[str]
+    #: True once this owner asked for the stop. Windows reports a terminated process as
+    #: exit code 1, so without recording the request a clean shutdown is indistinguishable
+    #: from a crash — and would be reported to a person as one.
+    stop_requested: bool = False
+
+    @property
+    def state(self) -> ServiceState:
+        if self.process.poll() is None:
+            return ServiceState.RUNNING
+        return ServiceState.STOPPED if self.stop_requested else ServiceState.FAILED
 
     def stop(self, timeout_seconds: float = 5.0) -> None:
+        self.stop_requested = True
         if self.process.poll() is not None:
             return
         self.process.terminate()
@@ -107,18 +130,40 @@ def start_managed_service(
         env=environment,
         creationflags=creationflags,
     )
-    assert process.stdout is not None
+    salida = process.stdout
+    errores = process.stderr
+    if salida is None or errores is None:
+        process.kill()
+        raise RuntimeError("No se pudo capturar la salida del servicio de Athena")
     lines: queue.Queue[str] = queue.Queue()
+    #: Las últimas líneas de error, para poder explicar una muerte sin guardarlo todo.
+    recent: deque[str] = deque(maxlen=40)
 
     def read_lines() -> None:
-        for line in process.stdout:
+        for line in salida:
             lines.put(line)
 
+    def drain_errors() -> None:
+        """Vaciar el canal de errores, no sólo leerlo cuando algo falla.
+
+        Nadie lo consumía mientras el servicio funcionaba. La tubería tiene un buffer del
+        sistema operativo de unas decenas de kilobytes, y `logging` manda los avisos ahí
+        por defecto: un servicio que estuviese horas levantado avisando de un broker
+        inestable acabaría bloqueado escribiendo en una tubería llena, sin log y sin nadie
+        entendiendo por qué se quedó parado.
+
+        Se guarda lo último, que es lo que sirve para explicar una muerte, y se descarta
+        el resto en vez de acumularlo sin límite.
+        """
+        for line in errores:
+            recent.append(line.rstrip())
+
     threading.Thread(target=read_lines, name="athena-service-output", daemon=True).start()
+    threading.Thread(target=drain_errors, name="athena-service-errors", daemon=True).start()
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            detail = _stderr(process)
+            detail = "\n".join(recent).strip()
             raise RuntimeError(detail or "El servicio de Athena terminó durante el arranque")
         try:
             line = lines.get(timeout=min(0.1, max(0.01, deadline - time.monotonic())))
@@ -134,12 +179,6 @@ def start_managed_service(
     except subprocess.TimeoutExpired:
         process.kill()
     raise TimeoutError("Athena no anunció su token antes de agotar el tiempo de arranque")
-
-
-def _stderr(process: subprocess.Popen[str]) -> str:
-    if process.stderr is None:
-        return ""
-    return process.stderr.read().strip()
 
 
 def _is_athena_service(host: str, port: int) -> bool:
