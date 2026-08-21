@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -12,6 +13,7 @@ from uuid import uuid4
 from athena.async_utils import await_cancellable
 from athena.budget import BudgetLimits, RuntimeBudget
 from athena.cancellation import CancellationToken
+from athena.concurrency import ConcurrencyScheduler
 from athena.context import ContextBuilder
 from athena.diagnosis import diagnose_result
 from athena.errors import (
@@ -65,7 +67,7 @@ from athena.state import (
 )
 from athena.tool_executor import ToolExecutor
 from athena.tool_search import TOOL_SEARCH_NAME
-from athena.tools import ToolResultReference
+from athena.tools import Tool, ToolResult, ToolResultReference
 from athena.types import JSONObject, JSONValue
 from athena.verification import (
     LoopCompletionVerificationPolicy,
@@ -143,6 +145,7 @@ class AgentLoop:
     ) -> None:
         self.provider = provider
         self.registry = registry
+        self.scheduler = ConcurrencyScheduler()
         self.executor = executor
         self.context_builder = context_builder
         self.event_bus = event_bus
@@ -656,92 +659,178 @@ class AgentLoop:
         data: _RunData,
         budget: RuntimeBudget,
     ) -> None:
-        for call in calls:
+        """Run a turn's calls, overlapping only the ones that said they may overlap.
+
+        Three passes, and the split is what makes overlapping safe. Admission is
+        sequential because it mutates the run — budget, seen ids, discovered paths — and
+        two coroutines doing that concurrently would lose updates silently. Execution is
+        the only part that overlaps. Recording is sequential again, and the transcript is
+        assembled in the order the model asked, so it reads the same whatever order the
+        work finished in.
+
+        `ConcurrencyScheduler` decides the waves and is deliberately unpersuadable: a wave
+        holds more than one call only when *both* tools declared themselves safe to run
+        alongside another and their resources do not intersect. Anything unknown gets a
+        wave of its own, which is the behaviour this loop had when it could not overlap
+        anything at all.
+
+        Results are held by position rather than by call id. Ids arrive from the model and
+        can be empty or repeated — that is the first thing admission checks — so a map
+        keyed by id would let a refused duplicate overwrite the answer of the call it
+        duplicated.
+        """
+        payloads: list[JSONObject | None] = [None] * len(calls)
+        admitted: list[tuple[int, ModelToolCall, Tool | None]] = []
+        for index, call in enumerate(calls):
             cancellation.raise_if_cancelled()
-            if not call.call_id or call.call_id in data.seen_call_ids:
-                error: JSONObject = {
-                    "ok": False,
-                    "error": {
-                        "code": "tool_validation_error",
-                        "message": "Tool call ID is empty or duplicated",
-                    },
-                    "call_id": call.call_id,
-                }
-                await self.event_bus.publish(
-                    ToolEvent(
-                        EventName.TOOL_FAILED,
-                        data.session.session_id,
-                        {
-                            "tool_name": call.name,
-                            "error_code": "tool_validation_error",
-                            "message": "Tool call ID is empty or duplicated",
-                        },
-                        call.call_id or None,
-                    )
-                )
-                data.history.append(self._tool_message(call, error))
+            refusal = await self._admit(call, data, budget)
+            if refusal is not None:
+                payloads[index] = refusal
                 continue
-            data.seen_call_ids.add(call.call_id)
-            budget.consume_tool_call()
+            try:
+                tool: Tool | None = self.registry.get(call.name)
+            except AthenaRuntimeError:
+                # An unknown name is the executor's error to report, with its own code and
+                # its own event. Claiming it here would duplicate that in a worse form.
+                tool = None
+            admitted.append((index, call, tool))
+
+        for wave in self._waves(admitted):
+            cancellation.raise_if_cancelled()
             data.session = replace(
                 data.session,
-                agent=replace(data.session.agent, active_tool_call_ids=(call.call_id,)),
+                agent=replace(
+                    data.session.agent,
+                    active_tool_call_ids=tuple(call.call_id for _, call, _ in wave),
+                ),
             )
-            self._remember_paths(call, data)
             try:
-                result = await self.executor.execute(
-                    call,
-                    session_id=data.session.session_id,
-                    workspace=workspace,
-                    cancellation=cancellation,
+                results = await asyncio.gather(
+                    *(
+                        self.executor.execute(
+                            call,
+                            session_id=data.session.session_id,
+                            workspace=workspace,
+                            cancellation=cancellation,
+                        )
+                        for _, call, _ in wave
+                    ),
+                    return_exceptions=True,
                 )
-                # Record what happened, never what was merely attempted: a refused write
-                # that still showed up in files_modified would make the working state lie
-                # to verification, to recovery and to whoever reads the session later.
-                data.working = self._record_tool_use(data.working, call)
-                if result.reference is not None:
-                    data.references.append(result.reference)
-                if call.name == TOOL_SEARCH_NAME:
-                    self._reveal(result.output, data)
-                payload: JSONObject = {
-                    "ok": True,
-                    "call_id": result.call_id,
-                    "output": result.output,
-                    "reference_uri": result.reference.uri if result.reference else None,
-                }
-            except (CancellationError, ProcessCancelledError):
-                # Being stopped is not a tool failure, so it does not go to the recovery
-                # policy and does not become a recorded error against the task.
-                raise
-            except AthenaRuntimeError as exc:
-                directive = self.recovery.decide(exc)
-                data.working = data.working.failing(
-                    RecordedError(exc.code, exc.message, directive.action.value)
-                )
-                await self.event_bus.publish(
-                    RecoveryEvent(
-                        EventName.RECOVERY_ACTION,
-                        data.session.session_id,
-                        {
-                            "error_code": exc.code,
-                            "action": directive.action.value,
-                            "reason": directive.reason,
-                        },
-                        call.call_id,
-                    )
-                )
-                payload = {
-                    "ok": False,
-                    "call_id": call.call_id,
-                    "recovery": directive.action.value,
-                    "error": {"code": exc.code, "message": exc.message, "details": exc.details},
-                }
             finally:
                 data.session = replace(
                     data.session,
                     agent=replace(data.session.agent, active_tool_call_ids=()),
                 )
-            data.history.append(self._tool_message(call, payload))
+            for (index, call, _), outcome in zip(wave, results, strict=True):
+                payloads[index] = await self._record(call, outcome, data)
+
+        for call, payload in zip(calls, payloads, strict=True):
+            if payload is not None:
+                data.history.append(self._tool_message(call, payload))
+
+    def _waves(
+        self, admitted: Sequence[tuple[int, ModelToolCall, Tool | None]]
+    ) -> tuple[tuple[tuple[int, ModelToolCall, Tool | None], ...], ...]:
+        """Group admitted calls into waves that may run together.
+
+        A call whose tool could not be resolved runs alone, first: nothing is known about
+        what it touches, and the cautious reading of "unknown" is "everything".
+        """
+        alone = [(entry,) for entry in admitted if entry[2] is None]
+        schedulable = [entry for entry in admitted if entry[2] is not None]
+        if not schedulable:
+            return tuple(alone)
+        by_id = {call.call_id: entry for entry in schedulable for _, call, _ in (entry,)}
+        planned = self.scheduler.plan_calls(
+            [(call.call_id, tool, call.arguments) for _, call, tool in schedulable if tool]
+        )
+        waves = [tuple(by_id[call_id] for call_id in batch.call_ids) for batch in planned]
+        return tuple(alone) + tuple(waves)
+
+    async def _admit(
+        self, call: ModelToolCall, data: _RunData, budget: RuntimeBudget
+    ) -> JSONObject | None:
+        """Take a call into the turn, or refuse it. Returns the refusal payload."""
+        if not call.call_id or call.call_id in data.seen_call_ids:
+            error: JSONObject = {
+                "ok": False,
+                "error": {
+                    "code": "tool_validation_error",
+                    "message": "Tool call ID is empty or duplicated",
+                },
+                "call_id": call.call_id,
+            }
+            await self.event_bus.publish(
+                ToolEvent(
+                    EventName.TOOL_FAILED,
+                    data.session.session_id,
+                    {
+                        "tool_name": call.name,
+                        "error_code": "tool_validation_error",
+                        "message": "Tool call ID is empty or duplicated",
+                    },
+                    call.call_id or None,
+                )
+            )
+            return error
+        data.seen_call_ids.add(call.call_id)
+        budget.consume_tool_call()
+        self._remember_paths(call, data)
+        return None
+
+    async def _record(
+        self, call: ModelToolCall, outcome: ToolResult | BaseException, data: _RunData
+    ) -> JSONObject:
+        """Turn one finished call into what the model will be told about it.
+
+        Sequential by construction: it mutates the run's working state, and the whole
+        point of separating it from execution is that two of these never interleave.
+        """
+        try:
+            if isinstance(outcome, BaseException):
+                raise outcome
+            # Record what happened, never what was merely attempted: a refused write that
+            # still showed up in files_modified would make the working state lie to
+            # verification, to recovery and to whoever reads the session later.
+            data.working = self._record_tool_use(data.working, call)
+            if outcome.reference is not None:
+                data.references.append(outcome.reference)
+            if call.name == TOOL_SEARCH_NAME:
+                self._reveal(outcome.output, data)
+            return {
+                "ok": True,
+                "call_id": outcome.call_id,
+                "output": outcome.output,
+                "reference_uri": outcome.reference.uri if outcome.reference else None,
+            }
+        except (CancellationError, ProcessCancelledError):
+            # Being stopped is not a tool failure, so it does not go to the recovery
+            # policy and does not become a recorded error against the task.
+            raise
+        except AthenaRuntimeError as exc:
+            directive = self.recovery.decide(exc)
+            data.working = data.working.failing(
+                RecordedError(exc.code, exc.message, directive.action.value)
+            )
+            await self.event_bus.publish(
+                RecoveryEvent(
+                    EventName.RECOVERY_ACTION,
+                    data.session.session_id,
+                    {
+                        "error_code": exc.code,
+                        "action": directive.action.value,
+                        "reason": directive.reason,
+                    },
+                    call.call_id,
+                )
+            )
+            return {
+                "ok": False,
+                "call_id": call.call_id,
+                "recovery": directive.action.value,
+                "error": {"code": exc.code, "message": exc.message, "details": exc.details},
+            }
 
     async def _attempt_completion(
         self,
