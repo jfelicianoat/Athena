@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -267,5 +268,64 @@ def test_athena_executes_a_file_tool_selected_through_ai_broker(tmp_path: Path) 
         assert (tmp_path / "impresiones.txt").read_text(encoding="utf-8") == (
             "Una impresión contemporánea."
         )
+
+    asyncio.run(scenario())
+
+
+class _SlowPollingBroker(AiBrokerModelProvider):
+    """Un broker vivo que nunca termina, y que tarda en decir que sigue generando.
+
+    Es el caso real que se midió: con la cola llena, cada consulta de estado tarda entre
+    ocho y veinte segundos. Lo que importa no es que sea lento, sino que el tiempo se
+    vaya en la consulta y no en la espera entre consultas.
+    """
+
+    def __init__(self, *, poll_cost: float, max_wait: float) -> None:
+        super().__init__(
+            "http://broker.local:8765",
+            "secret",
+            poll_interval_seconds=0.01,
+            max_wait_seconds=max_wait,
+        )
+        self.poll_cost = poll_cost
+        self.polls = 0
+
+    async def _call(
+        self,
+        method: str,
+        path: str,
+        body: Mapping[str, JSONValue] | None,
+        cancellation: CancellationToken | None,
+    ) -> tuple[int, JSONObject]:
+        del path, body, cancellation
+        if method == "POST":
+            return 201, {"task_id": "task-1"}
+        if method == "DELETE":
+            return 200, {}
+        self.polls += 1
+        await asyncio.sleep(self.poll_cost)
+        return 200, {"status": "generating"}
+
+
+def test_a_broker_that_never_finishes_is_given_up_on_in_real_time() -> None:
+    """El techo son segundos de reloj, no la suma de las esperas entre consultas.
+
+    Sumando los sleeps, un sondeo que tarda veinte segundos con un intervalo de uno hacía
+    que un techo de diez minutos se cumpliese al cabo de tres horas. Un run se quedaba
+    colgado sin evento y sin fallo mientras alguien lo miraba.
+    """
+
+    async def scenario() -> None:
+        broker = _SlowPollingBroker(poll_cost=0.05, max_wait=0.2)
+        request = ModelRequest(messages=(ModelMessage(ModelRole.USER, "hola"),))
+        empezado = time.monotonic()
+        with pytest.raises(ModelTransientError, match="did not answer"):
+            await broker.complete(request, CancellationSource().token)
+        transcurrido = time.monotonic() - empezado
+
+        # Con la cuenta vieja habrían hecho falta veinte vueltas —más de un segundo— para
+        # acumular 0,2 s de sleeps. Con el reloj bastan cuatro.
+        assert transcurrido < 1.0
+        assert broker.polls < 12
 
     asyncio.run(scenario())

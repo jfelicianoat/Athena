@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import http.client
 import json
+import time
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from typing import cast
@@ -192,8 +193,16 @@ class AiBrokerModelProvider(ModelProvider):
         prepared: _PreparedRequest,
         cancellation: CancellationToken,
     ) -> ModelResponse:
-        """Poll until the task ends, the caller stops, or the wait runs out."""
-        waited = 0.0
+        """Poll until the task ends, the caller stops, or the wait runs out.
+
+        The clock is the wall clock. Adding up the sleeps instead counts only the time
+        spent waiting between polls, and not the time each poll takes — which against a
+        loaded broker is the larger of the two by an order of magnitude. A `GET` that takes
+        twenty seconds and a poll interval of one turned a ten-minute ceiling into three
+        hours, so a broker that never finished generating left a run hanging with no event
+        and no failure for as long as anybody was willing to watch it.
+        """
+        deadline = time.monotonic() + self._max_wait
         while True:
             cancellation.raise_if_cancelled()
             status, payload = await self._call(
@@ -221,13 +230,12 @@ class AiBrokerModelProvider(ModelProvider):
                 raise ModelTransientError(
                     f"AI_Broker ended the task as {state}", details={"task": task_id}
                 )
-            if waited >= self._max_wait:
+            if time.monotonic() >= deadline:
                 raise ModelTransientError(
                     f"AI_Broker did not answer within {self._max_wait:g}s",
                     details={"task": task_id, "last_status": state},
                 )
             await asyncio.sleep(self._poll)
-            waited += self._poll
 
     async def _cancel_task(self, task_id: str) -> None:
         """Best effort. A failure to tidy up must not replace the reason we are leaving."""
