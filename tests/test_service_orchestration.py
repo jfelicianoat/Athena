@@ -29,9 +29,10 @@ from athena.adapters.service.orchestration import (
 from athena.adapters.service.runs import CapabilityMode, RunOptions, RunRegistry
 from athena.cancellation import CancellationSource, CancellationToken
 from athena.context import ContextBuilder
-from athena.errors import ToolValidationError
+from athena.errors import AthenaRuntimeError, ToolValidationError
 from athena.events import EventName, InMemoryEventBus, ModelEvent, RuntimeEvent
 from athena.graph_store import SqliteGraphStore
+from athena.metrics import MetricsCollector, RunMetrics, SqliteMetricsStore
 from athena.models import (
     ModelCapabilities,
     ModelHealth,
@@ -1162,5 +1163,136 @@ def test_a_refused_hierarchical_request_creates_no_run_at_all(tmp_path: Path) ->
             assert seen == [], "un run que no existe no publica nada"
         finally:
             await registry.shutdown()
+
+    asyncio.run(scenario())
+
+
+# ------------------------------------------------------------------ lo que queda medido
+
+
+def _measured(tmp_path: Path, provider: ModelProvider, bus: InMemoryEventBus) -> RunRegistry:
+    return RunRegistry(
+        provider,
+        bus,
+        SqliteSessionStore(tmp_path / "sessions.db"),
+        SqliteToolResultStore(tmp_path / "results.db"),
+        orchestration=OrchestrationSettings(planning=True),
+        metrics=MetricsCollector(),
+        metrics_store=SqliteMetricsStore(tmp_path / "metrics.db"),
+    )
+
+
+def test_a_run_started_through_the_service_is_counted(tmp_path: Path) -> None:
+    """El colector existía y nadie lo suscribía: ningún run del servicio se medía.
+
+    Es la comparación entre estrategias la que depende de esto, así que un run que pasa
+    sin dejar fila no es un hueco de instrumentación, es la pregunta del TFM sin datos.
+    """
+
+    async def scenario() -> None:
+        workspace = _sandbox(tmp_path / "repo")
+        bus = InMemoryEventBus()
+        registry = _measured(tmp_path, _Scripted(), bus)
+        run_id = await registry.start(
+            "investigate the addition path",
+            workspace,
+            RunOptions(execution_mode=ExecutionMode.DIRECT, max_iterations=3),
+        )
+        try:
+            await asyncio.wait_for(registry.wait(run_id), timeout=180)
+        finally:
+            await registry.shutdown()
+
+        assert registry.metrics is not None
+        counted = registry.metrics.get(run_id)
+        assert counted is not None, "el run terminó sin quedar contado"
+        assert counted.model_calls >= 1
+        assert counted.requested_mode == "direct"
+        assert counted.selected_shape == "direct"
+        # Y sobrevive al proceso: la comparación abarca más de una sesión.
+        assert registry.metrics_store is not None
+        guardados = await registry.metrics_store.load()
+        assert [item.run_id for item in guardados] == [run_id]
+
+    asyncio.run(scenario())
+
+
+def test_the_two_strategies_are_counted_apart(tmp_path: Path) -> None:
+    """Lo que hace comparable el experimento: cada run sabe de qué grupo es.
+
+    `hierarchical` se observa del grafo al arrancar y `selected_shape` de la decisión, así
+    que un run del bucle y uno del grafo caen en columnas distintas sin que nadie los
+    clasifique a mano después.
+    """
+
+    async def scenario() -> None:
+        bus = InMemoryEventBus()
+        registry = _measured(tmp_path, _Scripted(), bus)
+        directo = await registry.start(
+            "investigate the addition path",
+            _sandbox(tmp_path / "uno"),
+            RunOptions(execution_mode=ExecutionMode.DIRECT, max_iterations=3),
+        )
+        await asyncio.wait_for(registry.wait(directo), timeout=180)
+        jerarquico = await registry.start(
+            "investigate the addition path",
+            _sandbox(tmp_path / "dos"),
+            RunOptions(
+                writes=CapabilityMode.ALLOW,
+                execution=CapabilityMode.ALLOW,
+                execution_mode=ExecutionMode.HIERARCHICAL,
+            ),
+        )
+        try:
+            await asyncio.wait_for(registry.wait(jerarquico), timeout=180)
+        finally:
+            await registry.shutdown()
+
+        assert registry.metrics is not None
+        assert registry.metrics_store is not None
+        del bus
+        solos = await registry.metrics_store.load(hierarchical=False)
+        grafos = await registry.metrics_store.load(hierarchical=True)
+        assert [item.run_id for item in solos] == [directo]
+        assert [item.run_id for item in grafos] == [jerarquico]
+        assert grafos[0].tasks_total >= 1, "un run de grafo sin tareas contadas"
+
+    asyncio.run(scenario())
+
+
+def test_measuring_can_never_take_a_run_down(tmp_path: Path) -> None:
+    """La propiedad negativa, que es la que importa de un observador.
+
+    Si guardar la medición pudiera fallar el run, se habría cambiado un problema de
+    instrumentación por una caída. Aquí el almacén se rompe a propósito.
+    """
+
+    class _BrokenStore(SqliteMetricsStore):
+        async def save(self, metrics: RunMetrics) -> None:
+            del metrics
+            raise AthenaRuntimeError("el disco dijo que no")
+
+    async def scenario() -> None:
+        workspace = _sandbox(tmp_path / "repo")
+        bus = InMemoryEventBus()
+        registry = RunRegistry(
+            _Scripted(),
+            bus,
+            SqliteSessionStore(tmp_path / "sessions.db"),
+            SqliteToolResultStore(tmp_path / "results.db"),
+            metrics=MetricsCollector(),
+            metrics_store=_BrokenStore(tmp_path / "metrics.db"),
+        )
+        run_id = await registry.start(
+            "investigate the addition path",
+            workspace,
+            RunOptions(execution_mode=ExecutionMode.DIRECT, max_iterations=3),
+        )
+        try:
+            result = await asyncio.wait_for(registry.wait(run_id), timeout=180)
+        finally:
+            await registry.shutdown()
+
+        assert result.status.value == "completed", "medir tumbó el run que medía"
 
     asyncio.run(scenario())

@@ -37,6 +37,7 @@ from athena.events import EventBus, EventName, RuntimeEvent
 from athena.git_tools import GitCommitTool, git_read_tools
 from athena.graph_executor import GraphResult
 from athena.graph_store import StoredPlan
+from athena.metrics import MetricsCollector, SqliteMetricsStore
 from athena.models import ModelProvider
 from athena.mutation_tools import workspace_mutation_tools
 from athena.permissions import PermissionPolicy, PolicyPermissionEngine
@@ -195,6 +196,8 @@ class RunRegistry:
         delivery_timeout_seconds: float | None = None,
         approval_timeout_seconds: float | None = None,
         orchestration: OrchestrationSettings | None = None,
+        metrics: MetricsCollector | None = None,
+        metrics_store: SqliteMetricsStore | None = None,
     ) -> None:
         self.provider = provider
         self.event_bus = event_bus
@@ -206,6 +209,13 @@ class RunRegistry:
         self.orchestrator = Orchestrator(
             provider, event_bus, session_store, result_store, orchestration
         )
+        #: Cuenta lo que ocurre en cada run. Se suscribe al bus como cualquier otro
+        #: observador y no puede alterar nada: una medición capaz de tumbar el run que
+        #: mide convertiría un problema de instrumentación en una caída.
+        self.metrics = metrics
+        self.metrics_store = metrics_store
+        if metrics is not None:
+            event_bus.subscribe(metrics.observe)
         self._runs: dict[str, LiveRun] = {}
         event_bus.subscribe(self._fan_out)
 
@@ -389,6 +399,37 @@ class RunRegistry:
         Que un plan no llegue a existir no es motivo para fallar: significa que este
         objetivo se hace directamente, que es como se hacía antes de que hubiera planes.
         """
+        try:
+            return await self._work(run_id, objective, workspace, options, shape, source)
+        finally:
+            await self._measure(run_id)
+
+    async def _measure(self, run_id: str) -> None:
+        """Guardar lo contado, cuando el run ya no va a cambiar.
+
+        Al final y no por evento: lo que se compara es el run entero, y una fila por
+        suceso sería otra cosa. Un fallo al guardar se traga a propósito, por el mismo
+        motivo por el que el colector no puede lanzar.
+        """
+        if self.metrics is None or self.metrics_store is None:
+            return
+        counted = self.metrics.get(run_id)
+        if counted is None:
+            return
+        try:
+            await self.metrics_store.save(counted)
+        except AthenaRuntimeError:
+            return
+
+    async def _work(
+        self,
+        run_id: str,
+        objective: str,
+        workspace: Workspace,
+        options: RunOptions,
+        shape: RunShape,
+        source: CancellationSource,
+    ) -> AgentRunResult:
         prompt = self._ask(run_id)
         # Lo recordado se pide una vez y se reparte: dos consultas a la memoria por el
         # mismo objetivo darían la misma respuesta y costarían el doble.

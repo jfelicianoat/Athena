@@ -327,3 +327,74 @@ def test_the_check_answers_the_one_question_and_carries_nothing_else(tmp_path: P
         assert b"la-buena" not in crudo.split(b"\r\n\r\n", 1)[1]
 
     asyncio.run(scenario())
+
+
+def test_the_service_reports_what_it_has_measured(tmp_path: Path) -> None:
+    """La medición sale por HTTP, que es como llega a quien tiene que leerla.
+
+    Agregada y comparada por estrategia: quien pregunta quiere saber si descomponer sale a
+    cuenta. Devolver la lista de runs haría que la respuesta creciera con el uso hasta ser
+    inservible por su propio tamaño.
+
+    Sin runs todavía la respuesta son ceros y no un error: «aún no hay datos» es una
+    respuesta legítima para un panel, y una excepción no lo es.
+    """
+
+    async def scenario() -> None:
+        service = build_service(
+            ServiceSettings(
+                broker_base_url="http://127.0.0.1:9",
+                broker_token="test-only",
+                service_token="la-buena",
+                state_dir=tmp_path,
+                port=0,
+            )
+        )
+        host, port = await service.start()
+        try:
+            reader, writer = await asyncio.open_connection(host, port)
+            writer.write(
+                b"GET /v1/metrics HTTP/1.1\r\nHost: localhost\r\n"
+                b"Authorization: Bearer la-buena\r\n\r\n"
+            )
+            await writer.drain()
+            crudo = await reader.read()
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await service.stop()
+
+        assert int(crudo.split(b"\r\n")[0].split(b" ")[1]) == 200
+        cuerpo = json.loads(crudo.split(b"\r\n\r\n", 1)[1])
+        assert isinstance(cuerpo, dict)
+
+    asyncio.run(scenario())
+
+
+def test_metrics_need_the_credential_like_everything_else(tmp_path: Path) -> None:
+    """No es un sondeo de vida: lo medido es información del trabajo de alguien."""
+
+    async def scenario() -> None:
+        service = build_service(
+            ServiceSettings(
+                broker_base_url="http://127.0.0.1:9",
+                broker_token="test-only",
+                service_token="la-buena",
+                state_dir=tmp_path,
+                port=0,
+            )
+        )
+        host, port = await service.start()
+        try:
+            reader, writer = await asyncio.open_connection(host, port)
+            writer.write(b"GET /v1/metrics HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            await writer.drain()
+            crudo = await reader.read()
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await service.stop()
+
+        assert int(crudo.split(b"\r\n")[0].split(b" ")[1]) == 401
+
+    asyncio.run(scenario())

@@ -45,6 +45,7 @@ from athena.adapters.service.launch import ServiceEndpoint, service_ready_line
 from athena.adapters.service.orchestration import OrchestrationSettings
 from athena.events import InMemoryEventBus
 from athena.graph_store import SqliteGraphStore
+from athena.metrics import MetricsCollector, SqliteMetricsStore
 from athena.models import ModelProvider
 from athena.planning import PlanBoard
 from athena.project_memory import SqliteProjectMemory
@@ -259,6 +260,10 @@ def build_service(settings: ServiceSettings) -> AthenaService:
         SqliteSessionStore(settings.state_dir / "sessions.db"),
         SqliteToolResultStore(settings.state_dir / "results.db"),
         orchestration=build_orchestration(settings),
+        # Medir es barato y no medir es irreversible: un run que ya pasó no se puede
+        # contar después. Va siempre, no detrás de un interruptor.
+        metrics=MetricsCollector(),
+        metrics_store=SqliteMetricsStore(settings.state_dir / "metrics.db"),
     )
     return AthenaService(
         registry,

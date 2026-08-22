@@ -566,7 +566,19 @@ def _parse_tool_call(value: JSONValue, allowed_tools: frozenset[str]) -> ModelTo
     name = value.get("name")
     arguments = value.get("arguments")
     if not isinstance(name, str) or name not in allowed_tools:
-        raise ModelPermanentError("AI_Broker selected a tool Athena did not offer")
+        # Con el nombre y el catálogo, porque sin ellos cada run fallido por esto es
+        # indiagnosticable: no se distingue un modelo que inventa una herramienta de un
+        # catálogo mal armado, y son problemas de sitios distintos.
+        #
+        # Sólo nombres: los argumentos pueden llevar cualquier cosa y un error no es sitio
+        # para averiguarlo.
+        raise ModelPermanentError(
+            "AI_Broker selected a tool Athena did not offer",
+            details={
+                "selected": name if isinstance(name, str) else type(name).__name__,
+                "offered": sorted(allowed_tools),
+            },
+        )
     if not isinstance(arguments, Mapping):
         raise ModelPermanentError("AI_Broker returned malformed tool arguments")
     call_id = value.get("call_id")

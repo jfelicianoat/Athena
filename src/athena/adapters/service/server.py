@@ -276,6 +276,8 @@ class AthenaService:
                     "runs": len(self.registry.live_ids()),
                 },
             )
+        if path == "/v1/metrics" and method == "GET":
+            return await self._metrics()
         if path == "/v1/auth/check" and method == "GET":
             # Deliberadamente vacío y barato. Sirve para una sola pregunta —«¿vale esta
             # credencial?»— y responderla con datos invitaría a sondearlo por ellos.
@@ -425,6 +427,19 @@ class AthenaService:
         if record is None:
             return Response(404, error_to_json("not_found", f"Unknown run: {run_id}"))
         return Response(200, session_to_json(record))
+
+    async def _metrics(self) -> Response:
+        """Lo medido hasta ahora, agregado y comparado por estrategia.
+
+        Agregados y no la lista de runs: quien pregunta quiere saber si descomponer sale a
+        cuenta, y devolver cada run haría que la respuesta creciera con el uso hasta ser
+        inservible por su propio tamaño.
+        """
+        if self.registry.metrics_store is None:
+            return Response(
+                404, error_to_json("metrics_disabled", "This deployment records no metrics")
+            )
+        return Response(200, await self.registry.metrics_store.compare())
 
     async def _resume_run(self, run_id: str, request: Request) -> Response:
         payload = request.json()
