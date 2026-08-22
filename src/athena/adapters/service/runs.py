@@ -45,6 +45,7 @@ from athena.permissions import PermissionPolicy, PolicyPermissionEngine
 from athena.process_tools import BashTool
 from athena.registry import ToolRegistry
 from athena.repository_tools import repository_read_tools
+from athena.run_event_log import RunEventLog
 from athena.security import redact_sensitive
 from athena.session_store import SessionRecord, SessionStore
 from athena.state import AgentStatus, ExecutionOutcome, SessionState
@@ -205,6 +206,7 @@ class RunRegistry:
         orchestration: OrchestrationSettings | None = None,
         metrics: MetricsCollector | None = None,
         metrics_store: SqliteMetricsStore | None = None,
+        event_log: RunEventLog | None = None,
     ) -> None:
         self.provider = provider
         self.event_bus = event_bus
@@ -221,8 +223,15 @@ class RunRegistry:
         #: mide convertiría un problema de instrumentación en una caída.
         self.metrics = metrics
         self.metrics_store = metrics_store
+        #: Los hechos que sobreviven al proceso. Se suscribe como cualquier observador y
+        #: filtra por su cuenta: qué merece durar lo decide el log, no quien publica.
+        self.event_log = event_log
+        #: Escrituras del log en vuelo, sostenidas para que nadie las recolecte.
+        self._writes: set[asyncio.Task[None]] = set()
         if metrics is not None:
             event_bus.subscribe(metrics.observe)
+        if event_log is not None:
+            event_bus.subscribe(self._durable)
         self._runs: dict[str, LiveRun] = {}
         event_bus.subscribe(self._fan_out)
 
@@ -391,6 +400,28 @@ class RunRegistry:
                 max_repair_cycles=options.max_repair_cycles,
             ),
         )
+
+    def _durable(self, event: RuntimeEvent) -> None:
+        """Guardar un hecho sin bloquear a quien lo publicó.
+
+        El bus es síncrono y el log escribe en disco, así que se agenda en vez de
+        esperarse: un observador que hiciera esperar al runtime convertiría la
+        persistencia de un dato en latencia de cada acción.
+        """
+        if self.event_log is None:
+            return
+        with contextlib.suppress(RuntimeError):
+            # Con referencia: una tarea suelta puede recolectarse a media escritura, y el
+            # hecho se perdería justo cuando el log existe para no perderlo.
+            task = asyncio.ensure_future(self._store_event(event))
+            self._writes.add(task)
+            task.add_done_callback(self._writes.discard)
+
+    async def _store_event(self, event: RuntimeEvent) -> None:
+        if self.event_log is None:
+            return
+        with contextlib.suppress(AthenaRuntimeError, OSError):
+            await self.event_log.record(event)
 
     def _publish_approval(self, pending: PendingApproval) -> None:
         """Approvals reach the client the same way everything else does: as an event.
@@ -620,6 +651,18 @@ class RunRegistry:
                 run.task.cancel()
                 with contextlib.suppress(BaseException):
                     await run.task
+        await self.drain()
+
+    async def drain(self) -> None:
+        """Esperar a que lo que se estaba guardando termine de guardarse.
+
+        Las escrituras del log van agendadas para no hacer esperar al bus, asi que al
+        apagar hay unas cuantas en vuelo. Cerrar sin esperarlas perderia justo los ultimos
+        hechos de un run —los que dicen como acabo—, que son los que alguien vendria a
+        buscar despues.
+        """
+        while self._writes:
+            await asyncio.gather(*tuple(self._writes), return_exceptions=True)
 
     def replay(self, run_id: str, last_event_id: str) -> tuple[RuntimeEvent, ...] | None:
         """What a reconnecting client missed, or `None` if it must resynchronise."""

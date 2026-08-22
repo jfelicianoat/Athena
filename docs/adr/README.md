@@ -46,3 +46,5 @@ of rewritten history.
   [The executor joins what already existed](023-the-executor-joins-what-already-existed.md)
 - ADR-024:
   [Execution mode is asked for; the shape is reported](024-execution-mode-is-asked-for-and-the-shape-is-reported.md)
+- ADR-025:
+  [A fact belongs to a run, not to the session that published it](025-a-fact-belongs-to-a-run-not-to-a-session.md)

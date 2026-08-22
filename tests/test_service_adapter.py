@@ -36,6 +36,7 @@ from athena.models import (
     ModelToolCall,
 )
 from athena.permissions import PermissionDecision, PermissionRequest, RiskLevel, RiskTier
+from athena.run_event_log import RunEventLog
 from athena.session_store import SqliteSessionStore
 from athena.state import AgentStatus
 from athena.stores import SqliteToolResultStore
@@ -445,6 +446,78 @@ def test_health_needs_no_token_and_everything_else_does(tmp_path: Path) -> None:
 def test_the_service_refuses_to_bind_beyond_loopback() -> None:
     with pytest.raises(ValueError):
         ServiceConfig(host="0.0.0.0", token="t")
+
+
+def test_a_deployment_without_a_log_says_so_instead_of_inventing_a_history(
+    tmp_path: Path,
+) -> None:
+    """No es lo mismo «no guardo historia» que «este run no hizo nada»."""
+
+    async def scenario() -> None:
+        service = AthenaService(_registry(tmp_path, _ScriptedProvider([])), _config())
+        host, port = await service.start()
+        try:
+            status, body = await _request(host, port, "GET", "/v1/runs/r-1/history")
+            assert status == 404
+            assert json.loads(body)["error"]["code"] == "history_disabled"
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
+def test_the_history_of_a_run_answers_after_the_stream_is_over(tmp_path: Path) -> None:
+    """El stream sirve mientras pasa; esto contesta despues, y con autor.
+
+    Es la diferencia entre `/events` y `/history`: uno no existe para quien llega tarde, y
+    el otro existe precisamente para el. Incluye lo que hicieron los delegados, atribuido
+    a quien lo hizo, porque tambien es lo que hizo el run.
+    """
+
+    async def scenario() -> None:
+        log = RunEventLog(tmp_path / "events.db")
+        registry = RunRegistry(
+            _ScriptedProvider([]),
+            InMemoryEventBus(),
+            SqliteSessionStore(tmp_path / "sessions.db"),
+            SqliteToolResultStore(tmp_path / "results.db"),
+            event_log=log,
+        )
+        service = AthenaService(registry, _config())
+        host, port = await service.start()
+        try:
+            bus = registry.event_bus
+            await bus.publish(RuntimeEvent(EventName.AGENT_STARTED, "r-1"))
+            await bus.publish(
+                RuntimeEvent(
+                    EventName.SUBAGENT_STARTED,
+                    "r-1",
+                    {"role": "explorer", "session_id": "hijo-1"},
+                    "hijo-1",
+                )
+            )
+            await bus.publish(RuntimeEvent(EventName.TOOL_COMPLETED, "hijo-1", {"tool": "grep"}))
+            await bus.publish(RuntimeEvent(EventName.AGENT_COMPLETED, "r-1"))
+            # Las escrituras van agendadas para no frenar al bus; el apagado las espera.
+            await registry.drain()
+
+            status, body = await _request(host, port, "GET", "/v1/runs/r-1/history")
+            assert status == 200
+            payload = json.loads(body)
+            assert payload["summary"]["status"] == "completed"
+            del_hijo = [
+                item for item in payload["events"] if item["provenance"]["session_id"] == "hijo-1"
+            ]
+            assert del_hijo, "lo que hizo el delegado no quedo en la historia del run"
+            assert del_hijo[0]["provenance"]["actor"] == "explorer"
+            assert del_hijo[0]["provenance"]["delegated"] is True
+
+            status, body = await _request(host, port, "GET", "/v1/runs/nadie/history")
+            assert status == 404, "un run sin historia no puede leerse como run vacio"
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
 
 
 def test_an_unknown_route_is_a_clean_404(tmp_path: Path) -> None:

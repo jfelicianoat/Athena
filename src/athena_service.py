@@ -50,6 +50,7 @@ from athena.models import ModelProvider
 from athena.planning import PlanBoard
 from athena.project_memory import SqliteProjectMemory
 from athena.provider_router import ProviderEntry, ProviderRegistry, ProviderRouter
+from athena.run_event_log import RunEventLog
 from athena.session_store import SqliteSessionStore
 from athena.stores import SqliteToolResultStore
 
@@ -264,6 +265,9 @@ def build_service(settings: ServiceSettings) -> AthenaService:
         # contar después. Va siempre, no detrás de un interruptor.
         metrics=MetricsCollector(),
         metrics_store=SqliteMetricsStore(settings.state_dir / "metrics.db"),
+        # Los hechos duran aunque el proceso no: tras un reinicio, el estado dice dónde
+        # quedó un run y esto dice cómo llegó.
+        event_log=RunEventLog(settings.state_dir / "events.db"),
     )
     return AthenaService(
         registry,

@@ -46,6 +46,7 @@ from athena.errors import (
 )
 from athena.identity import IdentityDirectory
 from athena.permissions import PermissionDecision
+from athena.run_event_log import replay
 from athena.tools import ToolResultReference
 from athena.types import JSONObject
 from athena.workspace import Workspace
@@ -292,6 +293,8 @@ class AthenaService:
             return await self._start_run(request)
         if (run_id := _match(path, "/v1/runs/{}")) and method == "GET":
             return await self._get_run(run_id)
+        if (run_id := _match(path, "/v1/runs/{}/history")) and method == "GET":
+            return await self._history(run_id, request)
         if (run_id := _match(path, "/v1/runs/{}/cancel")) and method == "POST":
             await self.registry.cancel(run_id)
             return Response(202, {"run_id": run_id, "cancelling": True})
@@ -440,6 +443,40 @@ class AthenaService:
                 404, error_to_json("metrics_disabled", "This deployment records no metrics")
             )
         return Response(200, await self.registry.metrics_store.compare())
+
+    async def _history(self, run_id: str, request: Request) -> Response:
+        """Lo que ocurrió en un run, leido del registro y no del run vivo.
+
+        Distinto de `/v1/runs/{id}/events`, que es el stream: aquel sirve mientras el run
+        pasa y no existe para quien llega tarde. Este contesta despues, incluso tras un
+        reinicio, e incluye lo que hicieron los delegados atribuido a quien lo hizo.
+        """
+        log = self.registry.event_log
+        if log is None:
+            return Response(
+                404, error_to_json("history_disabled", "This deployment keeps no durable log")
+            )
+        after = _positive_int(request.query.get("after"))
+        task_id = request.query.get("task")
+        events = (
+            await log.read_task(run_id, task_id) if task_id else await log.read(run_id, after=after)
+        )
+        if not events and after == 0 and not task_id:
+            # Un run del que no consta nada no es un run vacio: o no existio, o es
+            # anterior al log. Decir 200 con una lista vacia haria pasar por historia
+            # completa la ausencia de historia.
+            return Response(404, error_to_json("not_found", f"No durable history for {run_id}"))
+        return Response(
+            200,
+            {
+                "run_id": run_id,
+                "events": [event.to_json() for event in events],
+                # El resumen viaja con los hechos porque se deriva de ellos: calcularlo en
+                # el cliente obligaria a cada cliente a repetir la misma lectura y a
+                # ponerse de acuerdo en como se lee.
+                "summary": replay(events),
+            },
+        )
 
     async def _resume_run(self, run_id: str, request: Request) -> Response:
         payload = request.json()
@@ -672,6 +709,21 @@ async def _send(
 
 def _parse_query(raw: str) -> dict[str, str]:
     return dict(parse_qsl(raw, keep_blank_values=True))
+
+
+def _positive_int(raw: str | None) -> int:
+    """Un cursor del cliente, saneado. Lo que no sea un entero valido es cero.
+
+    Rechazarlo con un 400 castigaria a quien pide la historia entera con un parametro
+    sobrante; empezar por el principio es exactamente lo que queria.
+    """
+    if raw is None:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        return 0
+    return max(value, 0)
 
 
 def _match(path: str, template: str) -> str | None:

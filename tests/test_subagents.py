@@ -348,6 +348,42 @@ def test_delegation_emits_its_own_lifecycle_events(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_a_delegate_is_announced_by_name_before_it_works(tmp_path: Path) -> None:
+    """El hijo dice como se llama al empezar, no al terminar.
+
+    Sus eventos viajan por el mismo bus con su propia sesion, asi que todo lo que haga
+    mientras trabaja llega sin dueno si su nombre solo se conoce al final: justo el rato
+    en que alguien esta mirando, y justo lo que un registro duradero tiene que atribuir.
+    """
+    root = _sandbox(tmp_path / "repo")
+
+    async def scenario() -> None:
+        bus = InMemoryEventBus()
+        provider = _ScriptedProvider([ModelResponse('{"findings": []}', "scripted", "stop")])
+        runner, events = _runner(bus, provider)
+
+        result = await runner.delegate(
+            SubagentRole.EXPLORER,
+            SubagentBrief(objective="Look"),
+            Workspace.from_path(root),
+            CancellationSource().token,
+            parent_session_id="parent-1",
+        )
+
+        started = next(e for e in events if e.name is EventName.SUBAGENT_STARTED)
+        assert started.payload["session_id"] == result.session_id
+        assert started.correlation_id == result.session_id
+
+        propios = [e for e in events if e.session_id == result.session_id]
+        assert propios, "el hijo no publico nada bajo el nombre anunciado"
+        anuncio = events.index(started)
+        assert all(events.index(e) > anuncio for e in propios), (
+            "el hijo hablo antes de que se supiera quien era"
+        )
+
+    asyncio.run(scenario())
+
+
 # ------------------------------------------------------------------ limits
 
 

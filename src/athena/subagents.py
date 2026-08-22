@@ -24,6 +24,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from uuid import uuid4
 
 from athena.agent_loop import AgentLoop, AgentLoopConfig, AgentRunStatus
 from athena.cancellation import CancellationSource, CancellationToken
@@ -369,6 +370,11 @@ class SubagentRunner:
 
         child = CancellationSource()
         unsubscribe = parent_cancellation.register(child.cancel)
+        # El hijo se nombra antes de arrancar, no al terminar. Sus eventos viajan por el
+        # mismo bus con su propia sesion, asi que quien mira sólo puede atribuirselos si
+        # ya sabe cómo se llama: anunciarlo al final deja huérfano todo lo que hizo
+        # mientras lo hacía, que es precisamente cuando alguien está mirando.
+        child_session_id = str(uuid4())
         await self.event_bus.publish(
             SubagentEvent(
                 EventName.SUBAGENT_STARTED,
@@ -380,11 +386,15 @@ class SubagentRunner:
                     "max_iterations": limits.max_iterations,
                     "max_tool_calls": limits.max_tool_calls,
                     "timeout_seconds": limits.timeout_seconds,
+                    "session_id": child_session_id,
                 },
+                child_session_id,
             )
         )
         try:
-            run = await loop.run(brief.render(profile), workspace, child.token)
+            run = await loop.run(
+                brief.render(profile), workspace, child.token, session_id=child_session_id
+            )
         finally:
             unsubscribe()
 
