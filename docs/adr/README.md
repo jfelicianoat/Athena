@@ -58,3 +58,5 @@ of rewritten history.
   [A goal can be revised, and the old evidence does not carry over](029-a-goal-can-be-revised-and-the-old-evidence-does-not-carry-over.md)
 - ADR-030:
   [A delegate can be asked again, within its own budget](030-a-delegate-can-be-asked-again-within-its-own-budget.md)
+- ADR-031:
+  [Memory is earned, and it expires](031-memory-is-earned-and-it-expires.md)

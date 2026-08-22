@@ -698,6 +698,74 @@ def test_revising_without_saying_which_version_is_refused(tmp_path: Path) -> Non
     asyncio.run(scenario())
 
 
+def test_a_deployment_that_remembers_nothing_says_so(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        service = AthenaService(_registry(tmp_path, _ScriptedProvider([])), _config())
+        host, port = await service.start()
+        try:
+            status, body = await _request(host, port, "GET", "/v1/memory?project=p")
+            assert status == 404
+            assert json.loads(body)["error"]["code"] == "memory_disabled"
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
+def test_only_a_person_can_confirm_what_athena_remembers(tmp_path: Path) -> None:
+    """`USER_CONFIRMED` era un estado inalcanzable con nombre.
+
+    El escalon mas alto dice «una persona respondio por esto», y una persona no puede
+    responder por lo que no ve ni tiene forma de firmar.
+    """
+    from athena.adapters.service.orchestration import OrchestrationSettings, Orchestrator
+    from athena.project_memory import MemoryKind, SqliteProjectMemory
+
+    async def scenario() -> None:
+        memoria = SqliteProjectMemory(tmp_path / "memory.db")
+        sessions = SqliteSessionStore(tmp_path / "sessions.db")
+        results = SqliteToolResultStore(tmp_path / "results.db")
+        bus = InMemoryEventBus()
+        registry = RunRegistry(
+            _ScriptedProvider([]),
+            bus,
+            sessions,
+            results,
+            orchestration=OrchestrationSettings(memory=memoria),
+        )
+        registry.orchestrator = Orchestrator(
+            _ScriptedProvider([]),
+            bus,
+            sessions,
+            results,
+            OrchestrationSettings(memory=memoria),
+        )
+        item = await memoria.propose(
+            "proyecto-1", MemoryKind.VERIFIED_COMMAND, "pytest -q", source="run:1"
+        )
+        service = AthenaService(registry, _config())
+        host, port = await service.start()
+        try:
+            status, body = await _request(host, port, "GET", "/v1/memory?project=proyecto-1")
+            assert status == 200
+            (guardado,) = json.loads(body)["items"]
+            assert guardado["verification_state"] == "proposed"
+            assert guardado["stale"] is False
+
+            status, body = await _request(host, port, "POST", f"/v1/memory/{item.id}/confirm")
+            assert status == 200
+            assert json.loads(body)["verification_state"] == "user_confirmed"
+
+            status, _ = await _request(host, port, "DELETE", f"/v1/memory/{item.id}")
+            assert status == 200
+            status, body = await _request(host, port, "GET", "/v1/memory?project=proyecto-1")
+            assert json.loads(body)["items"] == [], "olvidar no lo quito de la vista"
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
 def test_an_unknown_route_is_a_clean_404(tmp_path: Path) -> None:
     async def scenario() -> None:
         service = AthenaService(_registry(tmp_path, _ScriptedProvider([])), _config())

@@ -614,7 +614,7 @@ class RunRegistry:
             if result is not None:
                 return _from_graph(run_id, workspace, result)
         loop = self._build(run_id, workspace, options, notes)
-        return await loop.run(
+        resultado = await loop.run(
             objective,
             workspace,
             source.token,
@@ -623,6 +623,11 @@ class RunRegistry:
             # cliente estaria revisando uno que nadie lee.
             goal=self._runs[run_id].goal,
         )
+        # Lo que se aprendio, del lado de la evidencia. Athena leia su memoria de proyecto
+        # en cada run y no escribia en ella nunca: la recordaba vacia y volvia a descubrir
+        # los mismos comandos cada vez.
+        await self.orchestrator.learn_from(workspace.workspace_id, resultado.verification, run_id)
+        return resultado
 
     async def start(
         self, objective: str, workspace: Workspace, options: RunOptions | None = None

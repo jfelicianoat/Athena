@@ -50,7 +50,12 @@ from athena.planning import (
     TaskGraph,
     TaskNode,
 )
-from athena.project_memory import MemoryKind, SqliteProjectMemory, render_for_context
+from athena.project_memory import (
+    MemoryKind,
+    SqliteProjectMemory,
+    VerificationState,
+    render_for_context,
+)
 from athena.scouting import RepositoryScout, merge
 from athena.session_store import SessionRecord, SessionStore
 from athena.state import AgentStatus, ExecutionOutcome
@@ -64,7 +69,7 @@ from athena.subagents import (
 from athena.tasks import TaskManager
 from athena.tools import Tool
 from athena.types import JSONObject, JSONValue
-from athena.verification import VerificationPolicy
+from athena.verification import VerificationPolicy, VerificationResult
 from athena.working_state import PlanStep, StepStatus, WorkingState
 from athena.workspace import Workspace
 
@@ -338,6 +343,47 @@ class Orchestrator:
             )
         except AthenaRuntimeError as error:
             _logger.warning("memory.propose_failed code=%s", error.code)
+
+    async def learn_from(
+        self, project_id: str, verification: VerificationResult | None, run_id: str
+    ) -> int:
+        """Guardar los comandos que se ejecutaron y pasaron, ya verificados.
+
+        Aqui `VERIFIED` no es un ascenso de cortesia: el runtime ejecuto ese comando en
+        este workspace y salio bien, que es literalmente «algo lo comprobo». Es la unica
+        promocion honesta que Athena puede hacerse a si misma; la siguiente —que una
+        persona lo respalde— tiene que venir de una persona.
+
+        Y es lo unico que se escribe automaticamente. Dejar que un run guardase sus
+        conclusiones convertiria la memoria en una segunda copia, mas vieja, de lo que el
+        modelo creyo entender.
+        """
+        if self.settings.memory is None or verification is None:
+            return 0
+        aprendidos = 0
+        for evidence in verification.evidence:
+            comando = evidence.metadata.get("command")
+            if not evidence.metadata.get("passed") or not isinstance(comando, str):
+                continue
+            if not comando.strip():
+                continue
+            try:
+                item = await self.settings.memory.propose(
+                    project_id,
+                    MemoryKind.VERIFIED_COMMAND,
+                    comando.strip(),
+                    source=f"run:{run_id}",
+                    source_reference=str(evidence.metadata.get("name") or ""),
+                )
+                await self.settings.memory.approve(
+                    item.id, state=VerificationState.VERIFIED, confidence=0.9
+                )
+                aprendidos += 1
+            except AthenaRuntimeError as error:
+                # Aprender no puede tumbar un run que ya termino bien. Lo que se pierde es
+                # un recuerdo; lo que se salvaria fallando aqui, nada.
+                _logger.warning("memory.learn_failed code=%s", error.code)
+        return aprendidos
 
     # -- the graph path ----------------------------------------------------
 

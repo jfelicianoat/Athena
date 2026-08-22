@@ -64,6 +64,23 @@ class MemoryKind(StrEnum):
     ENVIRONMENT_FACT = "environment_fact"
 
 
+#: Cuanto vale un recuerdo de cada tipo antes de dejar de creerselo sin comprobar.
+#:
+#: Por tipo y no uno global porque envejecen a ritmos distintos: una decision de
+#: arquitectura sigue siendo cierta un anyo despues, y un comando que funcionaba hace tres
+#: meses probablemente ya no exista. Un unico numero tendria que ser el del mas volatil
+#: —y tiraria lo que si dura— o el del mas estable —y conservaria mentiras—.
+STALE_AFTER: dict[str, timedelta] = {
+    "verified_command": timedelta(days=30),
+    "environment_fact": timedelta(days=30),
+    "project_convention": timedelta(days=180),
+    "architecture_decision": timedelta(days=365),
+    "known_constraint": timedelta(days=180),
+    "domain_fact": timedelta(days=365),
+    "user_confirmed_fact": timedelta(days=365),
+}
+
+
 class VerificationState(StrEnum):
     """How much weight an item has earned.
 
@@ -124,13 +141,20 @@ class ProjectMemoryItem:
     def age(self, *, now: datetime | None = None) -> timedelta:
         return (now or datetime.now(UTC)) - self.created_at
 
-    def is_stale(self, *, older_than: timedelta, now: datetime | None = None) -> bool:
-        """A memory is a hint about the past. This is how old the hint is.
+    def is_stale(self, *, older_than: timedelta | None = None, now: datetime | None = None) -> bool:
+        """A memory is a hint about the past. Esto dice si el hint ya no vale.
 
-        Deliberately a question the caller asks rather than a state the store maintains:
-        how old is too old depends on the kind of thing, and the store does not know.
+        Sin `older_than` usa el plazo de su propio tipo. Era una pregunta que el llamante
+        tenia que hacer y que no hacia nadie: el resultado era que ningun recuerdo
+        caducaba jamas, y un comando de hace un anyo entraba al prompt con el mismo peso
+        que uno de ayer.
         """
-        return self.age(now=now) > older_than
+        limite = (
+            older_than
+            if older_than is not None
+            else STALE_AFTER.get(self.kind.value, timedelta(days=180))
+        )
+        return self.age(now=now) > limite
 
     def to_json(self) -> JSONObject:
         return {
@@ -508,12 +532,16 @@ def _item_from(row: sqlite3.Row) -> ProjectMemoryItem:
     )
 
 
-def render_for_context(items: Iterable[ProjectMemoryItem]) -> str:
+def render_for_context(items: Iterable[ProjectMemoryItem], *, now: datetime | None = None) -> str:
     """How retrieved memory reaches a prompt: as hints, labelled with their standing.
 
     The labels are not decoration. A model told "the build command is X" behaves
     differently from one told "somebody once proposed that the build command is X", and the
     second is what an unverified item actually is.
+
+    Y con su edad, cuando ya paso el plazo de su tipo. Un comando que funcionaba hace un
+    anyo no es falso, pero tampoco es una instruccion: presentarlo igual que uno de ayer
+    era la unica forma en que esta memoria podia hacer dano.
     """
     lines: list[str] = []
     for item in items:
@@ -522,7 +550,10 @@ def render_for_context(items: Iterable[ProjectMemoryItem]) -> str:
             VerificationState.VERIFIED: "verified",
             VerificationState.USER_CONFIRMED: "confirmed by the user",
         }[item.verification_state]
-        lines.append(f"- [{item.kind.value}, {label}] {item.content}")
+        # Viejo no es falso, asi que no se tira: se dice. Ocultarlo perderia una pista que
+        # a menudo sigue valiendo, y darlo sin fecha lo presentaria como si valiera seguro.
+        antiguedad = ", stale" if item.is_stale(now=now) else ""
+        lines.append(f"- [{item.kind.value}, {label}{antiguedad}] {item.content}")
     if not lines:
         return ""
     return (

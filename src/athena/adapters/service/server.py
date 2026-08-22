@@ -23,6 +23,7 @@ import logging
 import secrets
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl
@@ -47,6 +48,7 @@ from athena.errors import (
 )
 from athena.identity import IdentityDirectory
 from athena.permissions import PermissionDecision
+from athena.project_memory import SqliteProjectMemory, VerificationState
 from athena.run_event_log import replay
 from athena.tools import ToolResultReference
 from athena.types import JSONObject
@@ -289,6 +291,12 @@ class AthenaService:
                     "runs": len(self.registry.live_ids()),
                 },
             )
+        if path == "/v1/memory" and method == "GET":
+            return await self._memory(request)
+        if (item := _match(path, "/v1/memory/{}/confirm")) and method == "POST":
+            return await self._confirm_memory(item)
+        if (item := _match(path, "/v1/memory/{}")) and method == "DELETE":
+            return await self._forget_memory(item)
         if path == "/v1/profiles" and method == "GET":
             # Que ofrece este despliegue. Sin esto un cliente elige a ciegas, y elegir a
             # ciegas entre perfiles que cambian que herramientas existen y que cuenta como
@@ -473,6 +481,63 @@ class AthenaService:
                 404, error_to_json("metrics_disabled", "This deployment records no metrics")
             )
         return Response(200, await self.registry.metrics_store.compare())
+
+    async def _memory(self, request: Request) -> Response:
+        """Lo que Athena cree saber de un proyecto, para que alguien pueda mirarlo.
+
+        Existe porque el escalon mas alto —«una persona lo respalda»— no se puede alcanzar
+        sin una persona, y una persona no puede respaldar lo que no ve. Sin esto,
+        `USER_CONFIRMED` era un estado inalcanzable con nombre.
+        """
+        memory = self._memory_store()
+        if memory is None:
+            return Response(
+                404, error_to_json("memory_disabled", "This deployment remembers nothing")
+            )
+        project_id = request.query.get("project")
+        if not project_id:
+            raise ToolValidationError("project is required")
+        items = await memory.active(
+            project_id, limit=_positive_int(request.query.get("limit")) or 50
+        )
+        ahora = datetime.now(UTC)
+        return Response(
+            200,
+            {
+                "project_id": project_id,
+                "items": [
+                    # La edad va calculada, no en crudo: quien mira esto quiere saber de
+                    # que fiarse, y una fecha ISO obliga a cada cliente a decidir por su
+                    # cuenta cuando algo es viejo — y a discrepar entre si.
+                    {**item.to_json(), "stale": item.is_stale(now=ahora)}
+                    for item in items
+                ],
+            },
+        )
+
+    async def _confirm_memory(self, item_id: str) -> Response:
+        """Una persona responde por esto. Es el unico camino a `USER_CONFIRMED`."""
+        memory = self._memory_store()
+        if memory is None:
+            return Response(
+                404, error_to_json("memory_disabled", "This deployment remembers nothing")
+            )
+        item = await memory.approve(item_id, state=VerificationState.USER_CONFIRMED)
+        return Response(200, item.to_json())
+
+    async def _forget_memory(self, item_id: str) -> Response:
+        memory = self._memory_store()
+        if memory is None:
+            return Response(
+                404, error_to_json("memory_disabled", "This deployment remembers nothing")
+            )
+        forgotten = await memory.forget(item_id)
+        if not forgotten:
+            return Response(404, error_to_json("not_found", f"No memory {item_id}"))
+        return Response(200, {"id": item_id, "forgotten": True})
+
+    def _memory_store(self) -> SqliteProjectMemory | None:
+        return self.registry.orchestrator.settings.memory
 
     def _revise_goal(self, run_id: str, request: Request) -> Response:
         """Cambiar el encargo de un run vivo, diciendo sobre que revision se escribe.
