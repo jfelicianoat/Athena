@@ -13,6 +13,7 @@ from uuid import uuid4
 from athena.async_utils import await_cancellable
 from athena.budget import BudgetLimits, RuntimeBudget
 from athena.cancellation import CancellationToken
+from athena.capabilities import UnsupportedCapabilityError, match, requirements_for
 from athena.concurrency import ConcurrencyScheduler
 from athena.context import ContextBuilder
 from athena.diagnosis import diagnose_result
@@ -551,6 +552,49 @@ class AgentLoop:
             return
         await capture(workspace, cancellation)
 
+    async def _require_capabilities(
+        self, request: ModelRequest, data: _RunData, request_id: str
+    ) -> None:
+        """Comprobar que el proveedor ofrece lo que esta petición necesita.
+
+        Lo requerido sale de la petición, no de una configuración: si lleva herramientas,
+        hace falta un proveedor que las admita, y eso no es una opción de despliegue. Dos
+        fuentes para la misma verdad acabarían discrepando.
+
+        Lo preferido que falte se anuncia y no impide nada, que es la diferencia entre
+        «esto no puede hacerse» y «esto podría hacerse mejor».
+        """
+        needed = requirements_for(
+            offers_tools=bool(request.tools),
+            needs_schema=request.response_schema is not None,
+        )
+        if not needed:
+            return
+        result = match("model_provider", self.provider.capabilities(), needed)
+        if result.missing_preferred:
+            await self.event_bus.publish(
+                ModelEvent(
+                    EventName.CAPABILITY_MISSING,
+                    data.session.session_id,
+                    {"missing": list(result.missing_preferred), "required": False},
+                    request_id,
+                )
+            )
+        if result.usable:
+            return
+        await self.event_bus.publish(
+            ModelEvent(
+                EventName.CAPABILITY_MISSING,
+                data.session.session_id,
+                {"missing": list(result.missing_required), "required": True},
+                request_id,
+            )
+        )
+        raise UnsupportedCapabilityError(
+            "The model provider does not offer what this request requires",
+            details=result.to_json(),
+        )
+
     async def _complete(
         self,
         request: ModelRequest,
@@ -559,6 +603,11 @@ class AgentLoop:
         budget: RuntimeBudget,
     ) -> ModelResponse:
         request_id = str(uuid4())
+        # Antes de gastar nada. Una petición con herramientas a un proveedor que no las
+        # admite no falla al enviarse: falla más adelante, como una respuesta rara, lejos
+        # de su causa. Preguntarlo aquí cuesta una comparación y convierte ese fallo en un
+        # error con nombre.
+        await self._require_capabilities(request, data, request_id)
         data.session = replace(
             data.session,
             agent=replace(data.session.agent, active_model_request_id=request_id),

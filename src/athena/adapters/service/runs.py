@@ -32,6 +32,7 @@ from athena.adapters.service.orchestration import (
 from athena.agent_loop import AgentLoop, AgentLoopConfig, AgentRunResult, AgentRunStatus
 from athena.cancellation import CancellationSource
 from athena.context import ContextBuilder
+from athena.delegation import DelegateTaskTool
 from athena.errors import AthenaRuntimeError, ToolValidationError
 from athena.events import EventBus, EventName, RuntimeEvent
 from athena.git_tools import GitCommitTool, git_read_tools
@@ -48,6 +49,12 @@ from athena.security import redact_sensitive
 from athena.session_store import SessionRecord, SessionStore
 from athena.state import AgentStatus, ExecutionOutcome, SessionState
 from athena.stores import ToolResultStore
+from athena.subagent_provider import (
+    NativeAthenaSubagentProvider,
+    SubagentProviderRegistry,
+    SubagentService,
+)
+from athena.subagents import SubagentRunner
 from athena.tool_executor import ToolExecutor
 from athena.tools import Tool
 from athena.types import JSONObject
@@ -336,10 +343,30 @@ class RunRegistry:
             allow_local_execution=options.execution is CapabilityMode.ALLOW,
         )
 
+    def _delegation_tool(self, options: RunOptions) -> DelegateTaskTool:
+        """La herramienta con la que un run monoagente puede pedir un especialista.
+
+        Se arma con la autoridad del propio run, así que el delegado nunca puede más que
+        quien lo pide. Y con el servicio de subagentes, no con un runner concreto: quien
+        delega no elige implementación.
+        """
+        catalog = {tool.spec.name: tool for tool in self.tools_for(options, self.event_bus)}
+        # Sin prompt propio: los permisos del delegado los resuelve el motor de su
+        # perfil, ya recortado a la autoridad del padre. Un delegado capaz de preguntar
+        # por su cuenta abriría una segunda vía de aprobación para el mismo run, y el
+        # cliente vería preguntas sin saber de quién son.
+        runner = SubagentRunner(
+            self.provider, catalog, self.event_bus, self.result_store, prompt=None
+        )
+        service = SubagentService(SubagentProviderRegistry((NativeAthenaSubagentProvider(runner),)))
+        return DelegateTaskTool(service, catalog, self.policy_for(options))
+
     def _build(
         self, run_id: str, workspace: Workspace, options: RunOptions, notes: str = ""
     ) -> AgentLoop:
-        registry = ToolRegistry(self.tools_for(options, self.event_bus))
+        registry = ToolRegistry(
+            (*self.tools_for(options, self.event_bus), self._delegation_tool(options))
+        )
         prompt = self._ask(run_id)
         executor = ToolExecutor(
             registry,

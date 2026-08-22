@@ -22,6 +22,10 @@ class EventName(StrEnum):
     MODEL_STARTED = "model.started"
     MODEL_COMPLETED = "model.completed"
     MODEL_FAILED = "model.failed"
+    #: Una garantía que hacía falta y el proveedor no da. Se publica también
+    #: cuando lo que falta era sólo preferible, con `required: false`: no impide
+    #: nada, y saber que se trabajó sin ello explica resultados peores.
+    CAPABILITY_MISSING = "capability.missing"
     TOOL_STARTED = "tool.started"
     TOOL_PROGRESS = "tool.progress"
     TOOL_COMPLETED = "tool.completed"

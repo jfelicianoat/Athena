@@ -19,17 +19,20 @@ Asking for a coder that can run commands is not, and the person is asked.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
+from athena.cancellation import CancellationToken
 from athena.errors import ToolValidationError
 from athena.permissions import PermissionPolicy, PermissionRequest, RiskLevel, RiskTier
+from athena.subagent_provider import Delegator
 from athena.subagents import (
     DEFAULT_PROFILES,
     SubagentBrief,
     SubagentProfile,
     SubagentRole,
 )
-from athena.tools import ToolLoadPolicy, ToolResult, ToolSpec
+from athena.tools import Tool, ToolContext, ToolLoadPolicy, ToolResult, ToolSpec
 from athena.types import JSONObject, JSONSchema
 from athena.workspace import Workspace
 
@@ -243,9 +246,110 @@ def describe_result(role: SubagentRole, summary: str, files: tuple[str, ...]) ->
     return ToolResult(call_id="", output="\n".join(line for line in lines if line))
 
 
+class DelegateTaskTool:
+    """Pedir un especialista, con el motor de permisos de por medio como todo lo demás.
+
+    Las piezas existían desde H6 —el esquema, el parser, `narrow`, `confine`, la petición
+    de permiso— y no había nada que las juntara, así que ningún modelo podía delegar. Esto
+    es esa unión, y deliberadamente no añade política: decide el motor, ejecuta el servicio
+    de subagentes, y aquí sólo se traduce.
+
+    Lo que sí impone es el orden. Primero se lee lo pedido, luego se recorta a la autoridad
+    del padre, y sólo entonces se pregunta. Preguntar por lo pedido en vez de por lo
+    concedido dejaría que un explorer sin permiso de escritura obtuviera un coder que sí
+    escribe — un escalado indirecto que ninguna respuesta posterior deshace.
+    """
+
+    def __init__(
+        self,
+        delegator: Delegator,
+        catalog: Mapping[str, Tool],
+        parent_policy: PermissionPolicy,
+        *,
+        profiles: Mapping[SubagentRole, SubagentProfile] | None = None,
+    ) -> None:
+        self._delegator = delegator
+        self._catalog = dict(catalog)
+        self._parent_policy = parent_policy
+        self._profiles = dict(profiles or DEFAULT_PROFILES)
+
+    @property
+    def spec(self) -> ToolSpec:
+        return DELEGATE_TASK_SPEC
+
+    def validate(self, arguments: JSONObject) -> JSONObject:
+        parse_delegation(arguments)
+        return dict(arguments)
+
+    def is_read_only(self, arguments: JSONObject) -> bool:
+        """Sólo si el delegado tampoco puede escribir.
+
+        La lectura del padre no dice nada: lo que importa es lo que podrá hacer el hijo,
+        porque es él quien va a tocar el workspace.
+        """
+        return not self._confined(arguments).policy.allow_workspace_writes
+
+    def is_destructive(self, arguments: JSONObject) -> bool:
+        del arguments
+        return False
+
+    def is_concurrency_safe(self, arguments: JSONObject) -> bool:
+        """Nunca.
+
+        Un delegado abre su propio bucle y puede tocar cualquier cosa dentro de su
+        autoridad; solaparlo con otra llamada del mismo turno sería conceder paralelismo
+        sin saber sobre qué.
+        """
+        del arguments
+        return False
+
+    def permission(self, context: ToolContext, arguments: JSONObject) -> PermissionRequest:
+        return permission_request_for(
+            self._confined(arguments),
+            context.workspace,
+            parse_delegation(arguments).goal,
+        )
+
+    async def execute(
+        self,
+        context: ToolContext,
+        arguments: JSONObject,
+        cancellation: CancellationToken,
+    ) -> ToolResult:
+        request = parse_delegation(arguments)
+        confined = self._confined(arguments)
+        result = await self._delegator.delegate(
+            request.role,
+            request.brief(),
+            context.workspace,
+            cancellation,
+            parent_session_id=context.session_id,
+            budget=confined.budget,
+        )
+        return ToolResult(
+            {
+                "role": result.role.value,
+                "status": result.status.value,
+                "summary": result.answer or "",
+                "files_changed": list(result.files_modified),
+                "commands_run": list(result.commands_run),
+            }
+        )
+
+    def _confined(self, arguments: JSONObject) -> SubagentProfile:
+        """El perfil que de verdad va a correr: lo pedido ∩ lo que el padre tiene.
+
+        Se calcula aquí y se usa para las tres respuestas —si es de sólo lectura, qué se
+        pregunta y qué se ejecuta— para que no puedan discrepar entre sí.
+        """
+        request = parse_delegation(arguments)
+        return confine(self._profiles[request.role], self._parent_policy, frozenset(self._catalog))
+
+
 __all__ = [
     "DELEGATE_TASK_NAME",
     "DELEGATE_TASK_SPEC",
+    "DelegateTaskTool",
     "DelegationRequest",
     "confine",
     "describe_result",
