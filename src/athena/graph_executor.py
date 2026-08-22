@@ -191,6 +191,20 @@ class GraphExecutor:
             while not graph.is_complete():
                 cancellation.raise_if_cancelled()
                 frontier = graph.ready()
+                await self._publish(
+                    EventName.GRAPH_FRONTIER_READY,
+                    run_id,
+                    {
+                        "tasks": [node.id for node in frontier],
+                        # Lo que queda por hacer, contando bloqueadas y fallidas: para
+                        # quien mira, «pendiente» incluye lo que ya no va a salir.
+                        "remaining": sum(
+                            1
+                            for node in graph.nodes
+                            if node.status not in (PlanStatus.COMPLETED, PlanStatus.SKIPPED)
+                        ),
+                    },
+                )
                 if not frontier:
                     # Nothing can start and nothing is running: whatever remains is blocked
                     # behind something that failed. Reporting COMPLETED here would be the
@@ -252,6 +266,12 @@ class GraphExecutor:
         for node in frontier:
             if node.status is PlanStatus.PENDING:
                 graph.transition(node.id, PlanStatus.READY)
+            await self._publish(
+                EventName.TASK_SCHEDULED,
+                run_id,
+                {"task_id": node.id, "role": node.suggested_role.value},
+                correlation_id=node.id,
+            )
 
         reads = asyncio.Semaphore(self.max_parallel_reads)
         results = await asyncio.gather(
@@ -303,11 +323,29 @@ class GraphExecutor:
             )
             evidence = await self._delegate(node, graph, workspace, cancellation, run_id)
 
+        # Quién estaba ya bloqueado antes de esta transición, para poder contar sólo a
+        # quien bloquea ésta. El grafo hace la cascada por dentro y no publica: es núcleo y
+        # no conoce el bus, que es como debe ser.
+        bloqueadas_antes = {item.id for item in graph.nodes if item.status is PlanStatus.BLOCKED}
         graph.transition(
             node.id,
             PlanStatus.COMPLETED if evidence.succeeded else PlanStatus.FAILED,
             verification=evidence.to_json(),
         )
+        for bloqueada in graph.nodes:
+            if bloqueada.status is PlanStatus.BLOCKED and bloqueada.id not in bloqueadas_antes:
+                await self._publish(
+                    EventName.TASK_BLOCKED,
+                    run_id,
+                    {
+                        "task_id": bloqueada.id,
+                        "role": bloqueada.suggested_role.value,
+                        # De quién viene, no de quién es la culpa: una tarea bloqueada no
+                        # ha fallado, y contarla como fallo culparía a la equivocada.
+                        "blocked_by": node.id,
+                    },
+                    correlation_id=bloqueada.id,
+                )
         # Saved on every transition, not once at the end. A plan written only at the start
         # would survive a restart and be wrong about everything it had already done, which
         # is worse than not surviving.

@@ -40,12 +40,22 @@ class EventName(StrEnum):
     #: The graph level, which is a real level and not a synonym for the run. A task uses a
     #: subagent; it is not one, and a view that conflated them could not draw the plan.
     GRAPH_STARTED = "graph.started"
+    #: Qué puede empezar ahora. Se publica una vez por ola, antes de lanzarla, así que
+    #: quien mira ve el ancho real del trabajo en vez de deducirlo de tareas sueltas.
+    GRAPH_FRONTIER_READY = "graph.frontier.ready"
     GRAPH_COMPLETED = "graph.completed"
     GRAPH_FAILED = "graph.failed"
     GRAPH_CANCELLED = "graph.cancelled"
+    #: Admitida en una ola y todavía sin empezar. Separado de `task.started` porque el
+    #: hueco entre las dos es donde una tarea espera a su turno, y sin decirlo esa espera
+    #: parece que no ocurre.
+    TASK_SCHEDULED = "task.scheduled"
     TASK_STARTED = "task.started"
     TASK_COMPLETED = "task.completed"
     TASK_FAILED = "task.failed"
+    #: No puede empezar porque algo de lo que depende falló. No es un fallo suyo, y
+    #: contarlo como tal culparía a la tarea equivocada.
+    TASK_BLOCKED = "task.blocked"
     SUBAGENT_STARTED = "subagent.started"
     SUBAGENT_COMPLETED = "subagent.completed"
     SUBAGENT_FAILED = "subagent.failed"

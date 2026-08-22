@@ -30,7 +30,7 @@ from athena.registry import ToolRegistry
 from athena.stores import InMemoryToolResultStore
 from athena.testing import FakeModelProvider
 from athena.tool_executor import ToolExecutor
-from athena.tools import ToolContext, ToolResult, ToolSpec
+from athena.tools import Tool, ToolContext, ToolResult, ToolSpec
 from athena.types import JSONObject
 from athena.workspace import Workspace
 
@@ -143,10 +143,10 @@ def _turn(*calls: tuple[str, str, str]) -> ModelResponse:
     )
 
 
-def _run(root: Path, tools: tuple[object, ...], turn: ModelResponse) -> AgentRunStatus:
+def _run(root: Path, tools: tuple[Tool, ...], turn: ModelResponse) -> AgentRunStatus:
     async def scenario() -> AgentRunStatus:
         workspace = Workspace.from_path(root, "test-workspace")
-        registry = ToolRegistry(tools)  # type: ignore[arg-type]
+        registry = ToolRegistry(tools)
         bus = InMemoryEventBus()
         executor = ToolExecutor(registry, _AllowAll(), InMemoryToolResultStore(), bus)
         loop = AgentLoop(
@@ -221,7 +221,7 @@ def test_the_transcript_keeps_the_order_the_model_asked_for(tmp_path: Path) -> N
             _Meeting("look_there", barrier, concurrency_safe=True),
         )
         workspace = Workspace.from_path(tmp_path, "test-workspace")
-        registry = ToolRegistry(tools)  # type: ignore[arg-type]
+        registry = ToolRegistry(tools)
         bus = InMemoryEventBus()
         executor = ToolExecutor(registry, _AllowAll(), InMemoryToolResultStore(), bus)
         provider = FakeModelProvider(
@@ -262,7 +262,7 @@ def test_a_duplicate_call_id_is_refused_without_disturbing_the_others(tmp_path: 
         barrier = _Barrier(expected=1, timeout=0.2)
         tools = (_Meeting("look_here", barrier, concurrency_safe=True),)
         workspace = Workspace.from_path(tmp_path, "test-workspace")
-        registry = ToolRegistry(tools)  # type: ignore[arg-type]
+        registry = ToolRegistry(tools)
         bus = InMemoryEventBus()
         executor = ToolExecutor(registry, _AllowAll(), InMemoryToolResultStore(), bus)
         provider = FakeModelProvider(

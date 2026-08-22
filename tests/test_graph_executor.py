@@ -12,7 +12,13 @@ import asyncio
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 
-from athena.cancellation import CancellationScope, CancellationSource, CancellationToken
+from athena.cancellation import (
+    CancellationScope,
+    CancellationSource,
+    CancellationToken,
+    chained_source,
+)
+from athena.errors import ModelPermanentError
 from athena.events import EventName, InMemoryEventBus, ModelEvent, RuntimeEvent
 from athena.git_tools import git_read_tools
 from athena.graph_executor import GraphExecutor, TaskEvidence
@@ -537,3 +543,153 @@ def test_the_executor_holds_no_agent_logic() -> None:
     assert "athena.subagents" in imported
     assert "athena.tasks" in imported
     assert "class AgentLoop" not in source
+
+
+class _RefusingProvider(_AnsweringProvider):
+    """Contesta con un fallo permanente, para que una tarea falle de verdad.
+
+    Hace falta que falle el ejecutor y no la prueba: bloquear a mano las dependientes
+    saltaría justo la cascada que se quiere observar.
+    """
+
+    async def complete(
+        self, request: ModelRequest, cancellation: CancellationToken
+    ) -> ModelResponse:
+        del request
+        cancellation.raise_if_cancelled()
+        self.calls += 1
+        raise ModelPermanentError("el modelo se niega")
+
+
+# ------------------------------------------------------------------ lo que un observador ve
+
+
+def test_a_watcher_sees_the_width_of_the_work_before_it_starts(tmp_path: Path) -> None:
+    """La frontera se anuncia antes de lanzarla, no se deduce de tareas sueltas.
+
+    Sin este evento, quien mira sólo puede inferir cuánto se está haciendo a la vez
+    contando `task.started` seguidos y esperando a ver si llega otro. Con dos tareas
+    independientes eso funciona por accidente; con una que tarda, se lee como trabajo en
+    serie.
+    """
+
+    async def scenario() -> None:
+        workspace = _workspace(tmp_path)
+        bus = InMemoryEventBus()
+        seen: list[RuntimeEvent] = []
+        bus.subscribe(seen.append)
+        executor, manager = _executor(workspace, _AnsweringProvider(), bus)
+        graph = TaskGraph.build([node("a"), node("b"), node("c", depends=["a", "b"])])
+
+        await executor.execute(graph, workspace, CancellationSource().token, run_id="r")
+        await manager.shutdown()
+
+        fronteras = [
+            event.payload["tasks"] for event in seen if event.name is EventName.GRAPH_FRONTIER_READY
+        ]
+        # Dos independientes primero, la que las junta después: el ancho es visible.
+        assert fronteras[0] == ["a", "b"]
+        assert fronteras[1] == ["c"]
+
+        planificadas = [
+            event.payload["task_id"] for event in seen if event.name is EventName.TASK_SCHEDULED
+        ]
+        assert planificadas == ["a", "b", "c"]
+
+    asyncio.run(scenario())
+
+
+def test_a_blocked_task_is_named_along_with_what_blocked_it(tmp_path: Path) -> None:
+    """Bloqueada no es fallida, y el evento dice de quién viene.
+
+    Contarla como fallo culparía a la tarea equivocada: no llegó a intentarse. Y sin decir
+    quién la bloqueó, un plan ancho deja a quien mira buscando la causa entre varias.
+    """
+
+    async def scenario() -> None:
+        workspace = _workspace(tmp_path)
+        bus = InMemoryEventBus()
+        seen: list[RuntimeEvent] = []
+        bus.subscribe(seen.append)
+        executor, manager = _executor(workspace, _RefusingProvider(), bus)
+        graph = TaskGraph.build([node("a"), node("b", depends=["a"]), node("c", depends=["b"])])
+
+        await executor.execute(graph, workspace, CancellationSource().token, run_id="r")
+        await manager.shutdown()
+
+        bloqueadas = {
+            event.payload["task_id"]: event.payload["blocked_by"]
+            for event in seen
+            if event.name is EventName.TASK_BLOCKED
+        }
+        # Transitivo: `c` tampoco puede empezar, y decirlo evita que parezca pendiente.
+        assert bloqueadas == {"b": "a", "c": "a"}
+        fallidas = [
+            event.payload["task_id"] for event in seen if event.name is EventName.TASK_FAILED
+        ]
+        assert fallidas == ["a"], "una tarea bloqueada se contó como fallida"
+
+    asyncio.run(scenario())
+
+
+# ------------------------------------------------------------------ cancelación por ámbito
+
+
+def test_cancelling_one_task_leaves_its_independent_siblings_alone(tmp_path: Path) -> None:
+    """Parar una rama no para las demás.
+
+    Es la diferencia entre TASK y RUN, y la razón de que los ámbitos existan: si cancelar
+    una tarea tumbara el grafo, no habría forma de abandonar una línea de trabajo sin
+    abandonar el objetivo.
+    """
+
+    async def scenario() -> None:
+        workspace = _workspace(tmp_path)
+        bus = InMemoryEventBus()
+        executor, manager = _executor(workspace, _AnsweringProvider(), bus)
+        graph = TaskGraph.build([node("a"), node("b")])
+        run = CancellationSource(CancellationScope.RUN)
+        # Un ámbito de tarea encadenado al del run: cancelarlo no toca al padre.
+        tarea = chained_source(run.token, CancellationScope.TASK)
+
+        tarea.cancel()
+
+        assert tarea.token.is_cancelled
+        assert not run.token.is_cancelled, "cancelar una tarea alcanzó al run entero"
+        result = await executor.execute(graph, workspace, run.token, run_id="r")
+        await manager.shutdown()
+        assert result.outcome is ExecutionOutcome.COMPLETED
+
+    asyncio.run(scenario())
+
+
+def test_cancelling_the_run_reaches_every_scope_below_it(tmp_path: Path) -> None:
+    """Y al revés: lo de arriba sí alcanza a lo de abajo.
+
+    Encadenar es en un solo sentido. Un subgrafo que sobreviviera a la cancelación de su
+    run seguiría gastando modelo y tocando el workspace en nombre de un objetivo que ya
+    nadie quiere.
+    """
+    run = CancellationSource(CancellationScope.RUN)
+    subgrafo = chained_source(run.token, CancellationScope.SUBGRAPH)
+    tarea = chained_source(subgrafo.token, CancellationScope.TASK)
+
+    run.cancel()
+
+    assert subgrafo.token.is_cancelled
+    assert tarea.token.is_cancelled
+
+
+def test_cancelling_a_subgraph_stops_its_tasks_and_not_the_run(tmp_path: Path) -> None:
+    """El ámbito intermedio, que es el que usa el ejecutor para el plan entero."""
+    del tmp_path
+    run = CancellationSource(CancellationScope.RUN)
+    subgrafo = chained_source(run.token, CancellationScope.SUBGRAPH)
+    tarea = chained_source(subgrafo.token, CancellationScope.TASK)
+    hermana = chained_source(run.token, CancellationScope.SUBGRAPH)
+
+    subgrafo.cancel()
+
+    assert tarea.token.is_cancelled, "una tarea sobrevivió a la cancelación de su subgrafo"
+    assert not run.token.is_cancelled
+    assert not hermana.token.is_cancelled, "cancelar un subgrafo alcanzó a otro independiente"
