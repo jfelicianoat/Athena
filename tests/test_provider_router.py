@@ -43,11 +43,13 @@ class _Provider(ModelProvider):
         fails_with: Exception | None = None,
         streaming: bool = False,
         tool_calls: bool = True,
+        structured_output: bool = False,
         health: ModelHealthStatus = ModelHealthStatus.HEALTHY,
     ) -> None:
         self.answer = answer
         self.fails_with = fails_with
         self.streaming = streaming
+        self.structured_output = structured_output
         self.tool_calls = tool_calls
         self._health = health
         self.calls = 0
@@ -72,7 +74,7 @@ class _Provider(ModelProvider):
         yield ModelEvent(EventName.MODEL_COMPLETED, self.answer)
 
     def capabilities(self) -> ModelCapabilities:
-        return ModelCapabilities(self.streaming, self.tool_calls, False)
+        return ModelCapabilities(self.streaming, self.tool_calls, self.structured_output)
 
     async def health(self, cancellation: CancellationToken) -> ModelHealth:
         cancellation.raise_if_cancelled()
@@ -351,3 +353,43 @@ def test_the_router_does_not_route_between_models() -> None:
 
     assert not any(name.startswith("athena.adapters") for name in imported)
     assert "model" not in ProviderEntry.__dataclass_fields__, "it selects providers, not models"
+
+
+SCHEMA_REQUEST = ModelRequest(messages=(), response_schema={"type": "object"})
+
+
+def test_a_fallback_that_cannot_do_the_job_is_not_a_fallback() -> None:
+    """Respaldar no es degradar.
+
+    Un segundo proveedor que no ofrece lo requerido no salva el run: lo continúa sin la
+    garantía que alguien pidió, y el fallo aparece después atribuido al sitio equivocado.
+    Se le rechaza igual que se rechazaría al primero.
+    """
+
+    async def scenario() -> None:
+        primario = _Provider(fails_with=ModelPermanentError("el primario no está"))
+        respaldo = _Provider("contesto igual", structured_output=False)
+        router = _router(primario, respaldo)
+
+        with pytest.raises(ModelPermanentError):
+            await router.complete(SCHEMA_REQUEST, CancellationSource().token)
+
+        assert respaldo.calls == 0, "se usó un respaldo que no daba lo requerido"
+
+    asyncio.run(scenario())
+
+
+def test_a_compatible_fallback_still_takes_over() -> None:
+    """Y cuando sí cumple, el run continúa: la exigencia no rompe el respaldo."""
+
+    async def scenario() -> None:
+        primario = _Provider(fails_with=ModelPermanentError("el primario no está"))
+        respaldo = _Provider("contesto igual", structured_output=True)
+        router = _router(primario, respaldo)
+
+        resultado = await router.complete(SCHEMA_REQUEST, CancellationSource().token)
+
+        assert resultado.content == "contesto igual"
+        assert respaldo.calls == 1
+
+    asyncio.run(scenario())

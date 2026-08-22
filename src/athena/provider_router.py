@@ -23,6 +23,7 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 
 from athena.cancellation import CancellationToken
+from athena.capabilities import match, requirements_for
 from athena.errors import (
     AthenaRuntimeError,
     ModelPermanentError,
@@ -111,8 +112,28 @@ class ProviderRouter(ModelProvider):
         self, request: ModelRequest, cancellation: CancellationToken
     ) -> ModelResponse:
         last: ModelPermanentError | None = None
+        needed = requirements_for(
+            offers_tools=bool(request.tools),
+            needs_schema=request.response_schema is not None,
+        )
         for entry in self.registry.all():
             cancellation.raise_if_cancelled()
+            # Caer a un proveedor que no da lo que hace falta no es un respaldo, es una
+            # degradación con otro nombre: el run continuaría sin la garantía que alguien
+            # pidió y fallaría más adelante, atribuido al sitio equivocado.
+            gaps = match(entry.name, entry.provider.capabilities(), needed)
+            if not gaps.usable:
+                self.stats.record_failure(entry.name)
+                _logger.warning(
+                    "router.provider_rejected provider=%s missing=%s",
+                    entry.name,
+                    ",".join(gaps.missing_required),
+                )
+                last = ModelPermanentError(
+                    f"{entry.name} does not offer what this request requires",
+                    details=gaps.to_json(),
+                )
+                continue
             self.stats.attempts += 1
             try:
                 response = await entry.provider.complete(request, cancellation)
@@ -129,6 +150,16 @@ class ProviderRouter(ModelProvider):
                 self.stats.record_failure(entry.name)
                 raise
             self.stats.record_success(entry.name)
+            if entry is not self.registry.all()[0]:
+                # Qué se dejó de usar, qué se usó y por qué: sin eso, un run atendido por
+                # el respaldo es indistinguible de uno normal, y la comparación de modelos
+                # del informe mezclaría dos cosas distintas.
+                _logger.info(
+                    "router.fallback_used from=%s to=%s cause=%s",
+                    self.registry.all()[0].name,
+                    entry.name,
+                    "" if last is None else last.code,
+                )
             return response
         raise last or ModelPermanentError("No provider is configured")
 
