@@ -2,6 +2,10 @@
 
 - Status: Accepted
 - Date: 2026-08-19
+- Implementation status (2026-08-22): the `SubagentProfile` decided here is a **role**
+  profile — it divides authority inside a run. ADR-028 adds `AthenaProfile`, which
+  says what kind of work the whole run is. The word collides and the concepts do not:
+  a documents run still delegates to a Coder. The two compose; they do not merge.
 
 ## Context
 

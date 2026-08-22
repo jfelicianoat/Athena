@@ -122,6 +122,13 @@ from athena.planning import (
     parse_plan,
 )
 from athena.process_tools import BashTool, CommandPolicy
+from athena.profiles import (
+    DOCUMENTS,
+    SOFTWARE_ENGINEERING,
+    AthenaProfile,
+    Evidence,
+    ProfileRegistry,
+)
 from athena.project_memory import (
     MemoryKind,
     ProjectMemoryItem,
@@ -197,6 +204,7 @@ from athena.tools import (
     ToolResultReference,
 )
 from athena.verification import (
+    ArtifactVerificationPolicy,
     ChangeIntegrityPolicy,
     CommandVerificationPolicy,
     IntegrityAuthorization,
@@ -221,9 +229,11 @@ from athena.workspaces import (
 __all__ = [
     "CODER_PROFILE",
     "DELEGATE_TASK_SPEC",
+    "DOCUMENTS",
     "EXPLORER_PROFILE",
     "HELP_TEXT",
     "NEW_INTERACTION_TEXT",
+    "SOFTWARE_ENGINEERING",
     "VERIFIER_PROFILE",
     "AccessMode",
     "AgentEvent",
@@ -233,6 +243,8 @@ __all__ = [
     "AgentRunStatus",
     "AgentState",
     "AggregateMetrics",
+    "ArtifactVerificationPolicy",
+    "AthenaProfile",
     "AthenaRuntimeError",
     "BackgroundProcess",
     "BackgroundProcessSupervisor",
@@ -268,6 +280,7 @@ __all__ = [
     "EventBus",
     "EventCheckpoint",
     "EventName",
+    "Evidence",
     "ExecutionOutcome",
     "ExplorerReport",
     "FailureDiagnosis",
@@ -332,6 +345,7 @@ __all__ = [
     "PolicyPermissionEngine",
     "ProcessEvent",
     "ProcessState",
+    "ProfileRegistry",
     "ProjectMemory",
     "ProjectMemoryItem",
     "Provenance",

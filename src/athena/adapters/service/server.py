@@ -277,6 +277,20 @@ class AthenaService:
                     "runs": len(self.registry.live_ids()),
                 },
             )
+        if path == "/v1/profiles" and method == "GET":
+            # Que ofrece este despliegue. Sin esto un cliente elige a ciegas, y elegir a
+            # ciegas entre perfiles que cambian que herramientas existen y que cuenta como
+            # prueba no es elegir: es acertar.
+            return Response(
+                200,
+                {
+                    "default": self.registry.profiles.default.name,
+                    "profiles": [
+                        self.registry.profiles.get(name).to_json()
+                        for name in self.registry.profiles.names()
+                    ],
+                },
+            )
         if path == "/v1/metrics" and method == "GET":
             return await self._metrics()
         if path == "/v1/auth/check" and method == "GET":

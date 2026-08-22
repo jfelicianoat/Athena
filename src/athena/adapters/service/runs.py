@@ -43,6 +43,7 @@ from athena.models import ModelProvider
 from athena.mutation_tools import workspace_mutation_tools
 from athena.permissions import PermissionPolicy, PolicyPermissionEngine
 from athena.process_tools import BashTool
+from athena.profiles import Evidence, ProfileRegistry
 from athena.registry import ToolRegistry
 from athena.repository_tools import repository_read_tools
 from athena.run_event_log import RunEventLog
@@ -59,7 +60,12 @@ from athena.subagents import SubagentRunner
 from athena.tool_executor import ToolExecutor
 from athena.tools import Tool
 from athena.types import JSONObject
-from athena.verification import CommandVerificationPolicy, VerificationPlanner
+from athena.verification import (
+    ArtifactVerificationPolicy,
+    CommandVerificationPolicy,
+    VerificationPlanner,
+    VerificationPolicy,
+)
 from athena.workspace import Workspace
 
 #: How many events a slow client may fall behind before it is dropped rather than allowed
@@ -84,6 +90,27 @@ class CapabilityMode(StrEnum):
     ALLOW = "allow"
 
 
+#: Las que cambian el workspace, y las que ejecutan algo. Por nombre, porque es lo que el
+#: perfil declara: deducirlo de `is_read_only()` mezclaria dos preguntas —que hace una
+#: tool y quien puede usarla— que el resto del sistema mantiene separadas a proposito.
+def _paths(raw: object) -> tuple[str, ...]:
+    """Rutas relativas pedidas por el cliente, saneadas aqui y comprobadas mas tarde.
+
+    Aqui solo se exige que sean cadenas: si estan dentro del workspace lo decide el
+    propio workspace al resolverlas, que es el unico sitio donde esa pregunta tiene una
+    respuesta fiable.
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+        raise ToolValidationError("deliverables must be a list of paths")
+    return tuple(item.strip() for item in raw if isinstance(item, str) and item.strip())
+
+
+_MUTATING = frozenset({"write_file", "edit_file", "git_commit"})
+_EXECUTING = frozenset({"bash"})
+
+
 @dataclass(frozen=True, slots=True)
 class RunOptions:
     """What a client may choose about a run. Defaults follow ADR-017 §14: it asks."""
@@ -97,6 +124,15 @@ class RunOptions:
     #: repositorio y no una casilla de la interfaz; `hierarchical` y `direct` fijan el
     #: camino para quien necesita saber cuál corrió.
     execution_mode: ExecutionMode = ExecutionMode.AUTO
+    #: Para que se esta usando Athena en este run. Vacio = el de por defecto del
+    #: despliegue. Un nombre desconocido es un 400, no una caida al de por defecto:
+    #: quien pide `documents` y recibe el de software no se entera hasta que Athena
+    #: intenta ejecutar los tests de una carpeta de textos.
+    profile: str = ""
+    #: Los entregables que se esperan, si quien encarga el trabajo los sabe nombrar. Sin
+    #: ellos la evidencia por artefactos comprueba lo que el run dice haber escrito, que
+    #: es mas debil; con ellos comprueba lo que se pidio.
+    deliverables: tuple[str, ...] = ()
 
     @classmethod
     def from_json(cls, payload: Mapping[str, object]) -> RunOptions:
@@ -138,6 +174,8 @@ class RunOptions:
             else 2,
             session_timeout_seconds=float(timeout),
             execution_mode=chosen,
+            profile=str(payload.get("profile") or ""),
+            deliverables=_paths(payload.get("deliverables")),
         )
 
 
@@ -207,7 +245,11 @@ class RunRegistry:
         metrics: MetricsCollector | None = None,
         metrics_store: SqliteMetricsStore | None = None,
         event_log: RunEventLog | None = None,
+        profiles: ProfileRegistry | None = None,
     ) -> None:
+        #: Los perfiles que este despliegue ofrece. Uno solo por defecto seria decir que
+        #: Athena sirve para una cosa, que es justo lo que la fase venia a desmentir.
+        self.profiles = profiles or ProfileRegistry()
         self.provider = provider
         self.event_bus = event_bus
         self.session_store = session_store
@@ -301,14 +343,48 @@ class RunRegistry:
     # -- lifecycle --------------------------------------------------------
 
     def tools_for(self, options: RunOptions, event_bus: EventBus) -> tuple[Tool, ...]:
-        """Which tools a run gets. `off` means the tool does not exist for that run."""
-        tools: list[Tool] = [*repository_read_tools(), *git_read_tools()]
-        if options.writes is not CapabilityMode.OFF:
-            tools.extend(workspace_mutation_tools(event_bus))
-            tools.append(GitCommitTool())
-        if options.execution is not CapabilityMode.OFF:
-            tools.append(BashTool(event_bus=event_bus))
+        """Which tools a run gets. `off` means the tool does not exist for that run.
+
+        Dos filtros, y en este orden: el perfil dice que herramientas existen para esta
+        clase de trabajo, y las capacidades del run dicen cuales de esas se le conceden.
+        El primero es estructural —lo que el perfil no incluye no esta en el catalogo, asi
+        que no se puede pedir— y el segundo es politica. Al reves, un run de documentos
+        con `exec=allow` tendria shell por el camino de las capacidades.
+        """
+        perfil = self.profiles.get(options.profile)
+        disponibles: dict[str, Tool] = {
+            tool.spec.name: tool
+            for tool in (
+                *repository_read_tools(),
+                *git_read_tools(),
+                *workspace_mutation_tools(event_bus),
+                GitCommitTool(),
+                BashTool(event_bus=event_bus),
+            )
+        }
+        del_perfil = perfil.catalog_from(disponibles)
+        tools: list[Tool] = []
+        for name, tool in del_perfil.items():
+            if not isinstance(tool, Tool):  # pragma: no cover - el catalogo es de tools
+                continue
+            if name in _MUTATING and options.writes is CapabilityMode.OFF:
+                continue
+            if name in _EXECUTING and options.execution is CapabilityMode.OFF:
+                continue
+            tools.append(tool)
         return tuple(tools)
+
+    def verification_for(self, options: RunOptions, workspace: Workspace) -> VerificationPolicy:
+        """Como se prueba que el trabajo esta hecho, segun para que se use Athena.
+
+        Un solo sitio y no tres. Los caminos directo, jerarquico y reanudado montaban cada
+        uno el suyo, asi que un perfil nuevo habria entrado en uno y no en los otros — y el
+        mismo run se habria verificado distinto segun por donde entrase.
+        """
+        perfil = self.profiles.get(options.profile)
+        if perfil.evidence is Evidence.PRODUCED_ARTIFACTS:
+            return ArtifactVerificationPolicy(options.deliverables)
+        return CommandVerificationPolicy(VerificationPlanner(workspace), event_bus=self.event_bus)
 
     def _ask(self, run_id: str) -> RemotePermissionPrompt:
         """El canal por el que este run pregunta, sea cual sea su forma.
@@ -388,11 +464,11 @@ class RunRegistry:
             self.provider,
             registry,
             executor,
-            ContextBuilder(workspace, notes=notes),
-            self.event_bus,
-            verification=CommandVerificationPolicy(
-                VerificationPlanner(workspace), event_bus=self.event_bus
+            ContextBuilder(
+                workspace, notes=notes, subject=self.profiles.get(options.profile).subject
             ),
+            self.event_bus,
+            verification=self.verification_for(options, workspace),
             session_store=self.session_store,
             config=AgentLoopConfig(
                 max_iterations=options.max_iterations,
@@ -505,9 +581,7 @@ class RunRegistry:
                 shape,
                 catalog,
                 self.policy_for(options),
-                verification=CommandVerificationPolicy(
-                    VerificationPlanner(workspace), event_bus=self.event_bus
-                ),
+                verification=self.verification_for(options, workspace),
                 prompt=prompt,
                 cancellation=source.token,
             )
@@ -527,6 +601,10 @@ class RunRegistry:
         *before* they write, so the earlier event would still race the store.
         """
         settings = options or RunOptions()
+        # El perfil se resuelve antes de que exista el run, por el mismo motivo que la
+        # forma: un nombre que no existe tiene que rebotar como peticion invalida, no
+        # dejar un run creado que fallara mas tarde por una razon que ya se sabia.
+        self.profiles.get(settings.profile)
         # La forma se decide antes de que exista el run. Al revés, una petición rechazada
         # —pedir grafo donde no hay planificación— dejaba un run vivo que nadie iba a
         # ejecutar ni a cerrar, contado en `/v1/health` y ocupando memoria hasta el
@@ -614,9 +692,7 @@ class RunRegistry:
             workspace,
             {tool.spec.name: tool for tool in self.tools_for(options, self.event_bus)},
             self.policy_for(options),
-            verification=CommandVerificationPolicy(
-                VerificationPlanner(workspace), event_bus=self.event_bus
-            ),
+            verification=self.verification_for(options, workspace),
             prompt=self._ask(run_id),
             cancellation=source.token,
         )

@@ -951,6 +951,12 @@ class AgentLoop:
                 **data.session.attributes,
                 "final_response": response.content,
                 "finish_reason": response.finish_reason,
+                # Lo que el run hizo, no solo lo ultimo que dijo. Una politica de
+                # verificacion a la que solo se le cuenta la frase final tiene que
+                # deducir el trabajo del texto del modelo, que es justo lo unico que
+                # no es evidencia.
+                "files_modified": list(data.working.files_modified),
+                "commands_run": list(data.working.commands_run),
             },
             updated_at=datetime.now(UTC),
         )

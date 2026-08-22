@@ -52,3 +52,5 @@ of rewritten history.
   [A result has one truth and two projections](026-a-result-has-one-truth-and-two-projections.md)
 - ADR-027:
   ["Not verified" is not "verified wrong"](027-not-verified-is-not-verified-wrong.md)
+- ADR-028:
+  [A profile declares what counts as done](028-a-profile-declares-what-counts-as-done.md)

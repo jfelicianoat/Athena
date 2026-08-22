@@ -40,9 +40,14 @@ class ContextBuilder:
         *,
         limits: ContextLimits | None = None,
         notes: str = "",
+        subject: str = "a repository",
     ) -> None:
         self.workspace = workspace
         self.limits = limits or ContextLimits()
+        #: De que esta hecho el sitio donde se trabaja, en las palabras de su dominio.
+        #: A un run sobre documentos llamarle repositorio le enseña un vocabulario que no
+        #: es suyo y lo manda a buscar cosas que ahi no hay.
+        self.subject = subject.strip() or "a repository"
         #: Lo que se sabe de este proyecto de antes y no está en el repositorio. Llega ya
         #: etiquetado con su grado de certeza; aquí no se decide si creérselo.
         self.notes = notes.strip()
@@ -72,7 +77,7 @@ class ContextBuilder:
         discovered_paths: tuple[str, ...] = (),
     ) -> ModelRequest:
         project = await self.inspect_project(cancellation, discovered_paths)
-        system = self._render(project, important_state, tool_definitions, self.notes)
+        system = self._render(project, important_state, tool_definitions, self.notes, self.subject)
         messages = (
             ModelMessage(ModelRole.SYSTEM, system),
             ModelMessage(ModelRole.USER, objective),
@@ -185,6 +190,7 @@ class ContextBuilder:
         important_state: JSONObject,
         tools: tuple[JSONObject, ...] = (),
         notes: str = "",
+        subject: str = "a repository",
     ) -> str:
         """The system message, derived from the tools the run actually has.
 
@@ -202,23 +208,23 @@ class ContextBuilder:
         can_execute = "bash" in names
         if can_write and can_execute:
             role = (
-                "You are Athena, a coding agent working in a repository. You can read it, "
+                f"You are Athena, working in {subject}. You can read it, "
                 "change it with write_file and edit_file, and run commands with bash."
             )
         elif can_write:
             role = (
-                "You are Athena, a coding agent working in a repository. You can read it "
+                f"You are Athena, working in {subject}. You can read it "
                 "and change it with write_file and edit_file. You cannot run commands, so "
                 "do not claim anything was executed."
             )
         elif can_execute:
             role = (
-                "You are Athena, investigating a repository. You can read it and run "
+                f"You are Athena, investigating {subject}. You can read it and run "
                 "commands with bash, but you cannot modify files: never claim you did."
             )
         else:
             role = (
-                "You are Athena, investigating a repository with read-only tools. "
+                f"You are Athena, investigating {subject} with read-only tools. "
                 "Never claim to modify files or to have run anything."
             )
         instruction_text = "\n\n".join(

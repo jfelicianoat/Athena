@@ -520,6 +520,78 @@ def test_the_history_of_a_run_answers_after_the_stream_is_over(tmp_path: Path) -
     asyncio.run(scenario())
 
 
+def test_a_client_can_ask_what_athena_is_offered_for(tmp_path: Path) -> None:
+    """Elegir a ciegas entre perfiles que cambian que herramientas existen no es elegir."""
+
+    async def scenario() -> None:
+        service = AthenaService(_registry(tmp_path, _ScriptedProvider([])), _config())
+        host, port = await service.start()
+        try:
+            status, body = await _request(host, port, "GET", "/v1/profiles")
+            assert status == 200
+            payload = json.loads(body)
+            assert payload["default"] == "software_engineering", (
+                "un despliegue que no pidio perfiles no puede cambiar de comportamiento"
+            )
+            nombres = {item["name"] for item in payload["profiles"]}
+            assert {"software_engineering", "documents"} <= nombres
+            documentos = next(i for i in payload["profiles"] if i["name"] == "documents")
+            assert "does not establish" in documentos["proves"]
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
+def test_a_profile_decides_which_tools_a_run_can_even_name(tmp_path: Path) -> None:
+    """Dos filtros y en este orden: el perfil dice que existe, las capacidades que se cede.
+
+    Al reves, un run de documentos con `exec=allow` tendria shell por el camino de las
+    capacidades — y el perfil no-desarrollador dejaria de demostrar nada.
+    """
+
+    async def scenario() -> None:
+        registry = _registry(tmp_path, _ScriptedProvider([]))
+        bus = registry.event_bus
+
+        software = registry.tools_for(RunOptions(execution=CapabilityMode.ALLOW), bus)
+        documentos = registry.tools_for(
+            RunOptions(execution=CapabilityMode.ALLOW, profile="documents"), bus
+        )
+
+        assert "bash" in {tool.spec.name for tool in software}
+        assert "bash" not in {tool.spec.name for tool in documentos}
+        assert "write_file" in {tool.spec.name for tool in documentos}
+
+    asyncio.run(scenario())
+
+
+def test_an_unknown_profile_is_refused_before_the_run_exists(tmp_path: Path) -> None:
+    """Caer al de por defecto lo descubriria quien lo pidio cuando ya fuera tarde."""
+
+    async def scenario() -> None:
+        service = AthenaService(_registry(tmp_path, _ScriptedProvider([])), _config())
+        host, port = await service.start()
+        try:
+            status, body = await _request(
+                host,
+                port,
+                "POST",
+                "/v1/runs",
+                body={
+                    "objective": "algo",
+                    "workspace": str(tmp_path),
+                    "profile": "astrologia",
+                },
+            )
+            assert status == 400
+            assert "astrologia" in json.loads(body)["error"]["message"]
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
 def test_an_unknown_route_is_a_clean_404(tmp_path: Path) -> None:
     async def scenario() -> None:
         service = AthenaService(_registry(tmp_path, _ScriptedProvider([])), _config())
