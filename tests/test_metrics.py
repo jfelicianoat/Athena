@@ -23,6 +23,7 @@ from athena.metrics import (
     SqliteMetricsStore,
     aggregate,
 )
+from athena.security import redact_sensitive
 from athena.state import ExecutionOutcome
 from athena.types import JSONValue
 
@@ -447,3 +448,91 @@ def test_a_decision_with_nothing_useful_in_it_records_nothing() -> None:
     metrics = collector.all()[0]
     assert metrics.selected_shape == ""
     assert metrics.reason_code == ""
+
+
+def test_token_counts_reach_the_metrics_from_the_loop() -> None:
+    """Los tokens los cuenta el proveedor y hay que llevarlos hasta aquí.
+
+    Se perdían en el camino: el adaptador los ponía en la respuesta y el evento no los
+    llevaba, así que toda medición de tokens salía a cero — que es peor que faltar,
+    porque un cero parece un dato.
+    """
+    collector = MetricsCollector()
+    collector.observe(
+        RuntimeEvent(
+            EventName.MODEL_COMPLETED,
+            "run-tokens",
+            {
+                "finish_reason": "stop",
+                "tool_call_count": 0,
+                "input_tokens": 1200,
+                "output_tokens": 350,
+                "model": "qwen3.8:27b",
+            },
+        )
+    )
+
+    metrics = collector.all()[0]
+    assert metrics.input_tokens == 1200
+    assert metrics.output_tokens == 350
+
+
+def test_a_token_count_is_not_a_token() -> None:
+    """El redactor tacha por nombre de clave, y `input_tokens` contiene «token».
+
+    Tachaba el *contador*, que llegaba al colector como texto y se leía como cero. Un cero
+    es peor que un hueco: nada en él parece mal, así que la comparación del TFM habría
+    dicho que ningún run gasta tokens sin que nada avisara.
+
+    Lo que sigue tachado es lo que puede esconder una credencial. Ningún secreto es un
+    entero suelto.
+    """
+    limpio = redact_sensitive(
+        {
+            "input_tokens": 2419,
+            "output_tokens": 114,
+            "cost": 0.0,
+            "api_token": "sk-esto-si-es-un-secreto",
+            "authorization": "Bearer abc123",
+        }
+    )
+
+    assert limpio == {
+        "input_tokens": 2419,
+        "output_tokens": 114,
+        "cost": 0.0,
+        "api_token": "[REDACTED]",
+        "authorization": "[REDACTED]",
+    }
+
+
+def test_the_loop_delivers_token_counts_all_the_way_to_the_metrics() -> None:
+    """Y por el camino entero, que es donde se perdía.
+
+    La prueba anterior comprobaba el colector con un evento hecho a mano, así que pasaba
+    mientras el bucle publicaba `[REDACTED]`. Este va del bus al recuento.
+    """
+
+    async def scenario() -> None:
+        bus = InMemoryEventBus()
+        collector = MetricsCollector()
+        bus.subscribe(collector.observe)
+
+        await bus.publish(
+            RuntimeEvent(
+                EventName.MODEL_COMPLETED,
+                "run-real",
+                {
+                    "finish_reason": "stop",
+                    "tool_call_count": 0,
+                    "input_tokens": 2419,
+                    "output_tokens": 114,
+                },
+            )
+        )
+
+        metrics = collector.all()[0]
+        assert metrics.input_tokens == 2419
+        assert metrics.output_tokens == 114
+
+    asyncio.run(scenario())

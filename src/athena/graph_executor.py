@@ -42,7 +42,8 @@ from athena.events import EventBus, EventName, RuntimeEvent
 from athena.graph_store import SqliteGraphStore
 from athena.planning import PlanBoard, PlanStatus, TaskGraph, TaskNode
 from athena.state import ExecutionOutcome, SessionState, classify_outcome
-from athena.subagents import SubagentBrief, SubagentResult, SubagentRole, SubagentRunner
+from athena.subagent_provider import Delegator
+from athena.subagents import SubagentBrief, SubagentResult, SubagentRole
 from athena.tasks import TaskBudget, TaskManager
 from athena.types import JSONObject
 from athena.verification import VerificationPolicy, VerificationResult
@@ -141,7 +142,7 @@ class GraphExecutor:
 
     def __init__(
         self,
-        runner: SubagentRunner,
+        runner: Delegator,
         manager: TaskManager,
         event_bus: EventBus,
         *,

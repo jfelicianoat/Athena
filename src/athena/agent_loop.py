@@ -645,6 +645,14 @@ class AgentLoop:
                     {
                         "finish_reason": response.finish_reason,
                         "tool_call_count": len(response.tool_calls),
+                        # El proveedor los cuenta y hasta aquí se perdían: el adaptador
+                        # los ponía en la respuesta y el evento no los llevaba, así que
+                        # toda medición de tokens salía a cero pareciendo un dato.
+                        "input_tokens": response.usage.input_tokens,
+                        "output_tokens": response.usage.output_tokens,
+                        # El modelo que contestó de verdad, que con un router por delante
+                        # no tiene por qué ser el que se pidió.
+                        "model": response.model,
                     },
                     request_id,
                 )

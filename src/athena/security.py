@@ -15,6 +15,23 @@ _SECRET_TEXT = (
 )
 
 
+def _could_carry_a_secret(value: JSONValue) -> bool:
+    """Whether a value is the sort of thing a credential can hide in.
+
+    The key rule alone is too blunt: `input_tokens` matches `token`, and redacting a
+    *count* of tokens taught the metrics that every run used zero — a plausible-looking
+    number that was actually a redaction, which is worse than a missing field because
+    nothing about it looks wrong.
+
+    Numbers and booleans are let through because no credential is a bare integer. Strings
+    and containers are still redacted on the key alone, which is where secrets do live and
+    where being over-cautious costs nothing.
+    """
+    if isinstance(value, (bool, int, float)):
+        return False
+    return value is not None
+
+
 def redact_text(value: str) -> str:
     redacted = value
     for pattern in _SECRET_TEXT:
@@ -28,7 +45,9 @@ def redact_text(value: str) -> str:
 def redact_sensitive(value: JSONValue) -> JSONValue:
     if isinstance(value, Mapping):
         return {
-            str(key): "[REDACTED]" if _SECRET_KEY.search(str(key)) else redact_sensitive(item)
+            str(key): "[REDACTED]"
+            if _SECRET_KEY.search(str(key)) and _could_carry_a_secret(item)
+            else redact_sensitive(item)
             for key, item in value.items()
         }
     if isinstance(value, str):
