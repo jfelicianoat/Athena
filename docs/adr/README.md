@@ -50,3 +50,5 @@ of rewritten history.
   [A fact belongs to a run, not to the session that published it](025-a-fact-belongs-to-a-run-not-to-a-session.md)
 - ADR-026:
   [A result has one truth and two projections](026-a-result-has-one-truth-and-two-projections.md)
+- ADR-027:
+  ["Not verified" is not "verified wrong"](027-not-verified-is-not-verified-wrong.md)

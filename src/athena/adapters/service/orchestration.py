@@ -28,7 +28,12 @@ from enum import StrEnum
 
 from athena.cancellation import CancellationScope, CancellationToken, chained_source
 from athena.delegation import confine
-from athena.errors import AthenaRuntimeError, ToolValidationError
+from athena.diagnosis import diagnose_result, inconclusive_reason
+from athena.errors import (
+    AthenaRuntimeError,
+    ToolValidationError,
+    VerificationInconclusive,
+)
 from athena.events import EventBus, EventName, RuntimeEvent
 from athena.graph_executor import GraphExecutor, GraphResult
 from athena.graph_store import SqliteGraphStore, StoredPlan
@@ -58,7 +63,7 @@ from athena.subagents import (
 )
 from athena.tasks import TaskManager
 from athena.tools import Tool
-from athena.types import JSONObject
+from athena.types import JSONObject, JSONValue
 from athena.verification import VerificationPolicy
 from athena.working_state import PlanStep, StepStatus, WorkingState
 from athena.workspace import Workspace
@@ -644,19 +649,46 @@ class Orchestrator:
                 },
             )
             return
-        failed = [item for item in result.evidence if not item.succeeded]
-        code = next((item.error_code for item in failed if item.error_code), "graph_incomplete")
-        message = failed[0].summary if failed else "The plan did not finish"
+        payload = {**_ending(result), "outcome": result.outcome.value}
         await self._publish(
             run_id,
             EventName.AGENT_CANCELLED
             if status is AgentStatus.CANCELLED
             else EventName.AGENT_FAILED,
-            {"error_code": code, "message": message, "outcome": result.outcome.value},
+            payload,
         )
 
     async def _publish(self, run_id: str, name: EventName, payload: JSONObject) -> None:
         await self.event_bus.publish(RuntimeEvent(name, run_id, payload))
+
+
+def _ending(result: GraphResult) -> dict[str, JSONValue]:
+    """Por que no termino bien, en los terminos de quien tendria que hacer algo.
+
+    Tres finales distintos que antes se contaban como uno: una tarea que fallo, un plan
+    que termino entero y no se pudo dar por bueno, y un plan que no llego al final. Decir
+    «the plan did not finish» del segundo mandaba a mirar unas tareas que estaban todas
+    completadas — la peor pista posible, porque parece informacion.
+    """
+    failed = [item for item in result.evidence if not item.succeeded]
+    if failed:
+        return {
+            "error_code": next(
+                (item.error_code for item in failed if item.error_code), "graph_incomplete"
+            ),
+            "message": failed[0].summary,
+        }
+    goal = result.goal_verification
+    if goal is not None and not goal.permits_completion:
+        razon = inconclusive_reason(diagnose_result(goal))
+        if razon is None:
+            return {"error_code": "verification_failure", "message": goal.summary}
+        return {
+            "error_code": VerificationInconclusive.code,
+            "message": goal.summary,
+            "reason": razon.value,
+        }
+    return {"error_code": "graph_incomplete", "message": "The plan did not finish"}
 
 
 def _whole_goal(objective: str) -> TaskGraph:

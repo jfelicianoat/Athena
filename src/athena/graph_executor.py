@@ -37,6 +37,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
 from athena.cancellation import CancellationScope, CancellationToken, chained_source
+from athena.diagnosis import diagnose_result, inconclusive_reason
 from athena.errors import AthenaRuntimeError
 from athena.events import EventBus, EventName, RuntimeEvent
 from athena.graph_store import SqliteGraphStore
@@ -223,8 +224,10 @@ class GraphExecutor:
         if outcome is ExecutionOutcome.COMPLETED:
             goal = await self._verify_goal(graph, workspace, cancellation, run_id)
             if goal is not None and not goal.permits_completion:
-                # Every part reported success and the whole does not work. That is exactly
-                # the case goal verification exists to catch.
+                # Every part reported success and the whole was not shown to work. Dos
+                # cosas distintas caben aqui —que el conjunto falle, y que no se pudiera
+                # comprobar— y ninguna de las dos permite terminar; cual de ellas fue lo
+                # dice el estado de la verificacion, que viaja con el resultado.
                 outcome = ExecutionOutcome.FAILED
 
         result = GraphResult(
@@ -450,12 +453,18 @@ class GraphExecutor:
         result = await self.goal_verification.verify(
             _session_for(run_id or "goal", workspace.workspace_id), workspace, cancellation
         )
+        razon = inconclusive_reason(diagnose_result(result))
         await self._publish(
             EventName.VERIFICATION_COMPLETED
             if result.permits_completion
             else EventName.VERIFICATION_FAILED,
             run_id,
-            {"scope": "goal", "status": result.status.value, "summary": result.summary},
+            {
+                "scope": "goal",
+                "status": result.status.value,
+                "summary": result.summary,
+                "inconclusive_reason": None if razon is None else razon.value,
+            },
         )
         del graph
         return result

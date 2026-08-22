@@ -30,7 +30,14 @@ from athena.concurrency import (
 )
 from athena.context import ContextBuilder
 from athena.delegation import DELEGATE_TASK_SPEC, DelegationRequest, narrow
-from athena.diagnosis import FailureDiagnosis, FailureKind, diagnose, diagnose_result
+from athena.diagnosis import (
+    FailureDiagnosis,
+    FailureKind,
+    InconclusiveReason,
+    diagnose,
+    diagnose_result,
+    inconclusive_reason,
+)
 from athena.errors import AthenaRuntimeError
 from athena.events import (
     AgentEvent,
@@ -286,6 +293,7 @@ __all__ = [
     "InMemoryEventBus",
     "InMemorySessionStore",
     "InMemoryToolResultStore",
+    "InconclusiveReason",
     "IntegrationResult",
     "Integrator",
     "IntegrityAuthorization",
@@ -409,6 +417,7 @@ __all__ = [
     "diagnose",
     "diagnose_result",
     "git_read_tools",
+    "inconclusive_reason",
     "mcp_tools",
     "model_view_of",
     "narrow",

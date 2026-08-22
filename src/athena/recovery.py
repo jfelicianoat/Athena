@@ -22,6 +22,7 @@ from athena.errors import (
     ToolExecutionError,
     ToolValidationError,
     VerificationFailure,
+    VerificationInconclusive,
     WorkspaceBoundaryError,
 )
 from athena.state import ExecutionOutcome, classify_outcome
@@ -149,6 +150,15 @@ class RecoveryPolicy:
             return RecoveryDirective(
                 RecoveryAction.ABORT,
                 "The provider failed permanently and no fallback is configured.",
+            )
+        if isinstance(error, VerificationInconclusive):
+            # Antes que `VerificationFailure` y no despues: son errores hermanos, pero un
+            # orden distinto aqui daria igual solo mientras sigan sin heredar el uno del
+            # otro, y esa es una garantia que no conviene dejar implicita.
+            return RecoveryDirective(
+                RecoveryAction.STOP,
+                "Nothing could be verified either way; a repair cycle cannot produce "
+                "evidence that does not exist.",
             )
         if isinstance(error, VerificationFailure):
             return RecoveryDirective(

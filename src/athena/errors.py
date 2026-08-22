@@ -86,6 +86,19 @@ class VerificationFailure(AthenaRuntimeError):
     code = "verification_failure"
 
 
+class VerificationInconclusive(AthenaRuntimeError):
+    """No se pudo comprobar nada, ni a favor ni en contra.
+
+    Deliberadamente NO hereda de `VerificationFailure`. Un fallo de verificacion dice que
+    el cambio esta mal y se responde devolviendo evidencia para que alguien lo arregle;
+    esto dice que no hay evidencia, y devolver la que no existe no arregla nada. Si
+    heredase, la politica de recuperacion las trataria igual y gastaria ciclos de
+    reparacion sobre una maquina rota o un proyecto sin checks.
+    """
+
+    code = "verification_inconclusive"
+
+
 class BudgetExceededError(AthenaRuntimeError):
     code = "budget_exceeded"
 

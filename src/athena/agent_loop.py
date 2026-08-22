@@ -16,7 +16,7 @@ from athena.cancellation import CancellationToken
 from athena.capabilities import UnsupportedCapabilityError, match, requirements_for
 from athena.concurrency import ConcurrencyScheduler
 from athena.context import ContextBuilder
-from athena.diagnosis import diagnose_result
+from athena.diagnosis import InconclusiveReason, diagnose_result, inconclusive_reason
 from athena.errors import (
     AthenaRuntimeError,
     BudgetExceededError,
@@ -25,6 +25,7 @@ from athena.errors import (
     ProcessCancelledError,
     ProcessTimeoutError,
     VerificationFailure,
+    VerificationInconclusive,
 )
 from athena.events import (
     AgentEvent,
@@ -309,7 +310,10 @@ class AgentLoop:
                 AgentEvent(
                     EventName.AGENT_FAILED,
                     session_id,
-                    {"error_code": exc.code, "message": exc.message},
+                    # Los detalles tipados viajan con el fallo. Sin ellos la unica pista
+                    # de por que un run no se pudo verificar vive dentro de una frase, y
+                    # nada que cuente puede leer una frase.
+                    {"error_code": exc.code, "message": exc.message, **exc.details},
                 )
             )
             await self._finish(data, "failed", exc.code, exc.message)
@@ -979,18 +983,32 @@ class AgentLoop:
                 "evidence_count": len(verification.evidence),
             }
         )
+        # Por que no se pudo concluir, no solo que no se concluyo. «Inconclusive» a secas
+        # se lee como un problema de configuracion, y casi nunca lo es: un servicio caido,
+        # un entorno a medio instalar y un proyecto sin checks dejan el mismo hueco en la
+        # evidencia y piden cosas distintas de quien lo lea.
+        razon = inconclusive_reason(diagnose_result(verification))
         await self.event_bus.publish(
             VerificationEvent(
                 EventName.VERIFICATION_COMPLETED,
                 data.session.session_id,
-                {"status": verification.status.value, "evidence_count": len(verification.evidence)},
+                {
+                    "status": verification.status.value,
+                    "evidence_count": len(verification.evidence),
+                    "inconclusive_reason": None if razon is None else razon.value,
+                },
             )
         )
         if verification.permits_completion:
             return await self._complete_run(response, data, workspace, budget, verification)
         if verification.status is VerificationStatus.INCONCLUSIVE:
-            # Repairing cannot conjure a verification plan the project does not define.
-            raise VerificationFailure(verification.summary)
+            # Un run cuyos checks no pudieron ejecutarse no ha fallado la verificacion: ha
+            # fallado en verificar. Contar lo segundo como lo primero le echa la culpa al
+            # cambio de una maquina rota, y quien lo lea corregira lo que no estaba mal.
+            raise VerificationInconclusive(
+                verification.summary,
+                details={"reason": (razon or InconclusiveReason.AMBIGUOUS_RESULT).value},
+            )
         return await self._start_repair_cycle(data, verification)
 
     async def _start_repair_cycle(
@@ -1028,20 +1046,29 @@ class AgentLoop:
             # A missing package or a full disk will not be fixed by editing code, and
             # spending a cycle letting the model try is how a run burns its budget looking
             # busy. Stop and say what is actually wrong.
+            #
+            # Y decir cual de las dos cosas es: un paquete que falta deja el mismo hueco
+            # que un proyecto sin checks —no se probo nada—, mientras que un test que
+            # afirma lo contrario de lo que se pidio si es un fallo. Llamarlos igual
+            # obligaria a leerse la salida entera para saber a quien culpar.
+            razon = inconclusive_reason(diagnosis)
+            codigo = "verification_failure" if razon is None else VerificationInconclusive.code
             await self.event_bus.publish(
                 RecoveryEvent(
                     EventName.RECOVERY_EXHAUSTED,
                     session_id,
                     {
-                        "error_code": "verification_failure",
+                        "error_code": codigo,
                         "repair_cycles": data.repair_cycles,
                         "diagnosis": diagnosis.kind.value,
+                        "inconclusive_reason": None if razon is None else razon.value,
                     },
                 )
             )
-            raise VerificationFailure(
-                f"{diagnosis.summary} No repair cycle can address this: {diagnosis.guidance}"
-            )
+            mensaje = f"{diagnosis.summary} No repair cycle can address this: {diagnosis.guidance}"
+            if razon is not None:
+                raise VerificationInconclusive(mensaje, details={"reason": razon.value})
+            raise VerificationFailure(mensaje)
 
         data.repair_cycles += 1
         data.working = data.working.noting(
