@@ -30,6 +30,10 @@ class EventName(StrEnum):
     TOOL_PROGRESS = "tool.progress"
     TOOL_COMPLETED = "tool.completed"
     TOOL_FAILED = "tool.failed"
+    #: La tool devolvio algo que no cumple lo que declaro, y su contrato no obliga. No
+    #: detiene nada; existe para que una desviacion tolerada siga siendo visible en vez
+    #: de convertirse en la forma normal de esa tool sin que nadie lo decidiera.
+    TOOL_CONTRACT_VIOLATED = "tool.contract.violated"
     PERMISSION_REQUESTED = "permission.requested"
     PERMISSION_RESOLVED = "permission.resolved"
     VERIFICATION_STARTED = "verification.started"

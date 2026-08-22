@@ -26,6 +26,7 @@ from athena.cancellation import CancellationToken
 from athena.errors import AthenaRuntimeError, ToolExecutionError, ToolValidationError
 from athena.permissions import PermissionRequest, RiskLevel, RiskTier
 from athena.tools import (
+    OutputContract,
     Tool,
     ToolContext,
     ToolLoadPolicy,
@@ -100,6 +101,10 @@ class McpTool:
             description=f"[{client.server_name}] {descriptor.description}",
             input_schema=schema,
             output_schema={"type": "object"},
+            # Lo que devuelve un servidor remoto no lo escribe Athena, asi que Athena no
+            # puede exigirlo: se comprueba y se publica la desviacion, pero imponerla
+            # convertiria el cambio de version de un servidor ajeno en una caida propia.
+            output_contract=OutputContract.DECLARED,
             risk=self.policy.risk,
             max_result_size_chars=self.policy.max_result_size_chars,
             load_policy=self.policy.load_policy,

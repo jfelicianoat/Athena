@@ -67,6 +67,7 @@ from athena.state import (
     classify_outcome,
 )
 from athena.tool_executor import ToolExecutor
+from athena.tool_projection import model_view_of
 from athena.tool_search import TOOL_SEARCH_NAME
 from athena.tools import Tool, ToolResult, ToolResultReference
 from athena.types import JSONObject, JSONValue
@@ -854,11 +855,20 @@ class AgentLoop:
             if outcome.reference is not None:
                 data.references.append(outcome.reference)
             if call.name == TOOL_SEARCH_NAME:
+                # Sobre el resultado canonico, no sobre la vista: revelar tools exige los
+                # nombres estructurados, y leerlos del texto que se le enseña al modelo
+                # seria derivar un hecho de su presentacion.
                 self._reveal(outcome.output, data)
+            # Al modelo se le cuenta la proyeccion cuando existe. Su contexto es caro y no
+            # mejora por recibir el JSON entero de un listado de cien ficheros; lo que se
+            # guarda y lo que se verifica siguen siendo el resultado canonico.
+            view = model_view_of(outcome)
+            told: JSONValue = outcome.output if view is None else view.text
             return {
                 "ok": True,
                 "call_id": outcome.call_id,
-                "output": outcome.output,
+                "output": told,
+                "truncated": view is not None and view.truncated,
                 "reference_uri": outcome.reference.uri if outcome.reference else None,
             }
         except (CancellationError, ProcessCancelledError):

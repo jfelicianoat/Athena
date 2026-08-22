@@ -48,3 +48,5 @@ of rewritten history.
   [Execution mode is asked for; the shape is reported](024-execution-mode-is-asked-for-and-the-shape-is-reported.md)
 - ADR-025:
   [A fact belongs to a run, not to the session that published it](025-a-fact-belongs-to-a-run-not-to-a-session.md)
+- ADR-026:
+  [A result has one truth and two projections](026-a-result-has-one-truth-and-two-projections.md)

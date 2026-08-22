@@ -130,6 +130,8 @@ from athena.repository_tools import (
     ReadFileTool,
     ReadRangeTool,
 )
+from athena.run_event_log import Provenance, RunEvent, RunEventLog, RunEventLogError
+from athena.schema import violations
 from athena.scouting import RepositoryScout, ScoutedSignals
 from athena.session_store import (
     EventCheckpoint,
@@ -169,8 +171,24 @@ from athena.tasks import (
     TaskState,
 )
 from athena.tool_executor import ToolExecutor
+from athena.tool_projection import (
+    DisplayView,
+    ModelView,
+    ResultKind,
+    ToolProjection,
+    default_projection,
+    model_view_of,
+    project,
+)
 from athena.tool_search import ToolSearchTool
-from athena.tools import Tool, ToolContext, ToolLoadPolicy, ToolResult, ToolResultReference
+from athena.tools import (
+    OutputContract,
+    Tool,
+    ToolContext,
+    ToolLoadPolicy,
+    ToolResult,
+    ToolResultReference,
+)
 from athena.verification import (
     ChangeIntegrityPolicy,
     CommandVerificationPolicy,
@@ -238,6 +256,7 @@ __all__ = [
     "DecompositionPolicy",
     "DecompositionSignals",
     "DelegationRequest",
+    "DisplayView",
     "EditFileTool",
     "EventBus",
     "EventCheckpoint",
@@ -288,6 +307,8 @@ __all__ = [
     "ModelRequest",
     "ModelResponse",
     "ModelToolCall",
+    "ModelView",
+    "OutputContract",
     "PatchOutcome",
     "PermissionDecision",
     "PermissionEngine",
@@ -305,6 +326,7 @@ __all__ = [
     "ProcessState",
     "ProjectMemory",
     "ProjectMemoryItem",
+    "Provenance",
     "ProviderEntry",
     "ProviderRegistry",
     "ProviderRouter",
@@ -317,7 +339,11 @@ __all__ = [
     "ResolvedIdentity",
     "ResourceClaim",
     "ResponseKind",
+    "ResultKind",
     "RiskTier",
+    "RunEvent",
+    "RunEventLog",
+    "RunEventLogError",
     "RunMetrics",
     "RuntimeEvent",
     "ScheduledBatch",
@@ -355,6 +381,7 @@ __all__ = [
     "ToolEvent",
     "ToolExecutor",
     "ToolLoadPolicy",
+    "ToolProjection",
     "ToolRegistry",
     "ToolResult",
     "ToolResultReference",
@@ -376,15 +403,19 @@ __all__ = [
     "WorkspaceStrategy",
     "WriteFileTool",
     "classify_outcome",
+    "default_projection",
     "default_strategies",
     "describe_plan",
     "diagnose",
     "diagnose_result",
     "git_read_tools",
     "mcp_tools",
+    "model_view_of",
     "narrow",
     "parse_command",
     "parse_plan",
+    "project",
     "render_event",
+    "violations",
     "workspace_mutation_tools",
 ]

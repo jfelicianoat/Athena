@@ -22,6 +22,22 @@ class ToolResultSizePolicy(StrEnum):
     ALWAYS_EXTERNALIZE = "always_externalize"
 
 
+class OutputContract(StrEnum):
+    """Si `output_schema` obliga o solo describe.
+
+    Obliga por defecto. Un esquema declarado y nunca comprobado es documentacion que se
+    desincroniza del codigo sin que nada lo denuncie, y cuanto mas se confia en el peor:
+    quien proyecta un resultado, quien lo guarda y quien lo ensena dan por ciertos unos
+    campos que puede que ya no esten.
+    """
+
+    #: El resultado debe cumplirlo. Si no, la llamada falla y se dice por que.
+    ENFORCED = "enforced"
+    #: El esquema describe lo que se espera, pero Athena no puede responder por quien lo
+    #: produce —una tool remota, por ejemplo—. La desviacion se publica, no se impone.
+    DECLARED = "declared"
+
+
 @dataclass(frozen=True, slots=True)
 class ToolSpec:
     name: str
@@ -32,6 +48,7 @@ class ToolSpec:
     max_result_size_chars: int
     load_policy: ToolLoadPolicy = ToolLoadPolicy.CORE
     result_size_policy: ToolResultSizePolicy = ToolResultSizePolicy.INLINE_OR_EXTERNALIZE
+    output_contract: OutputContract = OutputContract.ENFORCED
     search_hint: str | None = None
 
     def __post_init__(self) -> None:

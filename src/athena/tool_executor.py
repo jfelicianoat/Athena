@@ -10,6 +10,7 @@ from athena.cancellation import CancellationToken
 from athena.errors import (
     AthenaRuntimeError,
     PermissionDeniedError,
+    ToolContractError,
     ToolValidationError,
     WorkspaceBoundaryError,
 )
@@ -31,8 +32,16 @@ from athena.permissions import (
     RiskTier,
 )
 from athena.registry import ToolRegistry
+from athena.schema import violations
 from athena.stores import ToolResultStore
-from athena.tools import ToolContext, ToolResult, ToolResultSizePolicy, ToolSpec
+from athena.tool_projection import ToolProjection, project
+from athena.tools import (
+    OutputContract,
+    ToolContext,
+    ToolResult,
+    ToolResultSizePolicy,
+    ToolSpec,
+)
 from athena.types import JSONValue
 from athena.workspace import Workspace
 
@@ -155,7 +164,13 @@ class ToolExecutor:
                 timeout=self.tool_timeout_seconds,
             )
             correlated = replace(result, call_id=call.call_id)
+            # El contrato se comprueba sobre el resultado canonico, antes de externalizar:
+            # despues, lo que hay es el recibo del almacen y no lo que la tool prometio, y
+            # comprobar el recibo contra el esquema del resultado daria por incumplido
+            # cualquier resultado grande.
+            await self._check_contract(tool.spec, correlated, session_id, call.call_id)
             final = await self._apply_result_policy(tool.spec, correlated, cancellation)
+            projection = project(tool, tool.spec, final)
             if editing:
                 await self._hook(
                     HookEvent.POST_EDIT,
@@ -183,11 +198,15 @@ class ToolExecutor:
                         "tool_name": call.name,
                         "externalized": final.reference is not None,
                         "size_chars": final.reference.size_chars if final.reference else None,
+                        # Lo que una interfaz necesita para dibujar esto, ya derivado. Sin
+                        # ello cada cliente vuelve a deducir la presentacion leyendo un
+                        # payload interno, y acaban discrepando entre si.
+                        "display": projection.display.to_json(),
                     },
                     call.call_id,
                 )
             )
-            return final
+            return _with_projection(final, projection)
         except AthenaRuntimeError as exc:
             await self.event_bus.publish(
                 ToolEvent(
@@ -208,6 +227,27 @@ class ToolExecutor:
                 },
             )
             raise
+
+    async def _check_contract(
+        self, spec: ToolSpec, result: ToolResult, session_id: str, call_id: str | None
+    ) -> None:
+        """Comprobar que la tool devolvio lo que dijo que devolveria."""
+        desviaciones = violations(spec.output_schema, result.output, where=spec.name)
+        if not desviaciones:
+            return
+        if spec.output_contract is OutputContract.ENFORCED:
+            raise ToolContractError(
+                f"{spec.name} devolvio algo que no cumple su contrato: {desviaciones[0]}",
+                details={"tool_name": spec.name, "violations": list(desviaciones)},
+            )
+        await self.event_bus.publish(
+            ToolEvent(
+                EventName.TOOL_CONTRACT_VIOLATED,
+                session_id,
+                {"tool_name": spec.name, "violations": list(desviaciones)},
+                call_id,
+            )
+        )
 
     async def _hook(self, event: HookEvent, session_id: str, payload: JSONValue) -> HookReport:
         """Run an extension point. A BLOCK stops the action; nothing can unblock one."""
@@ -261,6 +301,23 @@ class ToolExecutor:
             "reference_uri": reference.uri,
         }
         return replace(result, output=output, reference=reference)
+
+
+def _with_projection(result: ToolResult, projection: ToolProjection) -> ToolResult:
+    """Adjuntar las vistas sin tocar el resultado canonico.
+
+    Van en `metadata` y no en `output` a proposito: `output` es lo que la tool prometio y
+    lo que se comprobo contra su esquema, y meterle ahi una vista lo convertiria en algo
+    que ya no cumple su propio contrato.
+    """
+    return replace(
+        result,
+        metadata={
+            **result.metadata,
+            "model_view": projection.model.to_json(),
+            "display": projection.display.to_json(),
+        },
+    )
 
 
 def _serialize(value: JSONValue) -> str:

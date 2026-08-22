@@ -9,6 +9,14 @@ from typing import ClassVar
 from athena.cancellation import CancellationToken
 from athena.errors import ToolExecutionError, ToolValidationError
 from athena.permissions import PermissionRequest, RiskLevel, RiskTier
+from athena.tool_projection import (
+    DISPLAY_ITEM_LIMIT,
+    MODEL_TEXT_LIMIT,
+    DisplayView,
+    ModelView,
+    ResultKind,
+    ToolProjection,
+)
 from athena.tools import Tool, ToolContext, ToolResult, ToolSpec
 from athena.types import JSONObject
 
@@ -92,7 +100,16 @@ class ReadFileTool(_ReadOnlyTool):
             "required": ["path"],
             "additionalProperties": False,
         },
-        output_schema={"type": "object"},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+                "line_count": {"type": "integer"},
+            },
+            "required": ["path", "content", "line_count"],
+            "additionalProperties": False,
+        },
         risk=RiskLevel.LOW,
         max_result_size_chars=12_000,
         search_hint="read a known small text file",
@@ -142,7 +159,28 @@ class ReadRangeTool(_ReadOnlyTool):
             "required": ["path", "start_line", "end_line"],
             "additionalProperties": False,
         },
-        output_schema={"type": "object"},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "start_line": {"type": "integer"},
+                "end_line": {"type": "integer"},
+                "lines": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "line": {"type": "integer"},
+                            "text": {"type": "string"},
+                        },
+                        "required": ["line", "text"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["path", "start_line", "end_line", "lines"],
+            "additionalProperties": False,
+        },
         risk=RiskLevel.LOW,
         max_result_size_chars=12_000,
         search_hint="read only the relevant lines after grep",
@@ -192,6 +230,15 @@ class ReadRangeTool(_ReadOnlyTool):
             }
         )
 
+    def project(self, result: ToolResult) -> ToolProjection:
+        """Codigo numerado, que es como se lee el codigo.
+
+        El caso general no sabe que esto son lineas de un fichero y las enseña como pares
+        `line=1 text=...`. Al modelo eso le cuesta tokens en decoracion y le dificulta
+        citar una linea por su numero, que es justo para lo que existe esta tool.
+        """
+        return _numbered(self.spec.name, result, _relative_path(result))
+
 
 class ListDirectoryTool(_ReadOnlyTool):
     spec = ToolSpec(
@@ -205,7 +252,27 @@ class ListDirectoryTool(_ReadOnlyTool):
             },
             "additionalProperties": False,
         },
-        output_schema={"type": "object"},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "entries": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "type": {"type": "string", "enum": ["file", "directory"]},
+                        },
+                        "required": ["path", "type"],
+                        "additionalProperties": False,
+                    },
+                },
+                "truncated": {"type": "boolean"},
+            },
+            "required": ["path", "entries", "truncated"],
+            "additionalProperties": False,
+        },
         risk=RiskLevel.LOW,
         max_result_size_chars=12_000,
         search_hint="inspect one directory level",
@@ -262,7 +329,16 @@ class GlobTool(_ReadOnlyTool):
             "required": ["pattern"],
             "additionalProperties": False,
         },
-        output_schema={"type": "object"},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "matches": {"type": "array", "items": {"type": "string"}},
+                "truncated": {"type": "boolean"},
+            },
+            "required": ["pattern", "matches", "truncated"],
+            "additionalProperties": False,
+        },
         risk=RiskLevel.LOW,
         max_result_size_chars=12_000,
         search_hint="locate candidate files before grep",
@@ -313,7 +389,29 @@ class GrepTool(_ReadOnlyTool):
             "required": ["query"],
             "additionalProperties": False,
         },
-        output_schema={"type": "object"},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "glob": {"type": "string"},
+                "matches": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "line": {"type": "integer"},
+                            "text": {"type": "string"},
+                        },
+                        "required": ["path", "line", "text"],
+                        "additionalProperties": False,
+                    },
+                },
+                "truncated": {"type": "boolean"},
+            },
+            "required": ["query", "matches", "truncated"],
+            "additionalProperties": False,
+        },
         risk=RiskLevel.LOW,
         max_result_size_chars=16_000,
         search_hint="find relevant lines before read_range",
@@ -390,6 +488,77 @@ class GrepTool(_ReadOnlyTool):
                 "truncated": truncated,
             }
         )
+
+    def project(self, result: ToolResult) -> ToolProjection:
+        """`fichero:linea: texto`, que es como se leen las coincidencias en cualquier
+        herramienta de busqueda y como el modelo puede encadenarlas con `read_range`."""
+        salida = result.output if isinstance(result.output, dict) else {}
+        crudas = salida.get("matches")
+        lineas = [
+            f"{item.get('path')}:{item.get('line')}: {item.get('text')}"
+            for item in (crudas if isinstance(crudas, list) else [])
+            if isinstance(item, dict)
+        ]
+        return _listing(
+            self.spec.name,
+            lineas,
+            title=str(salida.get("query", self.spec.name)),
+            facts={
+                "query": salida.get("query"),
+                "count": len(lineas),
+                "truncated": bool(salida.get("truncated")),
+            },
+            singular="coincidencia",
+            plural="coincidencias",
+        )
+
+
+def _relative_path(result: ToolResult) -> str:
+    salida = result.output if isinstance(result.output, dict) else {}
+    ruta = salida.get("path")
+    return ruta if isinstance(ruta, str) else ""
+
+
+def _numbered(name: str, result: ToolResult, title: str) -> ToolProjection:
+    salida = result.output if isinstance(result.output, dict) else {}
+    crudas = salida.get("lines")
+    lineas = [
+        f"{item.get('line')}: {item.get('text')}"
+        for item in (crudas if isinstance(crudas, list) else [])
+        if isinstance(item, dict)
+    ]
+    return _listing(
+        name,
+        lineas,
+        title=title or name,
+        facts={
+            "path": salida.get("path"),
+            "start_line": salida.get("start_line"),
+            "end_line": salida.get("end_line"),
+            "count": len(lineas),
+        },
+        singular="linea",
+        plural="lineas",
+    )
+
+
+def _listing(
+    name: str, lineas: list[str], *, title: str, facts: JSONObject, singular: str, plural: str
+) -> ToolProjection:
+    cuerpo = "\n".join(lineas)
+    recortado = len(cuerpo) > MODEL_TEXT_LIMIT
+    if recortado:
+        cuerpo = cuerpo[:MODEL_TEXT_LIMIT] + "\n[…recortado]"
+    return ToolProjection(
+        model=ModelView(cuerpo or "(sin resultados)", truncated=recortado),
+        display=DisplayView(
+            kind=ResultKind.ITEMS,
+            title=title,
+            summary=f"{len(lineas)} " + (singular if len(lineas) == 1 else plural),
+            items=tuple(lineas[:DISPLAY_ITEM_LIMIT]),
+            facts=facts,
+        ),
+    )
 
 
 def repository_read_tools() -> tuple[Tool, ...]:

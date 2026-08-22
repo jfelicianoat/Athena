@@ -35,6 +35,17 @@ class ToolExecutionError(AthenaRuntimeError):
     code = "tool_execution_error"
 
 
+class ToolContractError(ToolExecutionError):
+    """La tool devolvio algo que no es lo que declaro devolver.
+
+    Es un fallo de ejecucion y no de validacion: los argumentos estaban bien, quien
+    incumplio fue la tool. Distinguirlo importa porque la recuperacion de un argumento
+    malo es reformular la llamada, y aqui reformularla no arreglaria nada.
+    """
+
+    code = "tool_contract_error"
+
+
 class ProcessTimeoutError(ToolExecutionError):
     code = "process_timeout"
     retryable = True

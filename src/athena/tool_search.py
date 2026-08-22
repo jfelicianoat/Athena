@@ -36,7 +36,30 @@ class ToolSearchTool:
             "required": ["query"],
             "additionalProperties": False,
         },
-        output_schema={"type": "object"},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "matches": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "description": {"type": "string"},
+                            "search_hint": {"type": "string"},
+                            "input_schema": {"type": "object"},
+                        },
+                        "required": ["name", "description", "input_schema"],
+                        "additionalProperties": False,
+                    },
+                },
+                "revealed": {"type": "array", "items": {"type": "string"}},
+                "deferred_available": {"type": "integer"},
+            },
+            "required": ["query", "matches", "revealed", "deferred_available"],
+            "additionalProperties": False,
+        },
         risk=RiskLevel.LOW,
         max_result_size_chars=12_000,
         load_policy=ToolLoadPolicy.CORE,

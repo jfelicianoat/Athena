@@ -2,6 +2,9 @@
 
 - Status: Accepted
 - Date: 2026-08-18
+- Implementation status (2026-08-22): the output half of this contract was declared
+  and never enforced — every tool shipped `{"type": "object"}`, which cannot be
+  broken. ADR-026 makes the declaration say something and makes it oblige.
 
 ## Context
 
