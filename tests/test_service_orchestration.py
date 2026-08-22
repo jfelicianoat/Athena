@@ -14,6 +14,7 @@ import json
 import subprocess
 import sys
 from collections.abc import AsyncIterator, Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -24,13 +25,14 @@ from athena.adapters.service.orchestration import (
     OrchestrationSettings,
     Orchestrator,
     ShapeReason,
-    _budgeted,
+    budgeted,
 )
 from athena.adapters.service.runs import CapabilityMode, RunOptions, RunRegistry
 from athena.cancellation import CancellationSource, CancellationToken
-from athena.context import ContextBuilder
+from athena.context import ContextBuilder, _declared_names
 from athena.errors import AthenaRuntimeError, ToolValidationError
 from athena.events import EventName, InMemoryEventBus, ModelEvent, RuntimeEvent
+from athena.git_tools import GitCommitTool, git_read_tools
 from athena.graph_store import SqliteGraphStore
 from athena.metrics import MetricsCollector, RunMetrics, SqliteMetricsStore
 from athena.models import (
@@ -42,6 +44,7 @@ from athena.models import (
     ModelResponse,
     ModelToolCall,
 )
+from athena.mutation_tools import workspace_mutation_tools
 from athena.permissions import PermissionDecision
 from athena.planning import (
     DecompositionPolicy,
@@ -50,6 +53,9 @@ from athena.planning import (
     TaskGraph,
     TaskNode,
 )
+from athena.process_tools import BashTool
+from athena.registry import ToolRegistry
+from athena.repository_tools import repository_read_tools
 from athena.session_store import SessionRecord, SqliteSessionStore
 from athena.state import AgentStatus
 from athena.stores import SqliteToolResultStore
@@ -615,12 +621,34 @@ async def _await_approval(registry: RunRegistry, run_id: str) -> PendingApproval
 
 
 def _prompt(workspace: Workspace, *tools: str) -> str:
+    """The system message a run with these tools would really be given.
+
+    The definitions come from `ToolRegistry`, the only thing that builds them in
+    production, instead of being written out here. An earlier version of this helper
+    passed `{"name": ...}` — a shape the runtime never produces — so the assertions below
+    held for a prompt nobody was ever sent, while every real run was told it was
+    read-only. A test that invents the input it is checking cannot fail with the code.
+    """
+    # El mismo catalogo que arma `RunRegistry.tools_for`, para que este ayudante acepte
+    # cualquier nombre que un run pueda recibir de verdad.
+    available = {
+        tool.spec.name: tool
+        for tool in (
+            *repository_read_tools(),
+            *git_read_tools(),
+            *workspace_mutation_tools(),
+            GitCommitTool(),
+            BashTool(),
+        )
+    }
+    registry = ToolRegistry(available[name] for name in tools)
+
     async def build() -> str:
         request = await ContextBuilder(workspace).build_request(
             objective="do something",
             history=(),
             important_state={},
-            tool_definitions=tuple({"name": name} for name in tools),
+            tool_definitions=registry.definitions(),
             cancellation=CancellationSource().token,
         )
         return request.messages[0].content
@@ -647,6 +675,19 @@ def test_a_read_only_run_is_still_told_so(tmp_path: Path) -> None:
     workspace = _sandbox(tmp_path / "repo")
     system = _prompt(workspace, "read_file", "glob", "grep")
     assert "read-only" in system
+
+
+def test_the_shape_the_registry_emits_is_the_shape_the_prompt_reads(tmp_path: Path) -> None:
+    """Names live under `function`, and the prompt has to look where they are.
+
+    Guarding the shape and not only the sentence: the two tests above would pass again
+    on a reader that finds nothing, as long as every run were called read-only. This one
+    fails the moment the definition stops carrying its name where the prompt looks.
+    """
+    definitions = ToolRegistry(workspace_mutation_tools()).definitions()
+    assert definitions
+    assert all(definition["type"] == "function" for definition in definitions)
+    assert _declared_names(definitions) == {"write_file", "edit_file"}
 
 
 def test_what_athena_remembers_is_labelled_rather_than_asserted(tmp_path: Path) -> None:
@@ -817,14 +858,54 @@ def test_a_task_gets_the_deployment_clock_and_keeps_its_other_limits(
     """
     del tmp_path
     original = DEFAULT_PROFILES[SubagentRole.CODER]
-    ampliado = _budgeted(original, 1800.0)
+    ampliado = budgeted(original, 1800.0)
 
     assert ampliado.budget.timeout_seconds == 1800.0
     assert ampliado.budget.max_iterations == original.budget.max_iterations
     assert ampliado.budget.max_tool_calls == original.budget.max_tool_calls
     # Sin medida no se toca nada: el presupuesto del perfil es la respuesta correcta
     # cuando nadie ha medido este despliegue.
-    assert _budgeted(original, None) is original
+    assert budgeted(original, None) is original
+
+
+def test_a_delegate_of_a_single_agent_run_also_gets_the_deployment_clock(tmp_path: Path) -> None:
+    """El run que pide un especialista, no sólo el que ejecuta un plan.
+
+    Los dos caminos delegan y sólo el jerárquico aplicaba el reloj del despliegue. El
+    monoagente dejaba al explorer con sus 300 s de fábrica mientras el mismo despliegue
+    permitía 900 para una sola llamada al modelo, así que el delegado expiraba dentro de
+    su primer turno y el run recibía un `subagent.failed` que no hablaba del trabajo
+    pedido. Medido contra AI_Broker con un modelo local de 30B: un turno, nueve minutos.
+    """
+    registry = _registry(
+        tmp_path,
+        _Scripted(),
+        InMemoryEventBus(),
+        planning=False,
+    )
+    registry.orchestrator.settings = replace(
+        registry.orchestrator.settings, task_timeout_seconds=1800.0
+    )
+
+    herramienta = registry._delegation_tool(RunOptions())
+
+    # `_profiles` es privado y se lee a propósito: es donde queda el presupuesto con el
+    # que correrá el delegado, y no hay otra forma de comprobarlo sin delegar de verdad.
+    for role, profile in herramienta._profiles.items():
+        assert profile.budget.timeout_seconds == 1800.0, role
+        assert profile.budget.max_iterations == DEFAULT_PROFILES[role].budget.max_iterations
+
+
+def test_without_a_measured_clock_a_delegate_keeps_its_profile_budget(tmp_path: Path) -> None:
+    registry = _registry(tmp_path, _Scripted(), InMemoryEventBus(), planning=False)
+
+    herramienta = registry._delegation_tool(RunOptions())
+
+    explorer = herramienta._profiles[SubagentRole.EXPLORER]
+    assert (
+        explorer.budget.timeout_seconds
+        == DEFAULT_PROFILES[SubagentRole.EXPLORER].budget.timeout_seconds
+    )
 
 
 # ------------------------------------------------------ ¿merece la pena este plan?

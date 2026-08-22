@@ -214,6 +214,138 @@ def test_ai_broker_preserves_plain_model_response_when_a_tool_was_required() -> 
     asyncio.run(scenario())
 
 
+def test_prose_instead_of_a_decision_is_transient_even_on_a_free_turn() -> None:
+    """One badly shaped reply is not a broken provider.
+
+    A real run died six seconds in because the routed model answered a "create a kanban
+    app" objective with a markdown comparison of Electron, PyQt and .NET instead of the
+    decision object. It was classified permanent — no fallback configured means abort —
+    so a single sample ended the run with no second attempt. The broker had accepted the
+    task, dispatched it and answered: nothing about that says it cannot serve the
+    request. `RecoveryPolicy` bounds the retries, so transient here is still finite.
+    """
+
+    async def scenario() -> None:
+        prose = "### 1. Recomendaciones: Electron, PyQt o .NET. Cual prefieres?"
+        provider = _StubBroker({"assistant_content": prose})
+
+        with pytest.raises(ModelTransientError, match="structured Athena tool decision"):
+            await provider.complete(
+                ModelRequest(
+                    messages=(ModelMessage(ModelRole.USER, "Crea un kanban"),),
+                    tools=(_write_tool(),),
+                ),
+                CancellationSource().token,
+            )
+
+    asyncio.run(scenario())
+
+
+class _FailingBroker(AiBrokerModelProvider):
+    """Un broker cuya tarea termina en `failed`, con el error tal y como lo publica."""
+
+    def __init__(self, error: JSONObject) -> None:
+        super().__init__("http://broker.local:8765", "secret")
+        self.error = error
+
+    async def _call(
+        self,
+        method: str,
+        path: str,
+        body: Mapping[str, JSONValue] | None,
+        cancellation: CancellationToken | None,
+    ) -> tuple[int, JSONObject]:
+        del body, cancellation
+        if method == "POST":
+            return 201, {"task_id": "task-1"}
+        assert path == "/api/v1/tasks/task-1"
+        return 200, {"status": "failed", "error": self.error}
+
+
+def test_a_failure_the_broker_calls_retryable_is_not_the_end_of_the_run() -> None:
+    """El broker sabe cuando su fallo se puede reintentar, y lo dice.
+
+    Un `TASK_TIMEOUT` esperando a que un modelo de 30B acabe de cargarse desde disco
+    llega con `retryable: true`. Se estaba leyendo como permanente, que sin proveedor de
+    respaldo significa abortar: el run moria por una espera, y la siguiente peticion
+    —con el modelo ya en memoria— habria salido bien.
+    """
+
+    async def scenario() -> None:
+        provider = _FailingBroker(
+            {
+                "code": "TASK_TIMEOUT",
+                "message": "La tarea supero el timeout efectivo de 600 segundos.",
+                "retryable": True,
+            }
+        )
+
+        with pytest.raises(ModelTransientError) as failure:
+            await provider.complete(
+                ModelRequest(messages=(ModelMessage(ModelRole.USER, "Hola"),)),
+                CancellationSource().token,
+            )
+
+        detalle = failure.value.details["detail"]
+        assert isinstance(detalle, str)
+        assert "TASK_TIMEOUT" in detalle, "el detalle llega como objeto y antes se perdia entero"
+
+    asyncio.run(scenario())
+
+
+def test_a_failure_without_that_promise_stays_permanent() -> None:
+    async def scenario() -> None:
+        provider = _FailingBroker({"code": "CONTRACT_VALIDATION_FAILED", "message": "no vale"})
+
+        with pytest.raises(ModelPermanentError):
+            await provider.complete(
+                ModelRequest(messages=(ModelMessage(ModelRole.USER, "Hola"),)),
+                CancellationSource().token,
+            )
+
+    asyncio.run(scenario())
+
+
+def test_a_decision_that_names_no_tool_is_worth_asking_again() -> None:
+    """El modelo anuncio herramientas y no nombro ninguna.
+
+    Salio tal cual de un run real contra `qwen3-coder:30b`:
+    `{"kind":"tool_calls","tool_calls":[]}`. El proveedor esta perfectamente: acepto la
+    tarea, la despacho y contesto. Lo unico que fallo fue la respuesta, y matar el run
+    por ella dejaba al usuario con «Fallido» y sin nada hecho.
+    """
+
+    async def scenario() -> None:
+        provider = _StubBroker({"assistant_content": '{"kind":"tool_calls","tool_calls":[]}'})
+
+        with pytest.raises(ModelTransientError, match="empty tool decision"):
+            await provider.complete(
+                ModelRequest(
+                    messages=(ModelMessage(ModelRole.USER, "Escribe una nota"),),
+                    tools=(_write_tool(),),
+                ),
+                CancellationSource().token,
+            )
+
+    asyncio.run(scenario())
+
+
+def test_a_decision_of_an_unknown_kind_is_also_worth_asking_again() -> None:
+    async def scenario() -> None:
+        provider = _StubBroker({"assistant_content": '{"kind":"thinking","message":"mmm"}'})
+
+        with pytest.raises(ModelTransientError, match="unknown Athena decision kind"):
+            await provider.complete(
+                ModelRequest(
+                    messages=(ModelMessage(ModelRole.USER, "Escribe una nota"),),
+                    tools=(_write_tool(),),
+                ),
+                CancellationSource().token,
+            )
+
+    asyncio.run(scenario())
+
+
 def test_ai_broker_cannot_invent_authority_for_an_unoffered_tool() -> None:
     async def scenario() -> None:
         provider = _StubBroker(

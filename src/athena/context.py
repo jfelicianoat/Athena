@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -203,7 +204,7 @@ class ContextBuilder:
         Derived rather than configured: the sentence is computed from the same tool list
         the request carries, so the two cannot drift apart.
         """
-        names = {name for tool in tools if isinstance(name := tool.get("name"), str)}
+        names = _declared_names(tools)
         can_write = bool(names & {"write_file", "edit_file"})
         can_execute = "bash" in names
         if can_write and can_execute:
@@ -243,3 +244,23 @@ class ContextBuilder:
             "Project instructions, root first and more specific last:\n"
             f"{instruction_text or '(none)'}"
         )
+
+
+def _declared_names(tools: tuple[JSONObject, ...]) -> frozenset[str]:
+    """The tool names a request carries, read in the shape the runtime actually sends.
+
+    `ToolRegistry.definitions` emits the OpenAI function shape — the name lives under
+    `function`, not at the top level — and that is the only shape a request ever holds.
+    Reading `tool["name"]` instead found nothing, silently, so every run was described as
+    read-only however it was authorised: the bug this function exists to make impossible
+    to reintroduce quietly. A definition without a readable name is skipped rather than
+    guessed at, because a wrong name here would misdescribe the run's own powers.
+    """
+    names: set[str] = set()
+    for tool in tools:
+        function = tool.get("function")
+        if isinstance(function, Mapping):
+            name = function.get("name")
+            if isinstance(name, str) and name:
+                names.add(name)
+    return frozenset(names)

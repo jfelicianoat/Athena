@@ -384,6 +384,42 @@ def test_a_delegate_is_announced_by_name_before_it_works(tmp_path: Path) -> None
     asyncio.run(scenario())
 
 
+def test_a_delegate_says_who_runs_it_and_whether_it_can_be_asked_again(
+    tmp_path: Path,
+) -> None:
+    """Anunciar un delegado sin decir de quien es lo presenta como propio.
+
+    Athena admite proveedores que no son Athena desde la fase 2, y delegados que se
+    pueden seguir usando desde ADR-030. Ninguna de las dos cosas se sabia mirando el
+    evento: una interfaz tenia que suponer las dos, y suponer aqui es equivocarse en el
+    dato que decide si merece la pena volver a preguntar.
+    """
+    root = _sandbox(tmp_path / "repo")
+
+    async def scenario() -> None:
+        bus = InMemoryEventBus()
+        provider = _ScriptedProvider([ModelResponse('{"findings": []}', "scripted", "stop")])
+        runner, events = _runner(bus, provider)
+        runner.provider_name = "native"
+
+        await runner.delegate(
+            SubagentRole.EXPLORER,
+            SubagentBrief(objective="Look"),
+            Workspace.from_path(root),
+            CancellationSource().token,
+            parent_session_id="parent-1",
+        )
+
+        started = next(e for e in events if e.name is EventName.SUBAGENT_STARTED)
+        assert started.payload["provider"] == "native"
+        assert started.payload["parent_session_id"] == "parent-1"
+        # El explorer es el unico perfil continuable, y lo es por su presupuesto.
+        seguimientos = started.payload["max_follow_ups"]
+        assert isinstance(seguimientos, int) and seguimientos > 0
+
+    asyncio.run(scenario())
+
+
 # ------------------------------------------------------------------ limits
 
 

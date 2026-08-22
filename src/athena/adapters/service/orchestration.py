@@ -595,7 +595,7 @@ class Orchestrator:
         # antes de escribir» escribiría igualmente en cuanto se planificase: la elección
         # del cliente la anularía en silencio una constante del módulo de subagentes.
         profiles = {
-            role: _budgeted(
+            role: budgeted(
                 confine(profile, policy, frozenset(catalog)),
                 self.settings.task_timeout_seconds,
             )
@@ -785,11 +785,19 @@ def _whole_goal(objective: str) -> TaskGraph:
     )
 
 
-def _budgeted(profile: SubagentProfile, seconds: float | None) -> SubagentProfile:
-    """Dar a una tarea el reloj del despliegue, sin tocar sus otros límites.
+def budgeted(profile: SubagentProfile, seconds: float | None) -> SubagentProfile:
+    """Dar a un delegado el reloj del despliegue, sin tocar sus otros límites.
 
     Sólo el reloj. Las iteraciones y las llamadas a herramienta acotan cuánto *hace* un
     delegado, y eso no cambia porque el modelo sea lento; el tiempo sí.
+
+    Público porque hay dos caminos que delegan —el plan y el run monoagente que pide un
+    especialista— y durante un tiempo sólo el primero aplicó esto. El segundo dejaba al
+    explorer con sus 300 s de fábrica mientras el mismo despliegue permitía 900 s para
+    **una sola** llamada al modelo: un delegado cuyo presupuesto entero es más corto que
+    la llamada que lo ocupa no termina nunca su primer turno. Es la misma regla que
+    `athena_service` ya verifica al arrancar entre `ATHENA_TASK_TIMEOUT_SECONDS` y
+    `ATHENA_MODEL_WAIT_SECONDS`, aplicada donde faltaba.
     """
     if seconds is None:
         return profile
@@ -843,4 +851,4 @@ def _with_plan(working: WorkingState, graph: TaskGraph) -> WorkingState:
     return working.with_plan(steps, running)
 
 
-__all__ = ["ExecutionMode", "OrchestrationSettings", "Orchestrator", "RunShape"]
+__all__ = ["ExecutionMode", "OrchestrationSettings", "Orchestrator", "RunShape", "budgeted"]

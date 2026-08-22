@@ -123,6 +123,14 @@ The service listens on `127.0.0.1:8770` by default. `ATHENA_SERVICE_PORT` and
 `ATHENA_STATE_DIR` may override the port and durable state directory. Do not publish this
 endpoint on the LAN; authentication is required even though it is bound to loopback.
 
+Which model answers is not a detail. Athena drives its loop on a JSON decision matching the
+schema it supplies, and a model that replies in prose cannot drive it at all. Name one with
+`ATHENA_PREFERRED_MODEL`: without it the broker routes on its own, and `output.format` is
+not a promise it enforces — by AI_Broker's own contract it only warns for models it has
+probed as incapable of structured output. The preference stays soft, because routing is the
+broker's decision to make; a reply that arrives as prose is treated as transient and retried
+rather than ending the run.
+
 ## Verification and self-repair
 
 A run completes only when the project's own checks pass. Athena discovers those commands

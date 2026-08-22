@@ -196,6 +196,11 @@ class NativeAthenaSubagentProvider:
     def __init__(self, runner: SubagentRunner, *, name: str = "native") -> None:
         self._runner = runner
         self._name = name
+        # El runner anuncia a sus delegados y no conoce al registro, así que el nombre
+        # baja hasta él. Dejarlo en el envoltorio haría que el evento dijese siempre
+        # «native» aunque este proveedor se registrase con otro nombre — y el nombre del
+        # registro es justamente el que alguien usaría para pedirlo.
+        runner.provider_name = name
 
     @property
     def name(self) -> str:

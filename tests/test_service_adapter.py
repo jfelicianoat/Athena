@@ -1402,3 +1402,68 @@ def test_an_internal_failure_does_not_name_a_python_exception(tmp_path: Path) ->
             await service.stop()
 
     asyncio.run(scenario())
+
+
+def test_what_a_delegate_does_reaches_the_client_watching_the_run(tmp_path: Path) -> None:
+    """Un delegado publica con su propia sesion, y el cliente mira el run.
+
+    El fan-out entregaba solo lo publicado con el id del run. En un run jerarquico las
+    tareas publican con el id de la tarea y los delegados con el suyo, asi que
+    `subagent.started`, `subagent.completed` y todo lo que hacia un delegado se publicaba
+    bien y no llegaba a nadie. El log duradero ya aprendia este linaje para contar la
+    historia despues; esto es lo mismo, en vivo.
+    """
+    root = _sandbox(tmp_path / "repo")
+
+    async def scenario() -> None:
+        registry = _registry(tmp_path, _ScriptedProvider([]))
+        run_id = await registry.start("Look", Workspace.from_path(root))
+        subscriber = registry.subscribe(run_id)
+        _drain(subscriber)
+
+        # La tarea se anuncia en el ambito del run y usa su id como sesion.
+        registry._fan_out(RuntimeEvent(EventName.TASK_STARTED, run_id, {"task_id": "T01"}))
+        # El delegado lo arranca la tarea, no el run.
+        registry._fan_out(RuntimeEvent(EventName.SUBAGENT_STARTED, "T01", {"session_id": "sub-1"}))
+        # Y lo que hace el delegado viaja con la sesion del delegado.
+        registry._fan_out(RuntimeEvent(EventName.TOOL_STARTED, "sub-1", {"tool_name": "grep"}))
+
+        entregados = [event.name for event in _drain(subscriber)]
+        assert EventName.TASK_STARTED in entregados
+        assert EventName.SUBAGENT_STARTED in entregados, "el delegado se anuncio a nadie"
+        assert EventName.TOOL_STARTED in entregados, "lo que hizo el delegado no llego"
+        await registry.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_a_session_nobody_claimed_does_not_borrow_a_run(tmp_path: Path) -> None:
+    """El linaje se aprende de lo que alguien anuncio, no de la cercania.
+
+    Adoptar sesiones sueltas por proximidad haria que dos runs simultaneos se robaran
+    eventos, y que un cliente viera como suyo el trabajo de otro.
+    """
+    root = _sandbox(tmp_path / "repo")
+
+    async def scenario() -> None:
+        registry = _registry(tmp_path, _ScriptedProvider([]))
+        run_id = await registry.start("Look", Workspace.from_path(root))
+        subscriber = registry.subscribe(run_id)
+        _drain(subscriber)
+
+        registry._fan_out(RuntimeEvent(EventName.TOOL_STARTED, "sesion-ajena", {"i": 1}))
+
+        assert _drain(subscriber) == []
+        await registry.shutdown()
+
+    asyncio.run(scenario())
+
+
+def _drain(subscriber: Any) -> list[RuntimeEvent]:
+    """Lo que hay en la cola ahora mismo, sin esperar a que llegue mas."""
+    entregados: list[RuntimeEvent] = []
+    while not subscriber.queue.empty():
+        event = subscriber.queue.get_nowait()
+        if event is not None:
+            entregados.append(event)
+    return entregados

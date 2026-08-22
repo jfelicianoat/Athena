@@ -384,8 +384,13 @@ class SubagentRunner:
         profiles: Mapping[SubagentRole, SubagentProfile] | None = None,
         prompt: PermissionPrompt | None = None,
         hooks: HookRegistry | None = None,
+        provider_name: str = "native",
     ) -> None:
         self.provider = provider
+        #: Con qué nombre se anuncian los delegados que arranca este runner. Es el del
+        #: proveedor que lo envuelve, no el del modelo: quien mira quiere saber quién
+        #: ejecuta al delegado, no con qué pesos.
+        self.provider_name = provider_name
         self.catalog = dict(catalog)
         self.event_bus = event_bus
         self.result_store = result_store
@@ -470,6 +475,18 @@ class SubagentRunner:
                     "max_tool_calls": limits.max_tool_calls,
                     "timeout_seconds": limits.timeout_seconds,
                     "session_id": child_session_id,
+                    # Quién lo está ejecutando. Athena ya no es el único proveedor
+                    # posible desde la fase 2, y una interfaz que enseñe delegados sin
+                    # decir de quién son los está presentando a todos como propios.
+                    "provider": self.provider_name,
+                    # De quién es hijo. El evento se publica en el ámbito del padre, pero
+                    # eso lo sabe el bus y no quien lo lee: sin decirlo, un cliente que
+                    # recibe el hecho no puede dibujar la relación.
+                    "parent_session_id": parent_session_id,
+                    # Cuántas veces más se le puede preguntar. Cero significa un solo
+                    # encargo, y es la diferencia entre un delegado que se puede seguir
+                    # usando y uno que ya se gastó (ADR-030).
+                    "max_follow_ups": limits.max_follow_ups,
                 },
                 child_session_id,
             )

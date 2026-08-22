@@ -28,6 +28,7 @@ from athena.adapters.service.orchestration import (
     OrchestrationSettings,
     Orchestrator,
     RunShape,
+    budgeted,
 )
 from athena.agent_loop import AgentLoop, AgentLoopConfig, AgentRunResult, AgentRunStatus
 from athena.cancellation import CancellationSource
@@ -59,7 +60,7 @@ from athena.subagent_provider import (
     SubagentProviderRegistry,
     SubagentService,
 )
-from athena.subagents import SubagentRunner
+from athena.subagents import DEFAULT_PROFILES, SubagentRunner
 from athena.tool_executor import ToolExecutor
 from athena.tools import Tool
 from athena.types import JSONObject
@@ -282,14 +283,26 @@ class RunRegistry:
         if event_log is not None:
             event_bus.subscribe(self._durable)
         self._runs: dict[str, LiveRun] = {}
+        #: A qué run pertenece cada sesión que no es la del propio run.
+        #:
+        #: Existe porque el fan-out entregaba sólo lo publicado con el id del run, y en un
+        #: run jerárquico las tareas publican con el id de la tarea y los delegados con el
+        #: suyo. El resultado era que `subagent.started`, `subagent.completed` y todo lo
+        #: que hace un delegado se publicaba correctamente y **no llegaba a nadie**: ni al
+        #: cliente que estaba mirando el run, ni a ninguna otra parte. El log duradero ya
+        #: aprendía este linaje para poder contar la historia después; esto es lo mismo,
+        #: en vivo, para poder contarla mientras pasa.
+        self._lineage: dict[str, str] = {}
         event_bus.subscribe(self._fan_out)
 
     # -- fan-out ----------------------------------------------------------
 
     def _fan_out(self, event: RuntimeEvent) -> None:
-        run = self._runs.get(event.session_id)
+        run_id = self._lineage.get(event.session_id, event.session_id)
+        run = self._runs.get(run_id)
         if run is None:
             return
+        self._learn_lineage(event, run_id)
         # Recorded before delivery, so an event a slow subscriber never received is still
         # one it can replay. The buffer is the reason dropping a subscriber is survivable
         # rather than lossy.
@@ -305,6 +318,33 @@ class RunRegistry:
                 # A client too slow to keep up loses events, not the runtime its memory.
                 # The snapshot it fetches on reconnect is what makes this recoverable.
                 subscriber.dropped += 1
+
+    def _learn_lineage(self, event: RuntimeEvent, run_id: str) -> None:
+        """Aprender de qué run es una sesión, por los dos eventos que lo dicen.
+
+        Se aprende de lo que alguien **anunció** y no de una cercanía temporal: una tarea
+        consta porque el ejecutor la empezó, y un delegado porque su padre lo arrancó.
+        Adoptar sesiones por proximidad haría que dos runs simultáneos se robaran eventos.
+        """
+        if event.name is EventName.TASK_STARTED:
+            task_id = event.payload.get("task_id")
+            if isinstance(task_id, str) and task_id:
+                # El ejecutor de grafos usa el id de la tarea como sesión de quien la
+                # ejecuta, así que esto es lo que hace que lo suyo llegue al run.
+                self._lineage[task_id] = run_id
+        elif event.name is EventName.SUBAGENT_STARTED:
+            child = event.payload.get("session_id")
+            if isinstance(child, str) and child:
+                self._lineage[child] = run_id
+
+    def _forget_lineage(self, run_id: str) -> None:
+        """Soltar las sesiones de un run que ya no está vivo.
+
+        Sin esto el mapa crece con cada tarea y cada delegado de cada run que haya pasado
+        por el proceso, y un servicio largo acabaría recordando linajes de trabajo que
+        nadie puede ya consultar.
+        """
+        self._lineage = {sesion: raiz for sesion, raiz in self._lineage.items() if raiz != run_id}
 
     def subscribe(self, run_id: str, *, control: bool = False) -> Subscriber:
         run = self._require(run_id)
@@ -485,7 +525,15 @@ class RunRegistry:
             self.provider, catalog, self.event_bus, self.result_store, prompt=None
         )
         service = SubagentService(SubagentProviderRegistry((NativeAthenaSubagentProvider(runner),)))
-        return DelegateTaskTool(service, catalog, self.policy_for(options))
+        # El reloj del despliegue, igual que en el camino jerárquico. Sin esto un
+        # delegado corría con los presupuestos de fábrica —cinco minutos para el
+        # explorer— mientras el mismo despliegue permitía nueve para una sola llamada al
+        # modelo: medido contra este broker, toda delegación moría por construcción antes
+        # de terminar su primer turno, y el run se quedaba con un `subagent.failed` que
+        # no decía nada del trabajo pedido.
+        reloj = self.orchestrator.settings.task_timeout_seconds
+        profiles = {role: budgeted(profile, reloj) for role, profile in DEFAULT_PROFILES.items()}
+        return DelegateTaskTool(service, catalog, self.policy_for(options), profiles=profiles)
 
     def _build(
         self, run_id: str, workspace: Workspace, options: RunOptions, notes: str = ""
@@ -685,6 +733,7 @@ class RunRegistry:
             # The loop never got going; do not hand back an id nothing will answer for.
             source.cancel()
             self._runs.pop(run_id, None)
+            self._forget_lineage(run_id)
             raise AthenaRuntimeError("The run did not start in time") from None
         finally:
             unsubscribe()
@@ -782,6 +831,7 @@ class RunRegistry:
                 run.task.cancel()
                 with contextlib.suppress(BaseException):
                     await run.task
+        self._lineage.clear()
         await self.drain()
 
     async def drain(self) -> None:

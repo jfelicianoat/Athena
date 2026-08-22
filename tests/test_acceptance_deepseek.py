@@ -1,9 +1,14 @@
 """Los diez escenarios de aceptación de la integración DeepSeek, ejercitados de punta a punta.
 
-**Los diez no vienen del prompt maestro.** Esa lista no está en el repositorio, así que se
-derivan aquí de lo que las diecisiete fases construyeron de verdad: uno por propiedad que
-alguien podría creerse mal si dejara de cumplirse. Decirlo importa — presentarlos como «los
-escenarios que se pidieron» sería atribuirles una autoridad que no tienen.
+**Los diez no vienen del prompt maestro.** Se derivan de lo que las diecisiete fases
+construyeron de verdad: uno por propiedad que alguien podría creerse mal si dejara de
+cumplirse. Decirlo importa — presentarlos como «los escenarios que se pidieron» sería
+atribuirles una autoridad que no tienen.
+
+Los del encargo llegaron después y viven aparte, en `test_acceptance_master_e2e.py`. Estos
+**no se retiran** por eso: lo que defienden es el caso concreto que rompió algo, y ese caso
+no estaba en ninguna lista escrita de antemano. El catálogo que relaciona unos con otros
+está en `docs/ACCEPTANCE_SCENARIOS.md`.
 
 Cada escenario defiende una frase que, si se rompe, hace que Athena **mienta** en vez de
 fallar. Ese es el criterio de selección y no la cobertura: un runtime que se cae se arregla,

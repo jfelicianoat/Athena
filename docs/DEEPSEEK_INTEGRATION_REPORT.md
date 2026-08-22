@@ -111,14 +111,27 @@ que escriben necesitan correr a la vez, y hoy las escrituras se serializan.
 nombra las tareas cuyo resultado desconoce. Ninguna interfaz ofrece todavía forma de
 registrar esa decisión.
 
-## Los diez escenarios
+## Los escenarios de aceptación
 
-`tests/test_acceptance_deepseek.py`. **No vienen del prompt maestro** —esa lista no está en
-el repositorio— sino que se derivan de lo que las fases construyeron: uno por propiedad que
-alguien podría creerse mal si dejara de cumplirse. Corren con proveedores guionizados para
-que pasen en cada suite; los que además se comprobaron contra el broker lo dicen en su
-docstring, porque «probado con un modelo de mentira» y «probado con uno de verdad» no son la
-misma afirmación.
+El catálogo completo vive en **`docs/ACCEPTANCE_SCENARIOS.md`**, partido en dos mitades que
+no se confunden:
+
+- **MASTER_E2E** — los diez escenarios acordados en el prompt maestro. La lista llegó
+  después de cerrar la integración; al contrastarla con la suite, la mayoría ya estaba
+  cubierta y los huecos concretos se cerraron en `tests/test_acceptance_master_e2e.py`.
+- **DERIVED** (`tests/test_acceptance_deepseek.py`) — los diez que se derivaron de lo que
+  las fases construyeron, uno por propiedad que alguien podría creerse mal si dejara de
+  cumplirse. **No vienen del prompt maestro y no se presentan como si vinieran.**
+
+Los derivados **se conservan**. Lo que defienden suele ser el caso concreto que rompió algo
+—un delegado que publica y no llega a nadie, una credencial válida confundida con un
+`/health` que responde, una aprobación que sobrevive a un reinicio— y ese caso no está en
+ninguna lista escrita de antemano: la suite de aceptación crece por descubrimiento.
+
+Todo corre con proveedores guionizados para que pase en cada suite; lo que además se
+comprobó contra el broker lo dice en su docstring, porque «probado con un modelo de
+mentira» y «probado con uno de verdad» no son la misma afirmación.
+
 
 ## Puerta
 

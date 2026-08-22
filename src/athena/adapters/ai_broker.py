@@ -220,7 +220,14 @@ class AiBrokerModelProvider(ModelProvider):
                     tool_choice_required=prepared.tool_choice_required,
                 )
             if state in _FAILED:
-                raise ModelPermanentError(
+                # El broker dice si su propio fallo se puede reintentar, y hay que
+                # creerle: un `TASK_TIMEOUT` esperando a que un modelo grande termine de
+                # cargarse desde disco llega marcado `retryable: true`, y tratarlo como
+                # permanente abortaba el run por algo que la siguiente peticion, con el
+                # modelo ya en memoria, resuelve. Sin la marca se mantiene permanente,
+                # que es lo prudente cuando nadie ha dicho lo contrario.
+                error_type = ModelTransientError if _is_retryable(payload) else ModelPermanentError
+                raise error_type(
                     "AI_Broker could not complete the task",
                     details={"task": task_id, "detail": _detail(payload)},
                 )
@@ -344,7 +351,9 @@ def _prepare_request(request: ModelRequest) -> _PreparedRequest:
         "the supplied schema. Use kind=tool_calls when an action or more information is "
         "needed, and include only listed tool names with valid arguments. Never claim a "
         "tool ran before Athena returns its result. Use kind=message only when the objective "
-        "is complete and put the final answer in message.\n\nAvailable tools:\n" + tools_json
+        "is complete and put the final answer in message. Answer with the JSON object "
+        "alone: no prose around it, no markdown, no questions back.\n\nAvailable tools:\n"
+        + tools_json
     )
     if tool_choice_required:
         protocol += (
@@ -454,12 +463,7 @@ def _response_from(
     tool_calls: tuple[ModelToolCall, ...] = ()
     finish_reason = "stop"
     if allowed_tools:
-        decision = _structured_decision(
-            result,
-            payload,
-            content,
-            tool_choice_required=tool_choice_required,
-        )
+        decision = _structured_decision(result, payload, content)
         content, tool_calls = _parse_decision(
             decision,
             allowed_tools,
@@ -493,8 +497,6 @@ def _structured_decision(
     result: Mapping[str, JSONValue],
     payload: JSONObject,
     content: str,
-    *,
-    tool_choice_required: bool = False,
 ) -> JSONObject:
     candidates = [
         result.get("structured_output"),
@@ -509,9 +511,16 @@ def _structured_decision(
     decoded = _decode_json_object(content)
     if decoded is None:
         excerpt = content.strip().replace("\x00", "")[:2_000]
-        error_type = ModelTransientError if tool_choice_required else ModelPermanentError
         suffix = f" Model response: {excerpt}" if excerpt else ""
-        raise error_type(
+        # Transient, and not only when a tool call was mandatory. Nothing here says the
+        # provider cannot serve the request: the broker accepted the task, dispatched it
+        # and answered — the answer just came back as prose. `output.format` is not a
+        # guarantee the broker enforces (by its own contract it warns only for models it
+        # has probed as incapable of structured output), so a model that ignored the
+        # schema once may honour it on the next sample. Calling this permanent ended a
+        # whole run on one badly shaped reply, with no second attempt. `RecoveryPolicy`
+        # is what bounds the retries, so the ceiling stays explicit and finite.
+        raise ModelTransientError(
             "AI_Broker model did not return the structured Athena tool decision." + suffix,
             details={"model_response": excerpt},
         )
@@ -540,6 +549,14 @@ def _parse_decision(
     *,
     tool_choice_required: bool = False,
 ) -> tuple[str, tuple[ModelToolCall, ...]]:
+    # Una decision mal formada es un error **del modelo**, no del proveedor: el broker
+    # acepto la tarea, la despacho y contesto. Por eso todo lo de aqui abajo es
+    # transitorio y no permanente — permanente significa «este proveedor no puede servir
+    # esta peticion», y no es el caso. Se vio en un run real: `{"kind":"tool_calls",
+    # "tool_calls":[]}`, el modelo anunciando herramientas y no nombrando ninguna, mataba
+    # el run sin un segundo intento. `RecoveryPolicy` es quien pone el techo, asi que
+    # sigue siendo finito. La excepcion es una tool que no se ofrecio: eso apunta a un
+    # catalogo mal armado, que reintentar no arregla.
     kind = decision.get("kind")
     if kind == "message":
         if tool_choice_required:
@@ -549,20 +566,23 @@ def _parse_decision(
         message = decision.get("message", "")
         content = message if isinstance(message, str) else json.dumps(message, ensure_ascii=False)
         if not content.strip():
-            raise ModelPermanentError("AI_Broker returned an empty final message")
+            raise ModelTransientError("AI_Broker returned an empty final message")
         return content, ()
     if kind != "tool_calls":
-        raise ModelPermanentError("AI_Broker returned an unknown Athena decision kind")
+        raise ModelTransientError(
+            "AI_Broker returned an unknown Athena decision kind",
+            details={"kind": kind if isinstance(kind, str) else type(kind).__name__},
+        )
     raw_calls = decision.get("tool_calls")
     if not isinstance(raw_calls, list) or not raw_calls:
-        raise ModelPermanentError("AI_Broker returned an empty tool decision")
+        raise ModelTransientError("AI_Broker returned an empty tool decision")
     calls = tuple(_parse_tool_call(value, allowed_tools) for value in raw_calls)
     return "", calls
 
 
 def _parse_tool_call(value: JSONValue, allowed_tools: frozenset[str]) -> ModelToolCall:
     if not isinstance(value, Mapping):
-        raise ModelPermanentError("AI_Broker returned a malformed tool call")
+        raise ModelTransientError("AI_Broker returned a malformed tool call")
     name = value.get("name")
     arguments = value.get("arguments")
     if not isinstance(name, str) or name not in allowed_tools:
@@ -580,7 +600,7 @@ def _parse_tool_call(value: JSONValue, allowed_tools: frozenset[str]) -> ModelTo
             },
         )
     if not isinstance(arguments, Mapping):
-        raise ModelPermanentError("AI_Broker returned malformed tool arguments")
+        raise ModelTransientError("AI_Broker returned malformed tool arguments")
     call_id = value.get("call_id")
     if not isinstance(call_id, str) or not call_id.strip():
         call_id = str(uuid4())
@@ -596,11 +616,32 @@ def _count(usage: Mapping[str, JSONValue], *keys: str) -> int:
 
 
 def _detail(payload: JSONObject) -> str:
+    """El porque de un fallo del broker, venga como frase o como objeto tipado.
+
+    `error` llega como objeto —`{"code": "TASK_TIMEOUT", "message": ...}`— y esta funcion
+    solo sabia leer cadenas, asi que el detalle salia vacio: un run moria y lo unico que
+    quedaba escrito era «AI_Broker could not complete the task». El codigo va primero
+    porque es lo que se puede comparar; el mensaje explica, pero cambia de redaccion.
+    """
     for key in ("detail", "error", "message"):
         value = payload.get(key)
         if isinstance(value, str) and value:
             return value[:400]
+        if isinstance(value, Mapping):
+            code = value.get("code")
+            message = value.get("message")
+            partes = [str(part) for part in (code, message) if isinstance(part, str) and part]
+            if partes:
+                return ": ".join(partes)[:400]
     return ""
+
+
+def _is_retryable(payload: JSONObject) -> bool:
+    """Lo que el broker afirma sobre su propio fallo. Solo cuenta un `true` explicito."""
+    error = payload.get("error")
+    if isinstance(error, Mapping):
+        return error.get("retryable") is True
+    return payload.get("retryable") is True
 
 
 __all__ = ["DEFAULT_REQUEST_TIMEOUT_SECONDS", "AiBrokerModelProvider"]
