@@ -54,6 +54,10 @@ DURABLE: frozenset[EventName] = frozenset(
         EventName.AGENT_COMPLETED,
         EventName.AGENT_FAILED,
         EventName.AGENT_CANCELLED,
+        # Un run que acabo haciendo otra cosa de la que se le pidio solo es explicable
+        # si consta cuando cambio el encargo y por que. Sin esto, el registro cuenta un
+        # trabajo que no encaja con el objetivo con el que empezo y nada dice por que.
+        EventName.GOAL_REVISED,
         EventName.PLAN_DECIDED,
         EventName.GRAPH_STARTED,
         EventName.GRAPH_COMPLETED,

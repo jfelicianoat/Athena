@@ -592,6 +592,112 @@ def test_an_unknown_profile_is_refused_before_the_run_exists(tmp_path: Path) -> 
     asyncio.run(scenario())
 
 
+def test_revising_the_goal_of_a_live_run(tmp_path: Path) -> None:
+    """Escrito no es aplicado, y la respuesta no finge lo contrario.
+
+    El bucle recoge el cambio entre iteraciones; decir aqui que ya se esta trabajando en
+    ello seria comodo y falso.
+    """
+    root = _sandbox(tmp_path / "repo")
+
+    async def scenario() -> None:
+        provider = _ScriptedProvider([ModelResponse("Nada que hacer.", "scripted", "stop")])
+        registry = _registry(tmp_path, provider)
+        service = AthenaService(registry, _config())
+        host, port = await service.start()
+        try:
+            run_id = await registry.start("objetivo inicial", Workspace.from_path(root))
+
+            status, body = await _request(host, port, "GET", f"/v1/runs/{run_id}/goal")
+            assert status == 200
+            assert json.loads(body)["current"]["revision"] == 1
+
+            status, body = await _request(
+                host,
+                port,
+                "POST",
+                f"/v1/runs/{run_id}/goal",
+                body={
+                    "objective": "objetivo corregido",
+                    "base_revision": 1,
+                    "reason": "me explique mal",
+                },
+            )
+            assert status == 200
+            payload = json.loads(body)
+            assert payload["goal"]["revision"] == 2
+            assert payload["applied"] is False
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
+def test_a_stale_revision_is_a_conflict_that_hands_back_the_current_goal(
+    tmp_path: Path,
+) -> None:
+    """Quien llego tarde decide con el objetivo actual delante, sin volver a preguntarlo."""
+    root = _sandbox(tmp_path / "repo")
+
+    async def scenario() -> None:
+        provider = _ScriptedProvider([ModelResponse("Nada que hacer.", "scripted", "stop")])
+        registry = _registry(tmp_path, provider)
+        service = AthenaService(registry, _config())
+        host, port = await service.start()
+        try:
+            run_id = await registry.start("objetivo inicial", Workspace.from_path(root))
+            registry.revise_goal(run_id, "lo cambio yo primero", base_revision=1)
+
+            status, body = await _request(
+                host,
+                port,
+                "POST",
+                f"/v1/runs/{run_id}/goal",
+                body={"objective": "y yo despues", "base_revision": 1},
+            )
+
+            assert status == 409
+            payload = json.loads(body)
+            assert payload["error"]["code"] == "goal_conflict"
+            assert payload["current_revision"] == 2
+            assert payload["current"] == "lo cambio yo primero"
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
+def test_revising_without_saying_which_version_is_refused(tmp_path: Path) -> None:
+    """Un `base_revision` implicito convertiria cada revision en un pisoton.
+
+    Dos personas mirando el mismo run se sobrescribirian sin enterarse, que es justo lo
+    que el numero existe para impedir.
+    """
+    root = _sandbox(tmp_path / "repo")
+
+    async def scenario() -> None:
+        provider = _ScriptedProvider([ModelResponse("Nada que hacer.", "scripted", "stop")])
+        registry = _registry(tmp_path, provider)
+        service = AthenaService(registry, _config())
+        host, port = await service.start()
+        try:
+            run_id = await registry.start("objetivo inicial", Workspace.from_path(root))
+            status, body = await _request(
+                host,
+                port,
+                "POST",
+                f"/v1/runs/{run_id}/goal",
+                body={"objective": "sin decir sobre cual"},
+            )
+
+            assert status == 400
+            assert "base_revision" in json.loads(body)["error"]["message"]
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
 def test_an_unknown_route_is_a_clean_404(tmp_path: Path) -> None:
     async def scenario() -> None:
         service = AthenaService(_registry(tmp_path, _ScriptedProvider([])), _config())

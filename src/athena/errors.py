@@ -86,6 +86,17 @@ class VerificationFailure(AthenaRuntimeError):
     code = "verification_failure"
 
 
+class GoalConflict(AthenaRuntimeError):
+    """Alguien reviso el objetivo sobre una version que ya no era la vigente.
+
+    No se fusiona ni se pisa. Fusionar dos encargos escritos en prosa no lo sabe hacer
+    nadie, y pisar convierte el trabajo de otro en un cambio que nunca vio. Se devuelve el
+    conflicto con el objetivo actual, y quien llego tarde decide con eso delante.
+    """
+
+    code = "goal_conflict"
+
+
 class VerificationInconclusive(AthenaRuntimeError):
     """No se pudo comprobar nada, ni a favor ni en contra.
 

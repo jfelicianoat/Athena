@@ -44,6 +44,9 @@ class EventName(StrEnum):
     #: Which shape a run will execute in, and why. Published once, when the answer is
     #: final — which for a goal that was planned is after the plan came back, because a
     #: plan can turn out not to be worth executing as one.
+    #: El encargo cambio mientras el run trabajaba. Lleva la revision nueva y la que
+    #: deja de valer: sin la segunda, quien lo lea no sabe contra que se hizo lo anterior.
+    GOAL_REVISED = "goal.revised"
     PLAN_DECIDED = "plan.decided"
     #: The graph level, which is a real level and not a synonym for the run. A task uses a
     #: subagent; it is not one, and a view that conflated them could not draw the plan.

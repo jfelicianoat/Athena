@@ -58,6 +58,7 @@ from athena.git_tools import (
     GitStatusTool,
     git_read_tools,
 )
+from athena.goals import Goal, GoalBoard
 from athena.graph_executor import GraphExecutor, GraphResult, TaskEvidence
 from athena.graph_store import SqliteGraphStore, StoredPlan
 from athena.hooks import (
@@ -292,6 +293,8 @@ __all__ = [
     "GitShowTool",
     "GitStatusTool",
     "GlobTool",
+    "Goal",
+    "GoalBoard",
     "GraphExecutor",
     "GraphResult",
     "GrepTool",

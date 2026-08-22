@@ -391,3 +391,28 @@ def test_the_payload_survives_a_round_trip_with_accents(tmp_path: Path) -> None:
         assert json.dumps(guardado.to_json())
 
     asyncio.run(scenario())
+
+
+def test_un_cambio_de_encargo_sobrevive_al_proceso(tmp_path: Path) -> None:
+    """Un run que acabo haciendo otra cosa solo es explicable si consta que cambio.
+
+    Se descubrio en un run real: la revision se aplicaba, se publicaba y no quedaba en el
+    registro, asi que la historia guardada contaba un trabajo que no encajaba con el
+    objetivo con el que empezaba y nada decia por que.
+    """
+
+    async def scenario() -> None:
+        log = _log(tmp_path)
+        await log.record(_event(EventName.AGENT_STARTED))
+        await log.record(
+            _event(
+                EventName.GOAL_REVISED,
+                RUN,
+                {"revision": 2, "supersedes": 1, "objective": "otra cosa"},
+            )
+        )
+
+        nombres = [item.name for item in await log.read(RUN)]
+        assert "goal.revised" in nombres
+
+    asyncio.run(scenario())

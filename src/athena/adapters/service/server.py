@@ -40,6 +40,7 @@ from athena.adapters.service.runs import RunOptions, RunRegistry, build_workspac
 from athena.cancellation import CancellationSource
 from athena.errors import (
     AthenaRuntimeError,
+    GoalConflict,
     ToolResultUnavailableError,
     ToolValidationError,
     WorkspaceBoundaryError,
@@ -263,6 +264,17 @@ class AthenaService:
             return Response(410, error_to_json(exc.code, exc.message))
         except ToolValidationError as exc:
             return Response(400, error_to_json(exc.code, exc.message))
+        except GoalConflict as exc:
+            # 409 literal: alguien escribio sobre una version que ya no era la vigente. El
+            # cuerpo lleva el objetivo actual para que quien llego tarde decida con el
+            # delante en vez de tener que volver a preguntarlo.
+            return Response(
+                409,
+                {
+                    "error": {"code": exc.code, "message": exc.message},
+                    **exc.details,
+                },
+            )
         except AthenaRuntimeError as exc:
             return Response(409, error_to_json(exc.code, exc.message))
 
@@ -309,6 +321,10 @@ class AthenaService:
             return await self._get_run(run_id)
         if (run_id := _match(path, "/v1/runs/{}/history")) and method == "GET":
             return await self._history(run_id, request)
+        if (run_id := _match(path, "/v1/runs/{}/goal")) and method == "GET":
+            return Response(200, self.registry.goal_of(run_id).to_json())
+        if (run_id := _match(path, "/v1/runs/{}/goal")) and method == "POST":
+            return self._revise_goal(run_id, request)
         if (run_id := _match(path, "/v1/runs/{}/cancel")) and method == "POST":
             await self.registry.cancel(run_id)
             return Response(202, {"run_id": run_id, "cancelling": True})
@@ -457,6 +473,40 @@ class AthenaService:
                 404, error_to_json("metrics_disabled", "This deployment records no metrics")
             )
         return Response(200, await self.registry.metrics_store.compare())
+
+    def _revise_goal(self, run_id: str, request: Request) -> Response:
+        """Cambiar el encargo de un run vivo, diciendo sobre que revision se escribe.
+
+        `base_revision` es obligatorio y no tiene valor por defecto. Uno implicito
+        —«la ultima»— convertiria cada revision en un pisotón: dos personas mirando el
+        mismo run se sobrescribirian sin enterarse, que es justo lo que el numero existe
+        para impedir.
+        """
+        payload = request.json()
+        objective = payload.get("objective")
+        if not isinstance(objective, str) or not objective.strip():
+            raise ToolValidationError("objective must be a non-empty string")
+        base = payload.get("base_revision")
+        if isinstance(base, bool) or not isinstance(base, int):
+            raise ToolValidationError("base_revision must be the revision you are revising")
+        reason = payload.get("reason")
+        revisado = self.registry.revise_goal(
+            run_id,
+            objective,
+            base_revision=base,
+            reason=reason if isinstance(reason, str) else "",
+        )
+        return Response(
+            200,
+            {
+                "run_id": run_id,
+                "goal": revisado.to_json(),
+                # Escrito no es aplicado. El bucle recoge el cambio entre iteraciones y lo
+                # anuncia con `goal.revised`; decir aqui que ya se esta trabajando en ello
+                # seria comodo y falso.
+                "applied": False,
+            },
+        )
 
     async def _history(self, run_id: str, request: Request) -> Response:
         """Lo que ocurrió en un run, leido del registro y no del run vivo.

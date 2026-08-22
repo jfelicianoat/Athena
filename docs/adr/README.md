@@ -54,3 +54,5 @@ of rewritten history.
   ["Not verified" is not "verified wrong"](027-not-verified-is-not-verified-wrong.md)
 - ADR-028:
   [A profile declares what counts as done](028-a-profile-declares-what-counts-as-done.md)
+- ADR-029:
+  [A goal can be revised, and the old evidence does not carry over](029-a-goal-can-be-revised-and-the-old-evidence-does-not-carry-over.md)

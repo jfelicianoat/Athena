@@ -36,6 +36,7 @@ from athena.events import (
     ToolEvent,
     VerificationEvent,
 )
+from athena.goals import GoalBoard, announcement
 from athena.hooks import (
     HookBlockedError,
     HookContext,
@@ -127,6 +128,7 @@ class _RunData:
     pending_compaction: CompactionReport | None = None
     revealed_tools: set[str] = field(default_factory=set)
     skills: tuple[SkillSelection, ...] = ()
+    goal: GoalBoard = field(default_factory=lambda: GoalBoard("(sin objetivo)"))
 
 
 class AgentLoop:
@@ -208,6 +210,7 @@ class AgentLoop:
         *,
         resume_from: SessionRecord | None = None,
         session_id: str | None = None,
+        goal: GoalBoard | None = None,
     ) -> AgentRunResult:
         # An external caller may name the run before it starts. Without this a service
         # cannot address a run until the loop has already emitted events about it.
@@ -227,6 +230,9 @@ class AgentLoop:
         data = _RunData(
             SessionState(session_id, workspace.workspace_id, initial_agent),
             working,
+            # Quien encargo el trabajo puede seguir hablando mientras se hace. Sin tablero
+            # el objetivo es el que llego y no cambia, que es lo de siempre.
+            goal=goal if goal is not None else GoalBoard(objective),
         )
         if resume_from is not None:
             data.references.extend(resume_from.tool_references)
@@ -367,6 +373,10 @@ class AgentLoop:
         await self._capture_baseline(workspace, cancellation)
         for iteration in range(1, self.config.max_iterations + 1):
             cancellation.raise_if_cancelled()
+            # El encargo se recoge aqui y solo aqui. Un objetivo que cambiase con una tool
+            # a medias dejaria al modelo con un resultado pedido por un encargo y una
+            # pregunta hecha por otro.
+            objective = await self._take_revision(objective, data)
             budget.consume_iteration()
             data.session = self._with_budget(data.session, budget, AgentStatus.RUNNING)
             history = self._select_context(data)
@@ -840,6 +850,41 @@ class AgentLoop:
         budget.consume_tool_call()
         self._remember_paths(call, data)
         return None
+
+    async def _take_revision(self, objective: str, data: _RunData) -> str:
+        """Recoger un objetivo revisado, si alguien lo cambio desde la ultima vuelta."""
+        anterior = data.goal.current
+        nuevo = data.goal.take()
+        if nuevo is None:
+            return objective
+        previo = next(
+            (item for item in reversed(data.goal.history()) if item.revision < nuevo.revision),
+            anterior,
+        )
+        # La evidencia obtenida bajo una revision no demuestra la siguiente. Heredarla
+        # seria la forma mas barata de dar por bueno un trabajo que nadie pidio.
+        data.last_verification = None
+        data.working = replace(data.working, objective=nuevo.text).noting(
+            decisions=(f"El objetivo cambio a la revision {nuevo.revision}.",),
+        )
+        data.history.append(ModelMessage(ModelRole.USER, announcement(previo, nuevo)))
+        await self.event_bus.publish(
+            AgentEvent(
+                EventName.GOAL_REVISED,
+                data.session.session_id,
+                {
+                    "revision": nuevo.revision,
+                    "supersedes": previo.revision,
+                    "reason": nuevo.reason,
+                    "objective": nuevo.text,
+                    # Que se anula, no solo que empieza: sin esto quien lo lea no sabe
+                    # contra que se hizo todo lo anterior del run.
+                    "superseded_objective": previo.text,
+                },
+            )
+        )
+        self._select_skills(nuevo.text, data)
+        return nuevo.text
 
     async def _record(
         self, call: ModelToolCall, outcome: ToolResult | BaseException, data: _RunData

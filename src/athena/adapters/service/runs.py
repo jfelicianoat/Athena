@@ -36,6 +36,7 @@ from athena.delegation import DelegateTaskTool
 from athena.errors import AthenaRuntimeError, ToolValidationError
 from athena.events import EventBus, EventName, RuntimeEvent
 from athena.git_tools import GitCommitTool, git_read_tools
+from athena.goals import Goal, GoalBoard
 from athena.graph_executor import GraphResult
 from athena.graph_store import StoredPlan
 from athena.metrics import MetricsCollector, SqliteMetricsStore
@@ -205,6 +206,10 @@ class LiveRun:
     #: un cliente que sólo escuchase el flujo no lo vería nunca, y es justo lo que quiere
     #: saber quien pregunta por qué su objetivo no se planificó.
     shape: JSONObject | None = None
+    #: El encargo vigente y su historia. Vive en el run y no en el bucle porque quien lo
+    #: revisa habla con el servicio, no con el bucle, y el bucle puede estar dentro de una
+    #: llamada al modelo cuando llega el cambio.
+    goal: GoalBoard | None = None
     #: The tail of this run's event stream, newest last. Ordering here is the ordering the
     #: bus published in, which is what makes "preserve order per run" a property of the
     #: transport rather than a hope about scheduling.
@@ -373,6 +378,27 @@ class RunRegistry:
                 continue
             tools.append(tool)
         return tuple(tools)
+
+    def revise_goal(self, run_id: str, text: str, *, base_revision: int, reason: str = "") -> Goal:
+        """Cambiar el encargo de un run que sigue trabajando.
+
+        Sincrono a proposito: escribir la revision es inmediato, y cuando la recoge quien
+        trabaja es otra pregunta —la contesta el evento `goal.revised`— que el cliente
+        necesita poder distinguir. Prometerle que ya se esta aplicando seria comodo y
+        falso: el bucle puede estar a mitad de una llamada al modelo.
+        """
+        run = self._require(run_id)
+        if run.finished:
+            raise ToolValidationError(f"El run {run_id} ya termino: su objetivo no cambia")
+        if run.goal is None:  # pragma: no cover - todo run vivo se crea con tablero
+            raise ToolValidationError(f"El run {run_id} no admite revisiones")
+        return run.goal.revise(text, base_revision=base_revision, reason=reason)
+
+    def goal_of(self, run_id: str) -> GoalBoard:
+        run = self._require(run_id)
+        if run.goal is None:  # pragma: no cover - todo run vivo se crea con tablero
+            raise ToolValidationError(f"El run {run_id} no tiene objetivo registrado")
+        return run.goal
 
     def verification_for(self, options: RunOptions, workspace: Workspace) -> VerificationPolicy:
         """Como se prueba que el trabajo esta hecho, segun para que se use Athena.
@@ -588,7 +614,15 @@ class RunRegistry:
             if result is not None:
                 return _from_graph(run_id, workspace, result)
         loop = self._build(run_id, workspace, options, notes)
-        return await loop.run(objective, workspace, source.token, session_id=run_id)
+        return await loop.run(
+            objective,
+            workspace,
+            source.token,
+            session_id=run_id,
+            # El mismo tablero que ve el servicio: dos copias serian dos objetivos, y el
+            # cliente estaria revisando uno que nadie lee.
+            goal=self._runs[run_id].goal,
+        )
 
     async def start(
         self, objective: str, workspace: Workspace, options: RunOptions | None = None
@@ -612,7 +646,7 @@ class RunRegistry:
         shape = self.orchestrator.decide(workspace, objective, mode=settings.execution_mode)
         run_id = str(uuid4())
         source = CancellationSource()
-        self._runs[run_id] = LiveRun(run_id, workspace, settings, source)
+        self._runs[run_id] = LiveRun(run_id, workspace, settings, source, goal=GoalBoard(objective))
 
         started = asyncio.Event()
 
