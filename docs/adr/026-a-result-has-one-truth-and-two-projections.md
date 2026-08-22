@@ -88,6 +88,14 @@ those tools exist.
 The views travel in `ToolResult.metadata`, not in `output`: putting a view inside `output`
 would leave the result failing its own schema.
 
+## Amendment (2026-08-22): a tool also declares how long it may take
+
+`ToolSpec.timeout_seconds` was added under ADR-030. A single executor-wide ceiling is a
+policy that cannot be true for every tool: a file read taking thirty seconds is broken, and
+a delegation that only gets thirty seconds never starts. It belongs with the rest of the
+contract for the same reason the output schema does — the tool knows, and the executor was
+guessing.
+
 ## Consequences
 
 - Every tool Athena owns now declares what it actually returns, and

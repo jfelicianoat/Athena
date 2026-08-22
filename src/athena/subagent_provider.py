@@ -21,7 +21,7 @@ from dataclasses import dataclass, field, replace
 from typing import Protocol, runtime_checkable
 
 from athena.cancellation import CancellationToken
-from athena.errors import AthenaRuntimeError
+from athena.errors import AthenaRuntimeError, ToolValidationError
 from athena.subagents import (
     SubagentBrief,
     SubagentBudget,
@@ -124,6 +124,36 @@ class SubagentStartRequest:
 
 
 @runtime_checkable
+class Continuable(Protocol):
+    """Lo que hace falta para volver a preguntarle al mismo delegado.
+
+    Aparte de `Delegator` a proposito: continuar exige recordar al hijo entre llamadas, y
+    no todo delegador puede —uno remoto o sin estado, por ejemplo—. Meterlo en el Protocol
+    principal obligaria a todos a declarar que saben hacerlo, y el que no supiera fallaria
+    al ejecutarlo en vez de al declararse.
+    """
+
+    async def follow_up(
+        self,
+        session_id: str,
+        question: str,
+        workspace: Workspace,
+        parent_cancellation: CancellationToken,
+        *,
+        parent_session_id: str = ...,
+    ) -> SubagentResult: ...
+
+    def follow_ups_left(self, session_id: str) -> int:
+        """Cuantas veces mas se le puede preguntar a ese delegado. Cero si ninguna.
+
+        Un numero y no la sesion entera: quien pregunta solo necesita decidir si le sale a
+        cuenta seguir con este o pedir otro, y devolverle el objeto le invitaria a tocar
+        cosas que no le tocan.
+        """
+        ...
+
+
+@runtime_checkable
 class Delegator(Protocol):
     """Lo que el ejecutor necesita saber de quien ejecuta tareas: que delega.
 
@@ -174,16 +204,19 @@ class NativeAthenaSubagentProvider:
     def capabilities(self) -> SubagentCapabilities:
         """What Athena delegates genuinely offer today.
 
-        `continuation` and `streaming` are false because they do not exist yet, and
-        claiming them would make this declaration a wish rather than a fact.
-        `isolated_workspace` is false for the same reason: delegates share a workspace and
-        the write lock is what keeps them apart, which is not isolation.
+        `continuation` era falso porque no existia, y declararlo habria sido un deseo en
+        vez de un hecho. Ahora existe —ver ADR-030— y sigue siendo un hecho: quien lo lea
+        puede volver a preguntarle a un delegado, dentro de su tope.
+
+        `streaming` sigue siendo falso por el mismo motivo por el que lo era.
+        `isolated_workspace` tambien: los delegados comparten workspace y lo que los separa
+        es el cerrojo de escritura, que no es aislamiento.
         """
         return SubagentCapabilities(
             structured_output=True,
             tool_filtering=True,
             isolated_workspace=False,
-            continuation=False,
+            continuation=True,
             cancellation=True,
             streaming=False,
             depth_limit=1,
@@ -198,6 +231,26 @@ class NativeAthenaSubagentProvider:
             parent_session_id=request.parent_session_id,
             budget=request.budget,
         )
+
+    async def follow_up(
+        self,
+        session_id: str,
+        question: str,
+        workspace: Workspace,
+        parent_cancellation: CancellationToken,
+        *,
+        parent_session_id: str = "",
+    ) -> SubagentResult:
+        return await self._runner.follow_up(
+            session_id,
+            question,
+            workspace,
+            parent_cancellation,
+            parent_session_id=parent_session_id,
+        )
+
+    def follow_ups_left(self, session_id: str) -> int:
+        return self._runner.follow_ups_left(session_id)
 
 
 class SubagentProviderRegistry:
@@ -216,6 +269,10 @@ class SubagentProviderRegistry:
     @property
     def names(self) -> tuple[str, ...]:
         return tuple(self._providers)
+
+    def all(self) -> tuple[SubagentProvider, ...]:
+        """Todos, en orden de registro, que es el orden de preferencia."""
+        return tuple(self._providers.values())
 
     def select(self, required: SubagentCapabilities) -> SubagentProvider:
         """The first provider that meets every requirement, or an error naming the gaps.
@@ -271,6 +328,45 @@ class SubagentService:
         )
         provider = self.registry.select(request.requires)
         return await provider.start(request)
+
+    async def follow_up(
+        self,
+        session_id: str,
+        question: str,
+        workspace: Workspace,
+        parent_cancellation: CancellationToken,
+        *,
+        parent_session_id: str = "",
+    ) -> SubagentResult:
+        """Volver a preguntarle a un delegado, sea de quien sea.
+
+        Se enruta al proveedor que declara saber continuar **y** que conoce a ese
+        delegado. Preguntarle al primero que dijera que si mandaria el seguimiento a quien
+        no tiene ni idea de quien es, y contestaria empezando de cero con la etiqueta de
+        otro.
+        """
+        proveedor = self._owner(session_id)
+        if proveedor is None:
+            raise ToolValidationError(f"Ningun proveedor reconoce al delegado {session_id}")
+        return await proveedor.follow_up(
+            session_id,
+            question,
+            workspace,
+            parent_cancellation,
+            parent_session_id=parent_session_id,
+        )
+
+    def follow_ups_left(self, session_id: str) -> int:
+        proveedor = self._owner(session_id)
+        return 0 if proveedor is None else proveedor.follow_ups_left(session_id)
+
+    def _owner(self, session_id: str) -> Continuable | None:
+        for provider in self.registry.all():
+            if not provider.capabilities().continuation:
+                continue
+            if isinstance(provider, Continuable) and provider.follow_ups_left(session_id) > 0:
+                return provider
+        return None
 
 
 def _required_for(role: SubagentRole) -> SubagentCapabilities:

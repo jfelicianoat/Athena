@@ -2,6 +2,10 @@
 
 - Status: Accepted
 - Date: 2026-08-18
+- Amended (2026-08-22): this ADR assumed a delegate answers once. ADR-030 allows a
+  bounded follow-up. The isolation and the budget survive intact — a follow-up keeps
+  the child's identity and **shares** its original budget rather than renewing it,
+  which is what keeps "continuable" from meaning "unbounded".
 
 ## Context
 

@@ -49,6 +49,15 @@ class ToolSpec:
     load_policy: ToolLoadPolicy = ToolLoadPolicy.CORE
     result_size_policy: ToolResultSizePolicy = ToolResultSizePolicy.INLINE_OR_EXTERNALIZE
     output_contract: OutputContract = OutputContract.ENFORCED
+    #: Cuanto puede tardar esta tool, si tarda mas que las demas. `None` = lo que diga el
+    #: ejecutor.
+    #:
+    #: Existe porque un solo numero para todas es una politica que no puede ser cierta
+    #: para todas: una lectura de fichero que tarde 30 s esta rota, y una delegacion que
+    #: solo dure 30 s no llega ni a empezar. Sin esto, el techo generico cortaba cualquier
+    #: tool larga y lo contaba como que la tool habia expirado, cuando lo que expiraba era
+    #: la paciencia de quien la llamaba.
+    timeout_seconds: float | None = None
     search_hint: str | None = None
 
     def __post_init__(self) -> None:
@@ -56,6 +65,8 @@ class ToolSpec:
             raise ValueError("Tool name and description must be non-empty")
         if self.max_result_size_chars <= 0:
             raise ValueError("max_result_size_chars must be positive")
+        if self.timeout_seconds is not None and self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive when declared")
 
 
 @dataclass(frozen=True, slots=True)

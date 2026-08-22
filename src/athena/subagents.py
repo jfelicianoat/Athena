@@ -29,7 +29,7 @@ from uuid import uuid4
 from athena.agent_loop import AgentLoop, AgentLoopConfig, AgentRunStatus
 from athena.cancellation import CancellationSource, CancellationToken
 from athena.context import ContextBuilder
-from athena.errors import AthenaRuntimeError, ToolValidationError
+from athena.errors import AthenaRuntimeError, BudgetExceededError, ToolValidationError
 from athena.events import EventBus, EventName, SubagentEvent
 from athena.models import ModelProvider
 from athena.permissions import (
@@ -61,12 +61,20 @@ class SubagentBudget:
     max_iterations: int = 6
     max_tool_calls: int = 30
     timeout_seconds: float = 300.0
+    #: Cuantas veces se le puede volver a preguntar al mismo delegado. Cero = lo de
+    #: siempre, una sola respuesta.
+    #:
+    #: Existe porque «continuable» sin tope es una factura sin tope con otro nombre: el
+    #: padre podria preguntar indefinidamente y cada vuelta cuesta llamadas al modelo.
+    max_follow_ups: int = 0
 
     def __post_init__(self) -> None:
         if self.max_iterations <= 0 or self.max_tool_calls <= 0:
             raise ValueError("Subagent budgets must be positive")
         if self.timeout_seconds <= 0:
             raise ValueError("Subagent timeout must be positive")
+        if self.max_follow_ups < 0:
+            raise ValueError("max_follow_ups no puede ser negativo")
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,7 +147,16 @@ EXPLORER_PROFILE = SubagentProfile(
     purpose="Investigate the repository and report what matters, changing nothing.",
     toolsets=EXPLORER_TOOLSET,
     policy=PermissionPolicy(allow_workspace_writes=False, allow_local_execution=False),
-    budget=SubagentBudget(max_iterations=8, max_tool_calls=40, timeout_seconds=300.0),
+    # Dos seguimientos, y solo el explorer los tiene. Es el delegado al que de verdad se
+    # le vuelve a preguntar —«has encontrado X, dime ahora Y sobre eso»— y el unico que no
+    # cambia nada, asi que preguntarle otra vez no puede empeorar el workspace.
+    #
+    # Un coder continuable seria otra cosa: una segunda instruccion sobre un cambio ya
+    # hecho es una edicion sin criterio de aceptacion nuevo, y eso es exactamente lo que
+    # ADR-015 no quiere. Que pida otra delegacion, con su criterio.
+    budget=SubagentBudget(
+        max_iterations=8, max_tool_calls=40, timeout_seconds=300.0, max_follow_ups=2
+    ),
     output_contract=(
         "Finish with a single JSON object and nothing else, using exactly these keys: "
         '{"relevant_files": [], "findings": [], "risks": [], "recommended_next_steps": []}. '
@@ -296,6 +313,57 @@ class SubagentResult:
         return VerifierReport.parse(self.answer)
 
 
+@dataclass(slots=True)
+class SubagentSession:
+    """Un delegado al que todavia se le puede volver a preguntar.
+
+    Guarda tres cosas y ninguna es la conversacion del hijo: su identidad, lo que ya
+    averiguo, y lo que le queda de presupuesto. Continuar un delegado es preguntarle otra
+    vez **con lo que ya sabia**, no revivir un proceso: lo segundo obligaria a mantener un
+    bucle vivo por delegado, y un padre olvidadizo dejaria agentes colgados.
+    """
+
+    session_id: str
+    role: SubagentRole
+    brief: SubagentBrief
+    budget: SubagentBudget
+    #: Lo que ha contestado hasta ahora, en orden. Es lo que le devuelve su propio
+    #: contexto cuando se le vuelve a preguntar.
+    answers: tuple[str, ...] = ()
+    tool_calls_spent: int = 0
+    follow_ups: int = 0
+    closed: bool = False
+
+    @property
+    def exhausted(self) -> bool:
+        return (
+            self.closed
+            or self.follow_ups >= self.budget.max_follow_ups
+            or self.tool_calls_spent >= self.budget.max_tool_calls
+        )
+
+    def remaining(self) -> SubagentBudget:
+        """Lo que le queda, no lo que tenia.
+
+        El presupuesto es del delegado y no de cada pregunta. Darle uno entero en cada
+        vuelta convertiria «continuable» en «tantos agentes como quieras, contados como
+        uno», que es la forma de saltarse el limite sin tocarlo.
+        """
+        return replace(
+            self.budget,
+            max_tool_calls=max(1, self.budget.max_tool_calls - self.tool_calls_spent),
+        )
+
+    def followed_up(self, result: SubagentResult) -> None:
+        self.follow_ups += 1
+        self.record(result)
+
+    def record(self, result: SubagentResult) -> None:
+        self.tool_calls_spent += len(result.tool_call_ids)
+        if result.answer:
+            self.answers = (*self.answers, result.answer)
+
+
 class SubagentRunner:
     """Builds and runs one isolated delegate at a time.
 
@@ -322,6 +390,10 @@ class SubagentRunner:
         self.profiles = dict(profiles or DEFAULT_PROFILES)
         # An unattended delegate that meets an ASK must stop, not guess.
         self.prompt = prompt or DenyingPermissionPrompt()
+        #: Los delegados a los que todavia se les puede preguntar. Viven lo que vive el
+        #: runner, que vive lo que vive el run: nadie tiene que acordarse de cerrarlos, y
+        #: por tanto nadie puede olvidarse.
+        self._sessions: dict[str, SubagentSession] = {}
 
     def profile_for(self, role: SubagentRole) -> SubagentProfile:
         try:
@@ -338,6 +410,7 @@ class SubagentRunner:
         *,
         parent_session_id: str = "",
         budget: SubagentBudget | None = None,
+        session_id: str | None = None,
     ) -> SubagentResult:
         profile = self.profile_for(role)
         limits = budget or profile.budget
@@ -374,7 +447,10 @@ class SubagentRunner:
         # mismo bus con su propia sesion, asi que quien mira sólo puede atribuirselos si
         # ya sabe cómo se llama: anunciarlo al final deja huérfano todo lo que hizo
         # mientras lo hacía, que es precisamente cuando alguien está mirando.
-        child_session_id = str(uuid4())
+        # Un seguimiento conserva la identidad del delegado: si se le diese un nombre
+        # nuevo, el registro enseñaria dos agentes donde hubo uno y el presupuesto
+        # compartido no cuadraria con nada.
+        child_session_id = session_id or str(uuid4())
         await self.event_bus.publish(
             SubagentEvent(
                 EventName.SUBAGENT_STARTED,
@@ -409,8 +485,105 @@ class SubagentRunner:
             commands_run=working.commands_run if working else (),
             tool_call_ids=run.tool_call_ids,
         )
+        if limits.max_follow_ups > 0 and result.session_id not in self._sessions:
+            # `not in` y no sobrescribir: un seguimiento pasa por aqui con el mismo id, y
+            # registrarlo de nuevo le pondria el contador a cero. Seria «tantas preguntas
+            # como quieras, contadas como una» — exactamente el limite que este contador
+            # existe para imponer, saltado por dentro y sin que nada lo dijese.
+            sesion = SubagentSession(
+                session_id=result.session_id,
+                role=role,
+                brief=brief,
+                budget=limits,
+            )
+            sesion.record(result)
+            self._sessions[result.session_id] = sesion
         await self._announce(result, parent_session_id)
         return result
+
+    def session(self, session_id: str) -> SubagentSession:
+        try:
+            return self._sessions[session_id]
+        except KeyError:
+            raise ToolValidationError(
+                f"No hay un delegado continuable con id {session_id}"
+            ) from None
+
+    def follow_ups_left(self, session_id: str) -> int:
+        sesion = self._sessions.get(session_id)
+        if sesion is None or sesion.closed:
+            return 0
+        return max(0, sesion.budget.max_follow_ups - sesion.follow_ups)
+
+    def close(self, session_id: str) -> None:
+        """Dar por terminado un delegado antes de que se agote."""
+        sesion = self._sessions.get(session_id)
+        if sesion is not None:
+            sesion.closed = True
+
+    async def follow_up(
+        self,
+        session_id: str,
+        question: str,
+        workspace: Workspace,
+        parent_cancellation: CancellationToken,
+        *,
+        parent_session_id: str = "",
+    ) -> SubagentResult:
+        """Volver a preguntarle al mismo delegado, con lo que ya sabia.
+
+        No es un delegado nuevo y no se cuenta como tal: conserva su identidad —asi que
+        todo lo que publique sigue atribuyendose a el— y **comparte su presupuesto**. Lo
+        contrario seria «tantos agentes como quieras, contados como uno».
+        """
+        sesion = self.session(session_id)
+        if not question.strip():
+            raise ToolValidationError("Una pregunta de seguimiento no puede estar vacia")
+        if sesion.closed:
+            raise ToolValidationError(f"El delegado {session_id} ya esta cerrado")
+        if sesion.follow_ups >= sesion.budget.max_follow_ups:
+            raise BudgetExceededError(
+                f"El delegado {session_id} agoto sus {sesion.budget.max_follow_ups} "
+                "preguntas de seguimiento",
+                details={"session_id": session_id, "follow_ups": sesion.follow_ups},
+            )
+        if sesion.tool_calls_spent >= sesion.budget.max_tool_calls:
+            raise BudgetExceededError(
+                f"El delegado {session_id} agoto su presupuesto de herramientas",
+                details={"session_id": session_id, "tool_calls": sesion.tool_calls_spent},
+            )
+        await self.event_bus.publish(
+            SubagentEvent(
+                EventName.SUBAGENT_CONTINUED,
+                parent_session_id,
+                {
+                    "role": sesion.role.value,
+                    "session_id": sesion.session_id,
+                    "follow_up": sesion.follow_ups + 1,
+                    "question": question,
+                    "tool_calls_spent": sesion.tool_calls_spent,
+                },
+                sesion.session_id,
+            )
+        )
+        continuado = replace(
+            sesion.brief,
+            objective=question.strip(),
+            # Lo que ya averiguo entra como hallazgos suyos, no como contexto ajeno: es lo
+            # que hace que continuar sea barato frente a empezar otro delegado de cero.
+            findings=(*sesion.brief.findings, *sesion.answers),
+        )
+        resultado = await self.delegate(
+            sesion.role,
+            continuado,
+            workspace,
+            parent_cancellation,
+            parent_session_id=parent_session_id,
+            budget=sesion.remaining(),
+            session_id=sesion.session_id,
+        )
+        sesion.followed_up(resultado)
+        return resultado
 
     async def _announce(self, result: SubagentResult, parent_session_id: str) -> None:
         names = {

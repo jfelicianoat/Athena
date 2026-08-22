@@ -457,6 +457,10 @@ class BashTool:
             "required": ["argv", "cwd", "exit_code", "stdout", "stderr"],
             "additionalProperties": False,
         },
+        # Lo que un comando puede pedir como maximo, mas margen para arrancar y matar el
+        # arbol de procesos. Sin esto, el techo generico del ejecutor cortaba a los 30 s
+        # cualquier comando mas largo y lo contaba como que la tool habia expirado.
+        timeout_seconds=660.0,
         risk=RiskLevel.HIGH,
         max_result_size_chars=16_000,
         search_hint="run a local verification such as the test suite",

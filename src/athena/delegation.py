@@ -25,13 +25,15 @@ from dataclasses import dataclass, replace
 from athena.cancellation import CancellationToken
 from athena.errors import ToolValidationError
 from athena.permissions import PermissionPolicy, PermissionRequest, RiskLevel, RiskTier
-from athena.subagent_provider import Delegator
+from athena.subagent_provider import Continuable, Delegator
 from athena.subagents import (
     DEFAULT_PROFILES,
     SubagentBrief,
     SubagentProfile,
+    SubagentResult,
     SubagentRole,
 )
+from athena.tool_projection import DisplayView, ModelView, ResultKind, ToolProjection
 from athena.tools import Tool, ToolContext, ToolLoadPolicy, ToolResult, ToolSpec
 from athena.types import JSONObject, JSONSchema
 from athena.workspace import Workspace
@@ -82,6 +84,12 @@ class DelegationRequest:
     expected_output: str = ""
     acceptance_criteria: tuple[str, ...] = ()
     context_refs: tuple[str, ...] = ()
+    #: A quien se le vuelve a preguntar, si esto es un seguimiento y no un encargo nuevo.
+    follow_up_to: str = ""
+
+    @property
+    def is_follow_up(self) -> bool:
+        return bool(self.follow_up_to)
 
     def brief(self) -> SubagentBrief:
         constraints = (f"Expected output: {self.expected_output}",) if self.expected_output else ()
@@ -156,6 +164,13 @@ _SCHEMA: JSONSchema = {
             "description": "Files the delegate should start from. It does not see this "
             "conversation, so anything it needs must be named here.",
         },
+        "follow_up_to": {
+            "type": "string",
+            "description": "The delegate_session_id of a delegate you already used, to "
+            "ask it one more thing. It keeps what it already found out and shares its "
+            "original budget, so this is cheaper than delegating again — but it can only "
+            "be asked a limited number of times.",
+        },
     },
 }
 
@@ -170,6 +185,15 @@ def parse_delegation(arguments: JSONObject) -> DelegationRequest:
     goal = arguments.get("goal")
     if not isinstance(goal, str) or not goal.strip():
         raise ToolValidationError("delegate_task needs a goal")
+    seguimiento = arguments.get("follow_up_to")
+    if isinstance(seguimiento, str) and seguimiento.strip():
+        # Un seguimiento no vuelve a declarar rol ni criterios: el delegado ya los tiene,
+        # y pedirselos otra vez invitaria a cambiarselos por la puerta de atras.
+        return DelegationRequest(
+            goal=goal.strip(),
+            role=SubagentRole.EXPLORER,
+            follow_up_to=seguimiento.strip(),
+        )
     raw_role = arguments.get("role")
     try:
         role = SubagentRole(raw_role) if isinstance(raw_role, str) else None
@@ -203,11 +227,27 @@ _OUTPUT_SCHEMA: JSONSchema = {
     "type": "object",
     "properties": {
         "role": {"type": "string"},
-        "outcome": {"type": "string"},
+        "status": {"type": "string"},
         "summary": {"type": "string"},
         "files_changed": {"type": "array", "items": {"type": "string"}},
+        "commands_run": {"type": "array", "items": {"type": "string"}},
+        # Sin esto el modelo no puede volver a preguntarle: tendria un delegado
+        # continuable y ninguna forma de nombrarlo.
+        "delegate_session_id": {"type": "string"},
+        "follow_ups_left": {"type": "integer"},
     },
+    "required": ["role", "status", "summary", "delegate_session_id"],
+    "additionalProperties": False,
 }
+
+#: Cuanto se le deja a una delegacion, derivado de lo que dura el delegado mas largo.
+#:
+#: Derivado y no escrito a mano: si alguien sube el presupuesto de un perfil, este techo
+#: sube con el. Escribirlo aparte lo dejaria por debajo en cuanto cambiase el otro, y una
+#: delegacion cortada por el reloj del que llama se lee como un delegado que fallo.
+_DELEGATION_TIMEOUT = (
+    max(profile.budget.timeout_seconds for profile in DEFAULT_PROFILES.values()) + 60.0
+)
 
 DELEGATE_TASK_SPEC = ToolSpec(
     name=DELEGATE_TASK_NAME,
@@ -221,6 +261,7 @@ DELEGATE_TASK_SPEC = ToolSpec(
     risk=RiskLevel.MEDIUM,
     #: A delegate's answer is a summary, not a transcript, so it stays small by design.
     max_result_size_chars=8_000,
+    timeout_seconds=_DELEGATION_TIMEOUT,
     load_policy=ToolLoadPolicy.CORE,
     search_hint="delegate subagent explorer coder verifier task",
 )
@@ -317,15 +358,18 @@ class DelegateTaskTool:
         cancellation: CancellationToken,
     ) -> ToolResult:
         request = parse_delegation(arguments)
-        confined = self._confined(arguments)
-        result = await self._delegator.delegate(
-            request.role,
-            request.brief(),
-            context.workspace,
-            cancellation,
-            parent_session_id=context.session_id,
-            budget=confined.budget,
-        )
+        if request.is_follow_up:
+            result = await self._continue(request, context, cancellation)
+        else:
+            confined = self._confined(arguments)
+            result = await self._delegator.delegate(
+                request.role,
+                request.brief(),
+                context.workspace,
+                cancellation,
+                parent_session_id=context.session_id,
+                budget=confined.budget,
+            )
         return ToolResult(
             {
                 "role": result.role.value,
@@ -333,7 +377,90 @@ class DelegateTaskTool:
                 "summary": result.answer or "",
                 "files_changed": list(result.files_modified),
                 "commands_run": list(result.commands_run),
+                "delegate_session_id": result.session_id,
+                "follow_ups_left": self._follow_ups_left(result.session_id),
             }
+        )
+
+    async def _continue(
+        self,
+        request: DelegationRequest,
+        context: ToolContext,
+        cancellation: CancellationToken,
+    ) -> SubagentResult:
+        """Volver a preguntarle a un delegado que ya trabajo.
+
+        No se recorta otra vez el perfil: el delegado ya existe con la autoridad que se le
+        concedio, y recalcularla aqui abriria la puerta a que un seguimiento obtuviera mas
+        de lo que obtuvo el encargo original.
+        """
+        if not isinstance(self._delegator, Continuable):
+            raise ToolValidationError(
+                "Este despliegue no puede continuar delegados: pide uno nuevo"
+            )
+        return await self._delegator.follow_up(
+            request.follow_up_to,
+            request.goal,
+            context.workspace,
+            cancellation,
+            parent_session_id=context.session_id,
+        )
+
+    def _follow_ups_left(self, session_id: str) -> int:
+        """Cuantas veces mas se le puede preguntar. Cero si no es continuable.
+
+        Se le dice al modelo porque es lo que decide si le sale a cuenta seguir con este o
+        pedir otro, y porque un limite que no se ve se descubre chocando con el.
+        """
+        if not isinstance(self._delegator, Continuable):
+            return 0
+        return self._delegator.follow_ups_left(session_id)
+
+    def project(self, result: ToolResult) -> ToolProjection:
+        """Lo que el delegado contesto, y como volver a preguntarle.
+
+        El caso general miraba la primera lista del resultado —`files_changed`— y decidia
+        que eso era lo que habia que enumerar. Para un explorer, que no cambia ficheros,
+        eso significa una lista vacia: al modelo se le devolvia «(sin resultados)» despues
+        de una delegacion que habia ido bien y traia hallazgos. Se vio en un run real, y
+        es exactamente para esto para lo que existe esta costura.
+        """
+        salida = result.output if isinstance(result.output, dict) else {}
+        resumen = str(salida.get("summary") or "")
+        ficheros = salida.get("files_changed")
+        ficheros = ficheros if isinstance(ficheros, list) else []
+        hijo = str(salida.get("delegate_session_id") or "")
+        quedan = salida.get("follow_ups_left")
+        quedan = quedan if isinstance(quedan, int) else 0
+        lineas = [
+            f"The {salida.get('role', 'delegate')} reported ({salida.get('status')}):",
+            resumen,
+        ]
+        if ficheros:
+            lineas.append("Files it changed: " + ", ".join(str(item) for item in ficheros))
+        if quedan > 0 and hijo:
+            # Solo si de verdad quedan: ofrecerselo cuando no puede usarlo le haria
+            # gastar una llamada en descubrir que no.
+            lineas.append(
+                f"You can ask this same delegate {quedan} more question(s) with "
+                f'delegate_task using follow_up_to="{hijo}". It keeps what it already '
+                "found out and shares its original budget."
+            )
+        return ToolProjection(
+            model=ModelView("\n".join(item for item in lineas if item)),
+            display=DisplayView(
+                kind=ResultKind.RECORD,
+                title=f"{salida.get('role', 'delegate')} · {salida.get('status', '')}".strip(),
+                summary=resumen.splitlines()[0][:200] if resumen else "",
+                items=tuple(str(item) for item in ficheros),
+                facts={
+                    "role": salida.get("role"),
+                    "status": salida.get("status"),
+                    "delegate_session_id": hijo,
+                    "follow_ups_left": quedan,
+                    "files_changed": len(ficheros),
+                },
+            ),
         )
 
     def _confined(self, arguments: JSONObject) -> SubagentProfile:

@@ -68,6 +68,10 @@ class EventName(StrEnum):
     #: contarlo como tal culparía a la tarea equivocada.
     TASK_BLOCKED = "task.blocked"
     SUBAGENT_STARTED = "subagent.started"
+    #: Se le vuelve a preguntar al mismo delegado, con lo que ya sabia. No es un
+    #: delegado nuevo: contarlo como tal inflaria el numero de agentes de un run y
+    #: escondería que el presupuesto es compartido.
+    SUBAGENT_CONTINUED = "subagent.continued"
     SUBAGENT_COMPLETED = "subagent.completed"
     SUBAGENT_FAILED = "subagent.failed"
     SUBAGENT_CANCELLED = "subagent.cancelled"

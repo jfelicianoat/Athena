@@ -71,6 +71,7 @@ DURABLE: frozenset[EventName] = frozenset(
         # además lo que permite atribuir todo lo que publique el hijo. Quitarlos de aquí
         # no ahorraría filas, dejaría sin autor a las que quedasen.
         EventName.SUBAGENT_STARTED,
+        EventName.SUBAGENT_CONTINUED,
         EventName.SUBAGENT_COMPLETED,
         EventName.SUBAGENT_FAILED,
         EventName.SUBAGENT_CANCELLED,

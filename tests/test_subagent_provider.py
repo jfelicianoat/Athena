@@ -252,7 +252,11 @@ def test_the_service_delegates_to_whoever_qualifies(tmp_path: Path) -> None:
 def test_the_native_provider_declares_what_athena_actually_does(tmp_path: Path) -> None:
     """Lo que hoy es cierto, y nada más.
 
-    `continuation`, `streaming` e `isolated_workspace` son falsos porque no existen.
+    `continuation` era falso porque no existía. Ahora existe —se le puede volver a
+    preguntar a un delegado dentro de su tope, ADR-030— y por eso pasa a ser cierto:
+    la lista describe lo que hay, no lo que gustaría.
+
+    `streaming` e `isolated_workspace` siguen siendo falsos por el motivo original.
     Declararlos convertiría esta descripción en un deseo, y quien la consultara para
     decidir estaría decidiendo con un dato inventado.
     """
@@ -266,7 +270,7 @@ def test_the_native_provider_declares_what_athena_actually_does(tmp_path: Path) 
     assert capacidades.structured_output
     assert capacidades.tool_filtering
     assert capacidades.cancellation
-    assert not capacidades.continuation
+    assert capacidades.continuation
     assert not capacidades.streaming
     assert not capacidades.isolated_workspace
 

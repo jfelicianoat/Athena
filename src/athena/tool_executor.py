@@ -161,7 +161,10 @@ class ToolExecutor:
             result = await await_cancellable(
                 tool.execute(context, arguments, cancellation),
                 cancellation,
-                timeout=self.tool_timeout_seconds,
+                # Lo que la tool declare, y si no declara nada, el techo generico. Al
+                # reves —el generico siempre— una delegacion moria a los 30 s pasara lo
+                # que pasara, y el fallo se atribuia al delegado en vez de al reloj.
+                timeout=tool.spec.timeout_seconds or self.tool_timeout_seconds,
             )
             correlated = replace(result, call_id=call.call_id)
             # El contrato se comprueba sobre el resultado canonico, antes de externalizar:

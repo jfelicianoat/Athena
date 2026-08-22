@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from athena.cancellation import CancellationSource, CancellationToken
 from athena.errors import ToolContractError
 from athena.events import EventName, InMemoryEventBus, RuntimeEvent
@@ -236,3 +238,88 @@ def test_quien_no_dice_nada_queda_obligado() -> None:
     )
 
     assert spec.output_contract is OutputContract.ENFORCED
+
+
+def test_una_tool_larga_no_muere_por_el_reloj_generico(tmp_path: Path) -> None:
+    """Un solo numero para todas las tools no puede ser cierto para todas.
+
+    Lo destapo un run real: `delegate_task` arranca un bucle entero y el techo generico de
+    30 s lo cortaba siempre, asi que la herramienta no podia funcionar nunca contra un
+    modelo de verdad. Y el fallo se atribuia al delegado, no al reloj de quien llamaba.
+    """
+    import asyncio as _asyncio
+
+    class _Lenta(_Tool):
+        async def execute(
+            self, context: ToolContext, arguments: JSONObject, cancellation: CancellationToken
+        ) -> ToolResult:
+            del context, arguments
+            cancellation.raise_if_cancelled()
+            await _asyncio.sleep(0.05)
+            return ToolResult(self.devuelve)
+
+    lenta = _Lenta({"path": "a.py", "line_count": 1}, OutputContract.ENFORCED)
+    lenta.spec = ToolSpec(
+        name="declarada",
+        description="Tarda mas que el techo generico.",
+        input_schema={"type": "object", "additionalProperties": False},
+        output_schema=ESQUEMA,
+        risk=RiskLevel.LOW,
+        max_result_size_chars=10_000,
+        timeout_seconds=30.0,
+    )
+
+    eventos: list[RuntimeEvent] = []
+
+    async def scenario() -> ToolResult | Exception:
+        bus = InMemoryEventBus()
+        bus.subscribe(eventos.append)
+        executor = ToolExecutor(
+            ToolRegistry((lenta,)),
+            ReadOnlyPermissionEngine(),
+            InMemoryToolResultStore(),
+            bus,
+            # El techo generico, muy por debajo de lo que la tool declara necesitar.
+            tool_timeout_seconds=0.01,
+        )
+        try:
+            return await executor.execute(
+                ModelToolCall("c-1", "declarada", {}),
+                session_id="s-1",
+                workspace=Workspace.from_path(tmp_path),
+                cancellation=CancellationSource().token,
+            )
+        except Exception as error:
+            return error
+
+    resultado = _asyncio.run(scenario())
+
+    assert isinstance(resultado, ToolResult), (
+        "el techo generico corto una tool que habia declarado necesitar mas tiempo"
+    )
+
+
+def test_lo_declarado_tiene_que_ser_un_tiempo_de_verdad() -> None:
+    with pytest.raises(ValueError):
+        ToolSpec(
+            name="x",
+            description="x",
+            input_schema={},
+            output_schema={},
+            risk=RiskLevel.LOW,
+            max_result_size_chars=1,
+            timeout_seconds=0,
+        )
+
+
+def test_delegar_declara_un_reloj_que_le_da_para_delegar() -> None:
+    """Y derivado de los perfiles, para que suba solo si suben ellos."""
+    from athena.delegation import DELEGATE_TASK_SPEC
+    from athena.subagents import DEFAULT_PROFILES
+
+    mas_largo = max(p.budget.timeout_seconds for p in DEFAULT_PROFILES.values())
+
+    assert DELEGATE_TASK_SPEC.timeout_seconds is not None
+    assert DELEGATE_TASK_SPEC.timeout_seconds > mas_largo, (
+        "una delegacion cortada por el reloj de quien llama se lee como un delegado que fallo"
+    )

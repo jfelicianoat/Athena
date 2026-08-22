@@ -56,3 +56,5 @@ of rewritten history.
   [A profile declares what counts as done](028-a-profile-declares-what-counts-as-done.md)
 - ADR-029:
   [A goal can be revised, and the old evidence does not carry over](029-a-goal-can-be-revised-and-the-old-evidence-does-not-carry-over.md)
+- ADR-030:
+  [A delegate can be asked again, within its own budget](030-a-delegate-can-be-asked-again-within-its-own-budget.md)
