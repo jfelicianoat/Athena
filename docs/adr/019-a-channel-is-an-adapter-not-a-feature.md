@@ -64,6 +64,35 @@ retries, because it is the only side that knows what its service considers trans
 adapter wraps a third-party client and cannot subclass anything of Athena's; a fake that
 only worked by subclassing would be testing a shape nothing real has.
 
+## Implementation status (2026-08-22): the channel now starts
+
+The Telegram adapter shipped complete, tested, and with its wiring written as a snippet in
+its own docstring — which meant using it required copying that snippet into a script of
+your own. A subsystem that runs for nobody, documented as though it did.
+
+`python -m athena_telegram` starts it, **inside the service process and sharing its
+`RunRegistry`**. It could have been a separate process talking HTTP; it is not, because two
+processes would be two run registries, and a run started from Telegram would not exist for
+ChatyGPT or the other way round. `identity.py` exists precisely so that one person in both
+places is one person, and giving them two separate runtimes would contradict that on day
+one. Telegram is another mouth on the same service: same registry, same bus, same runs, so
+what is seen in one place can be cancelled from the other.
+
+Three environment variables are required and none has a default: the bot token, the
+allow-list of Telegram user ids, and a workspace per identity. A bot with no allow-list is
+an agent answering whoever writes to it, and since it now runs in the service process that
+would not be a misconfigured bot — it would be the whole runtime within reach of a
+stranger. A workspace granted to somebody the transport will not listen to is refused too:
+the two lists exist to fail independently, but that particular combination is a slip, not
+defence in depth — whoever wrote it believed they were granting access and did not.
+
+A run asked for from a chat writes but does not execute. The asymmetry is deliberate: a
+write lands in the workspace where it can be read, reverted and argued about, while a
+command can do anything the machine can. Nobody on a chat can answer a permission prompt —
+ADR-009 wants a person deciding about a specific action — so anything left at ASK is
+refused, and handing over execution for convenience would grant the most dangerous
+capability over the channel with the weakest identity.
+
 ## Consequences
 
 The boundary shipped before any channel did, which is the whole point. `athena_telegram`
