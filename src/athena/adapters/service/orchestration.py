@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 
 from athena.cancellation import CancellationScope, CancellationToken, chained_source
+from athena.checkpoints import CheckpointStore
 from athena.delegation import confine
 from athena.diagnosis import diagnose_result, inconclusive_reason
 from athena.errors import (
@@ -37,6 +38,7 @@ from athena.errors import (
 from athena.events import EventBus, EventName, RuntimeEvent
 from athena.graph_executor import GraphExecutor, GraphResult
 from athena.graph_store import SqliteGraphStore, StoredPlan
+from athena.hooks import HookRegistry
 from athena.models import ModelProvider
 from athena.permissions import PermissionPolicy, PermissionPrompt
 from athena.planning import (
@@ -56,6 +58,7 @@ from athena.project_memory import (
     VerificationState,
     render_for_context,
 )
+from athena.rollback import RollbackLedger, checkpointing_hook
 from athena.scouting import RepositoryScout, merge
 from athena.session_store import SessionRecord, SessionStore
 from athena.state import AgentStatus, ExecutionOutcome
@@ -103,6 +106,10 @@ class OrchestrationSettings:
     limits: PlanningLimits = field(default_factory=PlanningLimits)
     policy: DecompositionPolicy = field(default_factory=DecompositionPolicy)
     memory: SqliteProjectMemory | None = None
+    #: Donde se guardan las copias previas a una escritura, si el despliegue quiere poder
+    #: deshacer. Sin ella no se copia nada y no hay nada que deshacer, que es exactamente
+    #: lo que pasaba antes: `rollback.py` existia entero y no lo importaba nadie.
+    checkpoints: CheckpointStore | None = None
     graphs: SqliteGraphStore | None = None
     board: PlanBoard | None = None
     #: Cuánto puede durar una tarea del plan, si el despliegue lo sabe mejor que el
@@ -221,6 +228,7 @@ class Orchestrator:
         self.result_store = result_store
         self.settings = settings or OrchestrationSettings()
         self.scout = RepositoryScout()
+        self._ledgers: dict[str, RollbackLedger] = {}
 
     # -- the decision ------------------------------------------------------
 
@@ -343,6 +351,20 @@ class Orchestrator:
             )
         except AthenaRuntimeError as error:
             _logger.warning("memory.propose_failed code=%s", error.code)
+
+    def ledger_for(self, run_id: str) -> RollbackLedger | None:
+        """El libro de deshacer de un run, creado la primera vez que se pide.
+
+        Uno por run y no uno global: un rollback de run tiene que poder deshacer todo lo
+        de ese run y nada de los demas, y un libro compartido no sabria donde acaba uno.
+        """
+        if self.settings.checkpoints is None:
+            return None
+        libro = self._ledgers.get(run_id)
+        if libro is None:
+            libro = RollbackLedger(self.settings.checkpoints)
+            self._ledgers[run_id] = libro
+        return libro
 
     async def learn_from(
         self, project_id: str, verification: VerificationResult | None, run_id: str
@@ -579,6 +601,7 @@ class Orchestrator:
             )
             for role, profile in DEFAULT_PROFILES.items()
         }
+        libro = self.ledger_for(run_id)
         runner = SubagentRunner(
             self.provider,
             catalog,
@@ -586,6 +609,9 @@ class Orchestrator:
             self.result_store,
             profiles=profiles,
             prompt=prompt,
+            # Los ganchos bajan al hijo: en un run jerarquico las escrituras pasan ahi, y
+            # unos ganchos que se quedasen arriba no verian ni una sola escritura del run.
+            hooks=None if libro is None else HookRegistry((checkpointing_hook(libro, workspace),)),
         )
         executor = GraphExecutor(
             runner,
@@ -594,6 +620,7 @@ class Orchestrator:
             goal_verification=verification,
             board=self.settings.board,
             store=self.settings.graphs,
+            rollback=libro,
         )
         # A scope of its own so cancelling the run stops the plan, while a subgraph giving
         # up does not read as the user having cancelled the whole thing.

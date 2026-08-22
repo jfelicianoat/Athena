@@ -39,6 +39,7 @@ from athena.git_tools import GitCommitTool, git_read_tools
 from athena.goals import Goal, GoalBoard
 from athena.graph_executor import GraphResult
 from athena.graph_store import StoredPlan
+from athena.hooks import HookRegistry
 from athena.metrics import MetricsCollector, SqliteMetricsStore
 from athena.models import ModelProvider
 from athena.mutation_tools import workspace_mutation_tools
@@ -47,6 +48,7 @@ from athena.process_tools import BashTool
 from athena.profiles import Evidence, ProfileRegistry
 from athena.registry import ToolRegistry
 from athena.repository_tools import repository_read_tools
+from athena.rollback import checkpointing_hook
 from athena.run_event_log import RunEventLog
 from athena.security import redact_sensitive
 from athena.session_store import SessionRecord, SessionStore
@@ -400,6 +402,19 @@ class RunRegistry:
             raise ToolValidationError(f"El run {run_id} no tiene objetivo registrado")
         return run.goal
 
+    def _hooks_for(self, run_id: str, workspace: Workspace) -> HookRegistry:
+        """Lo que se engancha a las acciones de un run. Hoy: copiar antes de editar.
+
+        En `PRE_EDIT` y no al empezar una tarea: un plan real casi nunca nombra los
+        ficheros que va a tocar, asi que copiar «lo que la tarea declaro» dejaba sin copia
+        justo los runs que mas la necesitaban. Se vio en un run real contra el broker, que
+        arreglo un bug y no dejo un solo punto al que volver.
+        """
+        libro = self.orchestrator.ledger_for(run_id)
+        if libro is None:
+            return HookRegistry()
+        return HookRegistry((checkpointing_hook(libro, workspace),))
+
     def verification_for(self, options: RunOptions, workspace: Workspace) -> VerificationPolicy:
         """Como se prueba que el trabajo esta hecho, segun para que se use Athena.
 
@@ -485,6 +500,7 @@ class RunRegistry:
             self.result_store,
             self.event_bus,
             prompt=prompt,
+            hooks=self._hooks_for(run_id, workspace),
         )
         return AgentLoop(
             self.provider,
@@ -788,6 +804,10 @@ class RunRegistry:
 
     def live_ids(self) -> tuple[str, ...]:
         return tuple(self._runs)
+
+    def run(self, run_id: str) -> LiveRun:
+        """El run vivo con ese id, o un error que lo dice."""
+        return self._require(run_id)
 
     def _require(self, run_id: str) -> LiveRun:
         run = self._runs.get(run_id)

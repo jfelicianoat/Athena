@@ -49,6 +49,7 @@ from athena.errors import (
 from athena.identity import IdentityDirectory
 from athena.permissions import PermissionDecision
 from athena.project_memory import SqliteProjectMemory, VerificationState
+from athena.rollback import RollbackScope
 from athena.run_event_log import replay
 from athena.tools import ToolResultReference
 from athena.types import JSONObject
@@ -333,6 +334,10 @@ class AthenaService:
             return Response(200, self.registry.goal_of(run_id).to_json())
         if (run_id := _match(path, "/v1/runs/{}/goal")) and method == "POST":
             return self._revise_goal(run_id, request)
+        if (run_id := _match(path, "/v1/runs/{}/rollback")) and method == "GET":
+            return self._rollback_points(run_id)
+        if (run_id := _match(path, "/v1/runs/{}/rollback")) and method == "POST":
+            return await self._rollback(run_id, request)
         if (run_id := _match(path, "/v1/runs/{}/cancel")) and method == "POST":
             await self.registry.cancel(run_id)
             return Response(202, {"run_id": run_id, "cancelling": True})
@@ -572,6 +577,44 @@ class AthenaService:
                 "applied": False,
             },
         )
+
+    def _rollback_points(self, run_id: str) -> Response:
+        """Que se podria deshacer de este run, sin deshacer nada."""
+        libro = self.registry.orchestrator.ledger_for(run_id)
+        if libro is None:
+            return Response(
+                404, error_to_json("rollback_disabled", "This deployment takes no checkpoints")
+            )
+        return Response(
+            200,
+            {"run_id": run_id, "points": [punto.to_json() for punto in libro.points()]},
+        )
+
+    async def _rollback(self, run_id: str, request: Request) -> Response:
+        """Deshacer lo que este run escribio, y solo eso.
+
+        Se pide: nada se deshace por su cuenta. Un rollback automatico tiraria trabajo que
+        una persona podria querer mirar —lo dice `checkpoints.py` desde H2— y esta ruta es
+        lo que convierte esa decision en algo que alguien puede ejercer, en vez de en un
+        modulo entero que no importaba nadie.
+        """
+        libro = self.registry.orchestrator.ledger_for(run_id)
+        if libro is None:
+            return Response(
+                404, error_to_json("rollback_disabled", "This deployment takes no checkpoints")
+            )
+        payload = request.json()
+        crudo = payload.get("scope", RollbackScope.RUN.value)
+        try:
+            scope = RollbackScope(str(crudo))
+        except ValueError as exc:
+            raise ToolValidationError("scope must be one of task, subgraph, run") from exc
+        task_id = payload.get("task_id")
+        if task_id is not None and not isinstance(task_id, str):
+            raise ToolValidationError("task_id must be a string")
+        run = self.registry.run(run_id)
+        resultado = await libro.roll_back(run.workspace, task_id=task_id, scope=scope)
+        return Response(200, resultado.to_json())
 
     async def _history(self, run_id: str, request: Request) -> Response:
         """Lo que ocurrió en un run, leido del registro y no del run vivo.

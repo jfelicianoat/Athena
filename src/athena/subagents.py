@@ -31,6 +31,7 @@ from athena.cancellation import CancellationSource, CancellationToken
 from athena.context import ContextBuilder
 from athena.errors import AthenaRuntimeError, BudgetExceededError, ToolValidationError
 from athena.events import EventBus, EventName, SubagentEvent
+from athena.hooks import HookRegistry
 from athena.models import ModelProvider
 from athena.permissions import (
     DenyingPermissionPrompt,
@@ -382,6 +383,7 @@ class SubagentRunner:
         *,
         profiles: Mapping[SubagentRole, SubagentProfile] | None = None,
         prompt: PermissionPrompt | None = None,
+        hooks: HookRegistry | None = None,
     ) -> None:
         self.provider = provider
         self.catalog = dict(catalog)
@@ -390,6 +392,10 @@ class SubagentRunner:
         self.profiles = dict(profiles or DEFAULT_PROFILES)
         # An unattended delegate that meets an ASK must stop, not guess.
         self.prompt = prompt or DenyingPermissionPrompt()
+        #: Lo que se engancha a las acciones del hijo. Se hereda del padre a proposito: un
+        #: run jerarquico escribe **dentro** de sus delegados, asi que unos ganchos que
+        #: solo viviesen en el bucle de arriba no verian ni una sola escritura del run.
+        self.hooks = hooks
         #: Los delegados a los que todavia se les puede preguntar. Viven lo que vive el
         #: runner, que vive lo que vive el run: nadie tiene que acordarse de cerrarlos, y
         #: por tanto nadie puede olvidarse.
@@ -421,6 +427,7 @@ class SubagentRunner:
             self.result_store,
             self.event_bus,
             prompt=self.prompt,
+            hooks=self.hooks,
         )
         loop = AgentLoop(
             self.provider,

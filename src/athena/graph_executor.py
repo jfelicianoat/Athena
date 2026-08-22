@@ -42,6 +42,7 @@ from athena.errors import AthenaRuntimeError
 from athena.events import EventBus, EventName, RuntimeEvent
 from athena.graph_store import SqliteGraphStore
 from athena.planning import PlanBoard, PlanStatus, TaskGraph, TaskNode
+from athena.rollback import RollbackLedger
 from athena.state import ExecutionOutcome, SessionState, classify_outcome
 from athena.subagent_provider import Delegator
 from athena.subagents import SubagentBrief, SubagentResult, SubagentRole
@@ -151,8 +152,12 @@ class GraphExecutor:
         task_verification: VerificationPolicy | None = None,
         board: PlanBoard | None = None,
         store: SqliteGraphStore | None = None,
+        rollback: RollbackLedger | None = None,
         max_parallel_reads: int = 4,
     ) -> None:
+        #: El material para poder deshacer, si el despliegue lo quiere. No deshace nada:
+        #: copia antes de escribir y anota lo escrito, para que alguien pueda pedirlo.
+        self.rollback = rollback
         self.runner = runner
         self.manager = manager
         self.event_bus = event_bus
@@ -330,6 +335,11 @@ class GraphExecutor:
         # Quién estaba ya bloqueado antes de esta transición, para poder contar sólo a
         # quien bloquea ésta. El grafo hace la cascada por dentro y no publica: es núcleo y
         # no conoce el bus, que es como debe ser.
+        if self.rollback is not None and evidence.files_changed:
+            # Lo que la tarea escribio de verdad, no lo que se penso que tocaria: es la
+            # base de la unica promesa que hace un rollback —no tocar lo que no escribio
+            # este run— y una lista de intenciones no la sostendria.
+            self.rollback.record_written(node.id, evidence.files_changed)
         bloqueadas_antes = {item.id for item in graph.nodes if item.status is PlanStatus.BLOCKED}
         graph.transition(
             node.id,

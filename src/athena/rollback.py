@@ -17,6 +17,7 @@ one beside it, and undoing a run must undo everything under it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -24,6 +25,7 @@ from enum import StrEnum
 
 from athena.checkpoints import Checkpoint, CheckpointStore
 from athena.errors import AthenaRuntimeError
+from athena.hooks import Hook, HookContext, HookEvent, HookResult
 from athena.types import JSONObject
 from athena.workspace import Workspace
 
@@ -250,11 +252,61 @@ class RollbackLedger:
             self._written.clear()
 
 
+def checkpointing_hook(ledger: RollbackLedger, workspace: Workspace, *, task_id: str = "") -> Hook:
+    """Copiar un fichero justo antes de que lo editen.
+
+    Este es el sitio, y no el principio de una tarea. Un plan real casi nunca nombra los
+    ficheros que va a tocar, asi que copiar «lo que la tarea declaro» dejaba sin copia
+    exactamente los runs que mas la necesitaban — los que el modelo condujo por su cuenta.
+    `PRE_EDIT` sabe el fichero concreto y llega antes de la escritura, que son las dos
+    cosas que hacen falta.
+
+    Observacional, nunca bloqueante. Una copia que no se pudo hacer es una red de seguridad
+    que falta; convertirla en un veto sobre la edicion haria que un disco lleno impidiera
+    trabajar, lo cual es peor y ademas sorprendente.
+    """
+
+    async def copiar(context: HookContext) -> HookResult:
+        crudos = context.payload.get("resources")
+        rutas = (
+            [item for item in crudos if isinstance(item, str)] if isinstance(crudos, list) else []
+        )
+        relativas: list[str] = []
+        for ruta in rutas:
+            try:
+                relativas.append(workspace.relative(workspace.resolve(ruta, must_exist=False)))
+            except AthenaRuntimeError:
+                continue
+        if relativas:
+            with contextlib.suppress(AthenaRuntimeError, OSError):
+                await ledger.checkpoint(
+                    task_id or context.session_id,
+                    workspace,
+                    relativas,
+                    scope=RollbackScope.RUN if not task_id else RollbackScope.TASK,
+                    label=f"antes de editar {', '.join(relativas)}",
+                )
+            # Lo escrito se anota aqui tambien: el hook corre justo antes, asi que si la
+            # edicion falla lo peor que queda es una copia de mas. Al reves —anotarlo solo
+            # si sale bien— exigiria un segundo hook y dos sitios donde equivocarse.
+            ledger.record_written(task_id or context.session_id, relativas)
+        return HookResult()
+
+    return Hook(
+        name="rollback.checkpoint",
+        event=HookEvent.PRE_EDIT,
+        handler=copiar,
+        blocking=False,
+        order=10,
+    )
+
+
 __all__ = [
     "RollbackError",
     "RollbackLedger",
     "RollbackPoint",
     "RollbackResult",
     "RollbackScope",
+    "checkpointing_hook",
     "is_worth_checkpointing",
 ]

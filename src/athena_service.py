@@ -43,6 +43,7 @@ from athena.adapters.openai_compatible import OpenAICompatibleModelProvider
 from athena.adapters.service import AthenaService, RunRegistry, ServiceConfig
 from athena.adapters.service.launch import ServiceEndpoint, service_ready_line
 from athena.adapters.service.orchestration import OrchestrationSettings
+from athena.checkpoints import CheckpointStore
 from athena.events import InMemoryEventBus
 from athena.graph_store import SqliteGraphStore
 from athena.metrics import MetricsCollector, SqliteMetricsStore
@@ -240,11 +241,16 @@ def build_orchestration(settings: ServiceSettings) -> OrchestrationSettings:
     aporta algo a un run que no se descompone.
     """
     memory = SqliteProjectMemory(settings.state_dir / "memory.db")
+    # Fuera del workspace, siempre. Una copia de seguridad guardada dentro de lo que
+    # protege desaparece con ello, y las copias van al directorio de estado por el mismo
+    # motivo por el que no son commits: la red de seguridad no puede cambiar lo protegido.
+    checkpoints = CheckpointStore(settings.state_dir / "checkpoints")
     if not settings.planning:
-        return OrchestrationSettings(memory=memory)
+        return OrchestrationSettings(memory=memory, checkpoints=checkpoints)
     return OrchestrationSettings(
         planning=True,
         memory=memory,
+        checkpoints=checkpoints,
         graphs=SqliteGraphStore(settings.state_dir / "graphs.db"),
         board=PlanBoard(),
         task_timeout_seconds=settings.task_timeout_seconds,

@@ -60,3 +60,5 @@ of rewritten history.
   [A delegate can be asked again, within its own budget](030-a-delegate-can-be-asked-again-within-its-own-budget.md)
 - ADR-031:
   [Memory is earned, and it expires](031-memory-is-earned-and-it-expires.md)
+- ADR-032:
+  [Undoing is asked for, and scoped to what this run wrote](032-undoing-is-asked-for-and-scoped-to-what-this-run-wrote.md)
