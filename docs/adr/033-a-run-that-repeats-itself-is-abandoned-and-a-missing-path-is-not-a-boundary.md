@@ -65,12 +65,17 @@ will end the run — small models very often break out as soon as it is named. M
 a real run `nemotron-3.5-lightning:30b` was repeating `pytest`, got the warning, and on the
 very next turn made the edit that fixed the bug. On the fourth identical turn the run ends.
 
-**Before it ends, the work is verified once.** A model that loops on `pytest` after fixing
+**Before a run is abandoned, the work is verified once** — for stagnation and for running
+out of iterations alike. They are the same situation seen close up: the loop stops and
+there may be finished work on disk that nobody looked at. A model that loops on `pytest` after fixing
 the code has finished the job; what it cannot do is say so. Throwing that away reports a
 good, checkable result as a failure — measured on the same run, which left the tests green
-and was abandoned without ever verifying. So a run about to be abandoned for stagnation
-gets one pass through the *same* `_run_verification` the normal path uses, and completes
-only if that evidence permits completion. It is not a repair cycle and not a second chance
+and was abandoned without ever verifying. Measured again on the second door: a model that fixed the
+bug on iteration 9 spent the remaining three looking at it, and the run was reported as a
+failure having never verified once — that one was not stagnation, so the repetition rule
+did not cover it. So a run about to be abandoned gets one pass through the *same*
+`_run_verification` the normal path uses, and completes only if that evidence permits
+completion. It is not a repair cycle and not a second chance
 for the model: it is reading once what is already on disk before discarding it. A run that
 modified no file skips even that — there is nothing to check. This does not weaken ADR-006:
 completion still rests on evidence and never on the model saying "done", and here nothing

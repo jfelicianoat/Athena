@@ -585,3 +585,111 @@ def test_a_stuck_run_with_nothing_to_show_is_still_abandoned(tmp_path: Path) -> 
         assert (root / "calc.py").read_text(encoding="utf-8") == CALC_BROKEN
 
     asyncio.run(scenario())
+
+
+def test_a_run_that_runs_out_of_iterations_is_verified_before_being_thrown_away(
+    tmp_path: Path,
+) -> None:
+    """Quedarse sin presupuesto es otra forma de abandonar, y tiraba el trabajo igual.
+
+    Medido: `nemotron-3.5-lightning:30b` arreglo el bug en la iteracion 9 y gasto las que
+    quedaban mirandolo; el run se reporto como fallo sin haber verificado una sola vez.
+    No era estancamiento —cada turno era algo distinto—, asi que el rescate por repeticion
+    no lo cubria.
+    """
+    root = _sandbox(tmp_path, {"calc.py": CALC_BROKEN, "test_calc.py": CALC_TEST})
+
+    async def scenario() -> None:
+        arreglo = _call(
+            "fix-1",
+            "edit_file",
+            {"path": "calc.py", "old_string": "a - b", "new_string": "a + b"},
+        )
+        # Turnos distintos entre si —no hay repeticion que detectar— hasta agotar el
+        # presupuesto de tres iteraciones.
+        provider = FakeModelProvider(
+            [
+                arreglo,
+                _call("look-1", "read_file", {"path": "calc.py"}),
+                _call("look-2", "read_file", {"path": "test_calc.py"}),
+            ]
+        )
+        loop, workspace, source, _ = _runtime(
+            root, provider, config=AgentLoopConfig(retry_backoff_seconds=0, max_iterations=3)
+        )
+
+        result = await loop.run("Arregla calc.add", workspace, source.token)
+
+        assert result.status is AgentRunStatus.COMPLETED
+        assert result.verification is not None
+        assert result.verification.permits_completion
+        assert (root / "calc.py").read_text(encoding="utf-8") == CALC_FIXED
+
+    asyncio.run(scenario())
+
+
+def test_running_out_of_iterations_with_nothing_done_is_still_a_failure(
+    tmp_path: Path,
+) -> None:
+    """El rescate comprueba; no perdona."""
+    root = _sandbox(tmp_path, {"calc.py": CALC_BROKEN, "test_calc.py": CALC_TEST})
+
+    async def scenario() -> None:
+        provider = FakeModelProvider(
+            [
+                _call("look-1", "read_file", {"path": "calc.py"}),
+                _call("look-2", "read_file", {"path": "test_calc.py"}),
+                _call("look-3", "read_file", {"path": "AGENTS.md"}),
+            ]
+        )
+        loop, workspace, source, _ = _runtime(
+            root, provider, config=AgentLoopConfig(retry_backoff_seconds=0, max_iterations=3)
+        )
+
+        result = await loop.run("Arregla calc.add", workspace, source.token)
+
+        assert result.status is AgentRunStatus.FAILED
+        assert result.error is not None
+        assert result.error.code == "budget_exceeded"
+
+    asyncio.run(scenario())
+
+
+def test_cancelling_during_the_salvage_check_is_still_a_cancellation(tmp_path: Path) -> None:
+    """Pararlo a mitad del rescate no es «no se pudo comprobar»: es que lo pararon.
+
+    La regla 12 dice que la cancelacion se propaga entera. Tragarsela en el rescate la
+    convertiria en un `budget_exceeded`, que le echa la culpa al reloj de una decision que
+    tomo una persona.
+    """
+    root = _sandbox(tmp_path, {"calc.py": CALC_BROKEN, "test_calc.py": CALC_TEST})
+
+    async def scenario() -> None:
+        arreglo = _call(
+            "fix-1",
+            "edit_file",
+            {"path": "calc.py", "old_string": "a - b", "new_string": "a + b"},
+        )
+        provider = FakeModelProvider([arreglo, _call("look-1", "read_file", {"path": "calc.py"})])
+        loop, workspace, source, _ = _runtime(
+            root, provider, config=AgentLoopConfig(retry_backoff_seconds=0, max_iterations=2)
+        )
+
+        class _CancelaAlVerificar:
+            """Se cancela justo cuando el rescate va a reunir la evidencia."""
+
+            async def verify(self, state, workspace, cancellation):  # type: ignore[no-untyped-def]
+                del state, workspace
+                source.cancel()
+                cancellation.raise_if_cancelled()
+                raise AssertionError("no deberia llegar aqui")
+
+        loop.verification = _CancelaAlVerificar()
+
+        result = await loop.run("Arregla calc.add", workspace, source.token)
+
+        assert result.status is AgentRunStatus.CANCELLED
+        assert result.error is not None
+        assert result.error.code == "cancellation_requested"
+
+    asyncio.run(scenario())

@@ -482,6 +482,16 @@ class AgentLoop:
                 "iteration",
                 {"iteration": iteration, "repair_cycles": data.repair_cycles},
             )
+        # Quedarse sin iteraciones es otra forma de abandonar, y tira el trabajo igual: un
+        # modelo lento puede haber arreglado el codigo en la iteracion 9 y gastar las tres
+        # que quedan mirandolo. Medido: `nemotron-3.5-lightning:30b` dejo los tests en
+        # verde y el run se reporto como fallo sin haber verificado una sola vez.
+        #
+        # La misma comprobacion unica que en el estancamiento, y con la misma exigencia:
+        # solo termina si la evidencia da para terminar.
+        rescatado = await self._salvage(data, workspace, cancellation, budget)
+        if rescatado is not None:
+            return rescatado
         raise BudgetExceededError("Maximum agent iterations reached without completion")
 
     async def _hook(self, event: HookEvent, session_id: str, payload: JSONObject) -> None:
@@ -1101,7 +1111,9 @@ class AgentLoop:
     ) -> AgentRunResult | None:
         """Un ultimo intento de comprobar si el trabajo ya estaba hecho. Uno, no un ciclo.
 
-        Se llama cuando el run se va a abandonar por estancamiento. Corre la misma
+        Se llama cuando el run se va a abandonar: por estancamiento o por quedarse sin
+        iteraciones. Las dos son la misma situacion vista de cerca —el bucle se acaba y en
+        el disco puede haber un trabajo terminado que nadie ha mirado—. Corre la misma
         verificacion que el camino normal —el mismo `_run_verification`, no una version
         parecida— y solo termina el run si esa evidencia da para terminarlo.
 
@@ -1124,9 +1136,15 @@ class AgentLoop:
         )
         try:
             verification, _ = await self._run_verification(aviso, data, workspace, cancellation)
+        except (CancellationError, ProcessCancelledError):
+            # Que a alguien se le acabe la paciencia a mitad del rescate no es «el rescate
+            # no pudo comprobar nada»: es que pararon el run. La regla 12 dice que la
+            # cancelacion se propaga entera, y tragarsela aqui la convertiria en un
+            # `budget_exceeded` que le echa la culpa al reloj de una decision de alguien.
+            raise
         except AthenaRuntimeError:
             # Que la comprobacion de rescate no se pueda ejecutar no cambia el diagnostico
-            # original: el run seguia estancado y se abandona por eso, no por esto.
+            # original: el run seguia abandonado y se cierra por eso, no por esto.
             return None
         if not verification.permits_completion:
             return None
