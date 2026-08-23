@@ -26,6 +26,7 @@ from athena.adapters.service.approvals import (
 from athena.adapters.service.projections import session_to_json
 from athena.cancellation import CancellationToken
 from athena.events import EventName, InMemoryEventBus, ModelEvent, RuntimeEvent
+from athena.model_catalog import ModelCatalog
 from athena.models import (
     ModelCapabilities,
     ModelHealth,
@@ -271,6 +272,54 @@ def test_a_cancelled_run_withdraws_its_questions(tmp_path: Path) -> None:
         assert await asyncio.wait_for(task, timeout=5) is PermissionDecision.DENY
         # A late answer arriving after cancellation is refused, not applied.
         assert registry.resolve(published[0].request_id, PermissionDecision.ALLOW) is None
+
+    asyncio.run(scenario())
+
+
+def test_a_human_who_says_no_is_not_silence(tmp_path: Path) -> None:
+    """Un DENY escrito por una persona es la prueba mas directa de que la hay.
+
+    La cuenta mide ausencia, no desacuerdo. Antes solo un ALLOW la reiniciaba, asi que un
+    humano presente que denegaba entre dos esperas agotadas seguia acumulando, y a la
+    tercera se le mataba el run en la cara por «nadie va a contestar».
+    """
+    root = _sandbox(tmp_path / "repo")
+
+    async def scenario() -> None:
+        registry = ApprovalRegistry()
+        answer_this_one = False
+
+        def publish(pending: PendingApproval) -> None:
+            # Contestar dentro de `publish` deja el futuro resuelto antes de la primera
+            # espera: la persona responde, y el test no depende de ningun reloj.
+            if answer_this_one:
+                registry.resolve(pending.request_id, PermissionDecision.DENY)
+
+        prompt = RemotePermissionPrompt(
+            registry,
+            "run-1",
+            publish,
+            lambda: True,
+            delivery_timeout_seconds=0.05,
+            approval_timeout_seconds=0.05,
+            max_consecutive_timeouts=2,
+        )
+        request = _permission(Workspace.from_path(root))
+
+        # Nadie contesta: la cuenta sube.
+        assert await prompt.confirm(request) is PermissionDecision.DENY
+        assert prompt.consecutive_timeouts == 1
+
+        # Una persona contesta que no. Sigue habiendo alguien delante.
+        answer_this_one = True
+        assert await prompt.confirm(request) is PermissionDecision.DENY
+        assert prompt.consecutive_timeouts == 0
+
+        # Y por eso el siguiente silencio empieza a contar desde cero en vez de rematar
+        # el run: con la cuenta sin reiniciar, esta llamada habria abandonado.
+        answer_this_one = False
+        assert await prompt.confirm(request) is PermissionDecision.DENY
+        assert prompt.consecutive_timeouts == 1
 
     asyncio.run(scenario())
 
@@ -537,6 +586,79 @@ def test_a_client_can_ask_what_athena_is_offered_for(tmp_path: Path) -> None:
             assert {"software_engineering", "documents"} <= nombres
             documentos = next(i for i in payload["profiles"] if i["name"] == "documents")
             assert "does not establish" in documentos["proves"]
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
+def test_a_deployment_that_offers_no_model_choice_says_so(tmp_path: Path) -> None:
+    """404, no una lista vacia: «aqui no se elige» es una respuesta, no un fallo."""
+
+    async def scenario() -> None:
+        service = AthenaService(_registry(tmp_path, _ScriptedProvider([])), _config())
+        host, port = await service.start()
+        try:
+            status, body = await _request(host, port, "GET", "/v1/models")
+            assert status == 404
+            assert json.loads(body)["error"]["code"] == "models_fixed"
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
+def test_a_client_can_ask_which_models_it_may_choose(tmp_path: Path) -> None:
+    """Un selector no puede inventarse las opciones: tiene que preguntarlas."""
+
+    async def scenario() -> None:
+        registry = _registry(tmp_path, _ScriptedProvider([]))
+        registry.models = ModelCatalog(("qwen3.8:27b", "DeepSeek-V4-Pro"))
+        service = AthenaService(registry, _config())
+        host, port = await service.start()
+        try:
+            status, body = await _request(host, port, "GET", "/v1/models")
+            assert status == 200
+            payload = json.loads(body)
+            assert payload["default"] == "qwen3.8:27b"
+            assert [item["name"] for item in payload["models"]] == [
+                "qwen3.8:27b",
+                "DeepSeek-V4-Pro",
+            ]
+            assert [item["default"] for item in payload["models"]] == [True, False]
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
+def test_a_model_nobody_offers_is_refused_before_the_run_exists(tmp_path: Path) -> None:
+    """400 y no una caida silenciosa al de por defecto.
+
+    Quien elige un modelo y recibe otro no se entera hasta que el trabajo sale mal, y para
+    entonces ya ha pagado el run entero. Y se rechaza ANTES de decidir la forma, que gasta
+    una lectura del repositorio: cobrar por preparar un run ya invalido es cobrar de mas.
+    """
+    root = _sandbox(tmp_path / "repo")
+
+    async def scenario() -> None:
+        registry = _registry(tmp_path, _ScriptedProvider([]))
+        registry.models = ModelCatalog(("qwen3.8:27b",))
+        service = AthenaService(registry, _config())
+        host, port = await service.start()
+        try:
+            status, body = await _request(
+                host,
+                port,
+                "POST",
+                "/v1/runs",
+                body={"objective": "algo", "workspace": str(root), "model": "no-existe"},
+            )
+            assert status == 400
+            message = json.loads(body)["error"]["message"]
+            assert "no-existe" in message
+            assert "qwen3.8:27b" in message, "un rechazo tiene que decir que si se ofrece"
+            assert not registry._runs, "un run rechazado no puede quedarse vivo"
         finally:
             await service.stop()
 

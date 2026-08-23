@@ -416,7 +416,19 @@ class BashTool:
         policy: CommandPolicy | None = None,
         event_bus: EventBus | None = None,
         *,
-        default_timeout_seconds: float = 30.0,
+        # El techo entero, no un valor prudente. Un modelo que no dice cuanto puede tardar
+        # su comando no esta pidiendo que se le corte pronto: simplemente no lo ha pensado,
+        # y `pytest` en frio sobre un repositorio pequeño ya se pasa de treinta segundos.
+        # Medido: con el default anterior, uno de cada seis runs de `qwen3.8:27b` moria por
+        # esto —`process_timeout` sobre la suite— y el fallo no tenia nada que ver con el
+        # trabajo pedido. Quien sepa que su comando debe ser corto lo dice en
+        # `timeout_seconds`; quien no lo diga tiene el maximo.
+        #
+        # 600 y no 660: 660 es el techo del EJECUTOR (`ToolSpec.timeout_seconds`), que se
+        # deja deliberadamente por encima para que sobre margen al arrancar y al matar el
+        # arbol de procesos. Igualarlos haria que ganase el de fuera, y el fallo se leeria
+        # como «la tool expiro» en vez de decir que comando se paso y de cuanto.
+        default_timeout_seconds: float = 600.0,
         max_timeout_seconds: float = 600.0,
     ) -> None:
         if default_timeout_seconds <= 0 or max_timeout_seconds <= 0:

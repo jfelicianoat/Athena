@@ -482,3 +482,46 @@ def test_a_broker_that_never_finishes_is_given_up_on_in_real_time() -> None:
         assert broker.polls < 12
 
     asyncio.run(scenario())
+
+
+def test_a_deployment_preference_may_be_rerouted_but_a_run_s_choice_may_not() -> None:
+    """La diferencia entre nombrar un modelo y elegirlo.
+
+    El ajuste del despliegue se nombra sin imponerse: el broker es quien enruta y quien
+    sabe que hay caido. Una eleccion explicita de este run es otra cosa — un selector que
+    el broker puede ignorar en silencio no es un selector, y quien pidio un modelo y
+    recibio otro no se entera hasta que el trabajo sale mal.
+    """
+
+    async def scenario() -> None:
+        result: JSONObject = {"assistant_content": "listo", "usage": {}}
+
+        broker = _StubBroker(result)
+        broker._preferred_model = "modelo-del-despliegue"
+        await broker.complete(
+            ModelRequest(messages=(ModelMessage(ModelRole.USER, "hola"),)),
+            CancellationSource().token,
+        )
+        assert broker.submission is not None
+        requirements = broker.submission["model_requirements"]
+        assert requirements == {
+            "preferred_model": "modelo-del-despliegue",
+            "fallback_allowed": True,
+        }
+
+        chosen = _StubBroker(result)
+        chosen._preferred_model = "modelo-del-despliegue"
+        await chosen.complete(
+            ModelRequest(
+                messages=(ModelMessage(ModelRole.USER, "hola"),),
+                model="el-que-pidio-la-persona",
+            ),
+            CancellationSource().token,
+        )
+        assert chosen.submission is not None
+        assert chosen.submission["model_requirements"] == {
+            "preferred_model": "el-que-pidio-la-persona",
+            "fallback_allowed": False,
+        }
+
+    asyncio.run(scenario())

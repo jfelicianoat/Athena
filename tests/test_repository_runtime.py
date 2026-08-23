@@ -11,7 +11,7 @@ import pytest
 
 from athena.cancellation import CancellationSource
 from athena.context import ContextBuilder, ContextLimits
-from athena.errors import WorkspaceBoundaryError
+from athena.errors import WorkspaceBoundaryError, WorkspacePathNotFoundError
 from athena.events import EventName, InMemoryEventBus, RuntimeEvent
 from athena.logging import JsonFormatter
 from athena.models import ModelToolCall
@@ -38,6 +38,63 @@ def test_path_outside_workspace_is_rejected(tmp_path: Path) -> None:
         workspace.resolve("../outside.txt", must_exist=False)
     with pytest.raises(WorkspaceBoundaryError):
         workspace.resolve(Path(tmp_path.anchor) / "outside.txt", must_exist=False)
+
+
+def test_a_missing_path_inside_the_workspace_is_not_a_boundary_error(tmp_path: Path) -> None:
+    """Una errata no es un intento de cruzar el limite, y no puede contarse como tal.
+
+    Regresion de un run real: el modelo pidio `src/main.py` y `package.json` en un
+    workspace donde no existian, y Athena contesto «Workspace path is unavailable»
+    —el error de limite— con recuperacion ABORT. El modelo no podia corregirse porque
+    el mensaje describia otro problema, y la senal de seguridad quedaba diluida por
+    nombres de fichero mal adivinados.
+    """
+    workspace = Workspace.from_path(tmp_path)
+
+    with pytest.raises(WorkspacePathNotFoundError) as caught:
+        workspace.resolve("src/main.py")
+
+    assert not isinstance(caught.value, WorkspaceBoundaryError)
+    assert caught.value.code == "workspace_path_not_found"
+    assert "src/main.py" in caught.value.message
+
+
+def test_a_missing_path_outside_the_workspace_is_still_a_boundary_error(tmp_path: Path) -> None:
+    """El orden importa: primero el limite, y solo despues la existencia.
+
+    Contestar «no existe» a una ruta de fuera ya seria hablar de fuera.
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    workspace = Workspace.from_path(root)
+
+    with pytest.raises(WorkspaceBoundaryError):
+        workspace.resolve("../nothing-here.txt")
+
+
+def test_a_missing_path_is_reported_without_a_permission_decision(tmp_path: Path) -> None:
+    """No es una denegacion, asi que no puede publicarse como si lo fuera.
+
+    El ejecutor emitia `permission.resolved: deny` sin su `permission.requested`, y una
+    interfaz que empareje peticion con resolucion se queda con una resolucion huerfana.
+    """
+
+    async def scenario() -> None:
+        executor, workspace, _ = _executor(tmp_path)
+        events: list[RuntimeEvent] = []
+        executor.event_bus.subscribe(events.append)
+
+        with pytest.raises(WorkspacePathNotFoundError):
+            await executor.execute(
+                ModelToolCall("missing-1", "read_file", {"path": "src/main.py"}),
+                session_id="session",
+                workspace=workspace,
+                cancellation=CancellationSource().token,
+            )
+
+        assert not [event for event in events if event.name is EventName.PERMISSION_RESOLVED]
+
+    asyncio.run(scenario())
 
 
 def test_workspace_escape_resolves_permission_as_deny(tmp_path: Path) -> None:

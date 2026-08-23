@@ -154,7 +154,15 @@ def test_cada_diagnostico_cae_de_un_lado_o_del_otro_a_proposito() -> None:
     esperado = {
         FailureKind.CODE_ERROR: None,
         FailureKind.TEST_ERROR: None,
-        FailureKind.PREEXISTING_FAILURE: None,
+        # Cambió de lado el 23-ago-2026, y a propósito. Una comprobación que ya estaba
+        # en rojo y sigue en rojo no la rompió este run —eso no cambia— pero tampoco
+        # queda probada, así que parte del proyecto se quedó sin comprobar. Antes esto
+        # se reportaba como «todas las comprobaciones pasan», y un run que no tocó un
+        # solo fichero salía «completed» con los tests rojos. Ver ADR-035.
+        FailureKind.PREEXISTING_FAILURE: InconclusiveReason.PARTIAL_VERIFICATION,
+        # Un entregable que falta se comprobó: se miró si el fichero estaba y no estaba.
+        # Es un negativo firme, así que no lleva razón de inconcluso.
+        FailureKind.MISSING_DELIVERABLE: None,
         FailureKind.UNKNOWN: None,
         FailureKind.DEPENDENCY_ERROR: InconclusiveReason.DEPENDENCY_MISSING,
         FailureKind.ENVIRONMENT_ERROR: InconclusiveReason.ENVIRONMENT_INCOMPLETE,

@@ -57,8 +57,19 @@ def _pytest_command() -> str:
     return f'"{sys.executable}" -m pytest -q'
 
 
-def _session() -> SessionState:
-    return SessionState("session", "workspace", AgentState())
+def _session(*modified: str) -> SessionState:
+    """El estado que ve la verificacion.
+
+    `files_modified` va aparte del disco a proposito: la politica no adivina quien escribio
+    que mirando el arbol, se lo cuenta el run. Un test que toca un fichero y no lo declara
+    esta describiendo un run que no toco nada, que es un caso distinto y tambien real.
+    """
+    return SessionState(
+        "session",
+        "workspace",
+        AgentState(),
+        attributes={"files_modified": list(modified)} if modified else {},
+    )
 
 
 def _policy(root: Path) -> CommandVerificationPolicy:
@@ -177,7 +188,12 @@ def test_a_failure_introduced_after_the_baseline_fails_verification(tmp_path: Pa
 
 
 def test_a_pre_existing_failure_is_not_blamed_on_athena(tmp_path: Path) -> None:
-    """A repository that was already red must not make every run fail."""
+    """Un repositorio que ya estaba rojo no puede hacer fallar todos los runs.
+
+    Sigue siendo cierto. Lo que se anadio el 23-ago-2026 es que el veredicto ya no se
+    encabeza con «todas las comprobaciones pasan»: eran dos frases seguidas, una falsa y
+    otra verdadera, y la que lee una interfaz es la primera. Ver ADR-035.
+    """
     _repository(
         tmp_path,
         {
@@ -193,12 +209,55 @@ def test_a_pre_existing_failure_is_not_blamed_on_athena(tmp_path: Path) -> None:
         await policy.capture_baseline(workspace, token)
         (tmp_path / "unrelated.py").write_text("VALUE = 1\n", encoding="utf-8")
 
-        result = await policy.verify(_session(), workspace, token)
+        result = await policy.verify(_session("unrelated.py"), workspace, token)
 
-        assert result.status is VerificationStatus.PASSED
+        assert result.status is VerificationStatus.PASSED, (
+            "hizo trabajo y no rompio nada: eso si se puede afirmar"
+        )
         assert "already failing" in result.summary
+        assert not result.summary.startswith("All project checks pass"), (
+            "no puede encabezarse con una frase falsa; la que se lee es la primera"
+        )
         attributions = [item.metadata.get("attribution") for item in result.evidence]
         assert "pre_existing" in attributions
+
+    asyncio.run(scenario())
+
+
+def test_a_run_that_changed_nothing_cannot_ride_on_a_pre_existing_failure(
+    tmp_path: Path,
+) -> None:
+    """El caso que hacia de la verificacion un sello.
+
+    Con los tests ya en rojo, la comprobacion que mide el encargo mas comun que existe
+    —«los tests fallan, arreglalos»— queda excluida por preexistente. Un run que no toco
+    un solo fichero salia entonces «completed» con todo rojo. Medido el 23-ago-2026:
+    `granite4.1:30b` delego una tarea inventada, no cambio nada, y Athena lo dio por
+    terminado.
+
+    Sin ficheros tocados no hay nada que atribuir, asi que no hay nada probado.
+    """
+    _repository(
+        tmp_path,
+        {
+            "test_broken.py": FAILING_TEST,
+            "AGENTS.md": _agents_md(_pytest_command()),
+        },
+    )
+
+    async def scenario() -> None:
+        policy = _policy(tmp_path)
+        workspace = Workspace.from_path(tmp_path)
+        token = CancellationSource().token
+        await policy.capture_baseline(workspace, token)
+
+        result = await policy.verify(_session(), workspace, token)
+
+        # INCONCLUSIVE y no FAILED: no hay regresion que denunciar —nadie rompio nada—,
+        # solo nada que probar. Denunciarla mandaria a buscar algo que no existe.
+        assert result.status is VerificationStatus.INCONCLUSIVE
+        assert not result.permits_completion
+        assert "changed no file" in result.summary
 
     asyncio.run(scenario())
 

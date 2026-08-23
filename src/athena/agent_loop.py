@@ -22,6 +22,7 @@ from athena.errors import (
     BudgetExceededError,
     CancellationError,
     FatalRuntimeError,
+    NoProgressError,
     ProcessCancelledError,
     ProcessTimeoutError,
     VerificationFailure,
@@ -52,6 +53,7 @@ from athena.models import (
     ModelRole,
     ModelToolCall,
 )
+from athena.progress import NoProgressDetector, ProgressVerdict, turn_signature
 from athena.recovery import RecoveryAction, RecoveryLimits, RecoveryPolicy
 from athena.registry import ToolRegistry
 from athena.session_store import (
@@ -100,6 +102,10 @@ class AgentLoopConfig:
     max_repair_cycles: int = 2
     capture_baseline: bool = True
     require_workspace_change: bool = False
+    #: El modelo con el que corre este run. Vacio = el que decida el proveedor. El bucle
+    #: no valida el nombre: quien despliega decide cuales existen (`ModelCatalog`), y el
+    #: bucle solo transmite la eleccion ya tomada.
+    model: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +135,7 @@ class _RunData:
     revealed_tools: set[str] = field(default_factory=set)
     skills: tuple[SkillSelection, ...] = ()
     goal: GoalBoard = field(default_factory=lambda: GoalBoard("(sin objetivo)"))
+    progress: NoProgressDetector = field(default_factory=NoProgressDetector)
 
 
 class AgentLoop:
@@ -411,6 +418,8 @@ class AgentLoop:
                 cancellation=cancellation,
                 discovered_paths=tuple(sorted(data.discovered_paths)),
             )
+            if self.config.model:
+                request = replace(request, model=self.config.model)
             if self.config.require_workspace_change and not data.working.files_modified:
                 request = replace(
                     request,
@@ -425,13 +434,28 @@ class AgentLoop:
                 )
             )
             if response.tool_calls:
-                await self._execute_calls(
+                payloads = await self._execute_calls(
                     response.tool_calls,
                     workspace,
                     cancellation,
                     data,
                     budget,
                 )
+                estancado = await self._check_progress(response.tool_calls, payloads, data)
+                if estancado is not None:
+                    # Antes de tirar el run, mirar si el trabajo ya estaba hecho. Un modelo
+                    # que se atasca repitiendo `pytest` despues de haber arreglado el codigo
+                    # ha terminado el encargo: lo que no sabe es decirlo. Medido: en un run
+                    # real `nemotron-3.5-lightning:30b` dejo los tests en verde y se abandono
+                    # sin verificar, asi que el trabajo bueno se reporto como fallo.
+                    #
+                    # No es regalarle el final al modelo. La regla 10 dice que la
+                    # finalizacion no depende de que el LLM diga «done», sino de que haya
+                    # evidencia; aqui no hay «done» y si se exige la evidencia entera.
+                    rescatado = await self._salvage(data, workspace, cancellation, budget)
+                    if rescatado is not None:
+                        return rescatado
+                    raise estancado
                 # Checkpoint here: the agent has just changed the world, and a crash
                 # before the next turn must not lose the record of what it changed.
                 await self._persist(
@@ -723,6 +747,63 @@ class AgentLoop:
             )
             return response
 
+    async def _check_progress(
+        self,
+        calls: tuple[ModelToolCall, ...],
+        payloads: tuple[JSONObject | None, ...],
+        data: _RunData,
+    ) -> NoProgressError | None:
+        """Mirar si el turno que acaba de pasar es el mismo que el anterior.
+
+        Se llama despues de ejecutar y antes del checkpoint, porque la firma necesita los
+        resultados: dos turnos que piden lo mismo y reciben cosas distintas si avanzan.
+
+        El aviso entra en el historial como un mensaje de usuario y no como una nota de
+        estado. Una nota se resume junto al resto del estado de trabajo y compite con el;
+        lo que hace falta aqui es que el modelo lea, en el turno siguiente y sin
+        intermediarios, que lo que acaba de hacer ya lo habia hecho.
+        """
+        verdict = data.progress.observe(
+            turn_signature([(call.name, call.arguments) for call in calls], payloads)
+        )
+        if verdict is ProgressVerdict.PROGRESSING:
+            return None
+        repeated = sorted({call.name for call in calls})
+        await self.event_bus.publish(
+            RecoveryEvent(
+                EventName.RECOVERY_ACTION,
+                data.session.session_id,
+                {
+                    "action": "no_progress",
+                    "verdict": verdict.value,
+                    "repeats": data.progress.repeats,
+                    "tools": repeated,
+                    "reason": "The same tool calls returned the same results again.",
+                },
+            )
+        )
+        if verdict is ProgressVerdict.STUCK:
+            return NoProgressError(
+                "The run repeated the same tool calls with the same results "
+                f"{data.progress.repeats + 1} times without progressing",
+                details={"tools": repeated, "repeats": data.progress.repeats},
+            )
+        data.working = data.working.noting(
+            decisions=("The last turns repeated the same tool calls and got the same results.",),
+            remaining_work=("Change approach: the repeated reads are not producing anything new.",),
+        )
+        data.history.append(
+            ModelMessage(
+                ModelRole.USER,
+                "Stop. You have just made the same tool calls as the previous turn and "
+                f"received the same results ({', '.join(repeated)}). Re-reading them will "
+                "not tell you anything new. Either act on what you already know — write "
+                "or edit the files the objective asks for — or give your final answer. "
+                "If you repeat this turn again the run will be abandoned.",
+            )
+        )
+        return None
+
     async def _execute_calls(
         self,
         calls: tuple[ModelToolCall, ...],
@@ -730,7 +811,7 @@ class AgentLoop:
         cancellation: CancellationToken,
         data: _RunData,
         budget: RuntimeBudget,
-    ) -> None:
+    ) -> tuple[JSONObject | None, ...]:
         """Run a turn's calls, overlapping only the ones that said they may overlap.
 
         Three passes, and the split is what makes overlapping safe. Admission is
@@ -800,6 +881,7 @@ class AgentLoop:
         for call, payload in zip(calls, payloads, strict=True):
             if payload is not None:
                 data.history.append(self._tool_message(call, payload))
+        return tuple(payloads)
 
     def _waves(
         self, admitted: Sequence[tuple[int, ModelToolCall, Tool | None]]
@@ -941,6 +1023,14 @@ class AgentLoop:
                     call.call_id,
                 )
             )
+            if directive.ends_run:
+                # `ends_run` estaba declarado y no lo miraba nadie: ABORT se documenta como
+                # «abandona la accion y falla el run», y aqui se convertia en un `ok: false`
+                # mas que el modelo leia y seguia. Se vio en un run real que recibio ocho
+                # directivas de abandono seguidas y murio treinta minutos despues por
+                # presupuesto, escribiendo entre medias ficheros que nadie pidio. La
+                # excepcion sube al manejador del run, que ya sabe cerrarlo con su codigo.
+                raise
             return {
                 "ok": False,
                 "call_id": call.call_id,
@@ -989,6 +1079,73 @@ class AgentLoop:
                 )
             )
             return None
+        verification, razon = await self._run_verification(response, data, workspace, cancellation)
+        if verification.permits_completion:
+            return await self._complete_run(response, data, workspace, budget, verification)
+        if verification.status is VerificationStatus.INCONCLUSIVE:
+            # Un run cuyos checks no pudieron ejecutarse no ha fallado la verificacion: ha
+            # fallado en verificar. Contar lo segundo como lo primero le echa la culpa al
+            # cambio de una maquina rota, y quien lo lea corregira lo que no estaba mal.
+            raise VerificationInconclusive(
+                verification.summary,
+                details={"reason": (razon or InconclusiveReason.AMBIGUOUS_RESULT).value},
+            )
+        return await self._start_repair_cycle(data, verification)
+
+    async def _salvage(
+        self,
+        data: _RunData,
+        workspace: Workspace,
+        cancellation: CancellationToken,
+        budget: RuntimeBudget,
+    ) -> AgentRunResult | None:
+        """Un ultimo intento de comprobar si el trabajo ya estaba hecho. Uno, no un ciclo.
+
+        Se llama cuando el run se va a abandonar por estancamiento. Corre la misma
+        verificacion que el camino normal —el mismo `_run_verification`, no una version
+        parecida— y solo termina el run si esa evidencia da para terminarlo.
+
+        Si no da, devuelve `None` y el run se abandona como estaba previsto: esto no es un
+        ciclo de reparacion ni una segunda oportunidad para el modelo, es leer una vez lo
+        que ya hay en el disco antes de tirarlo.
+        """
+        if not data.working.files_modified:
+            # Nada que comprobar: un run que no cambio un fichero no ha hecho el trabajo,
+            # y gastar una suite de tests para confirmarlo es gastar por gastar.
+            return None
+        # El modelo nunca dio una respuesta final —estaba dando vueltas—, asi que no se
+        # inventa una: se dice lo que paso. Poner aqui una frase en su nombre seria
+        # atribuirle una conclusion que no llego a sacar.
+        aviso = ModelResponse(
+            "El run se abandono por repetirse sin avanzar. El trabajo que quedo en el "
+            "workspace si pasa las comprobaciones del proyecto; la evidencia va adjunta.",
+            "athena",
+            "stop",
+        )
+        try:
+            verification, _ = await self._run_verification(aviso, data, workspace, cancellation)
+        except AthenaRuntimeError:
+            # Que la comprobacion de rescate no se pueda ejecutar no cambia el diagnostico
+            # original: el run seguia estancado y se abandona por eso, no por esto.
+            return None
+        if not verification.permits_completion:
+            return None
+        return await self._complete_run(aviso, data, workspace, budget, verification)
+
+    async def _run_verification(
+        self,
+        response: ModelResponse,
+        data: _RunData,
+        workspace: Workspace,
+        cancellation: CancellationToken,
+    ) -> tuple[VerificationResult, InconclusiveReason | None]:
+        """Reunir la evidencia y contarla. El unico sitio donde se verifica.
+
+        Lo usan los dos caminos que pueden acabar un run: el modelo que dice haber
+        terminado y el run que se abandona por estancamiento. Estaba escrito una vez y en
+        linea; sacarlo aqui es lo que impide que el segundo camino verifique de una forma
+        ligeramente distinta y acabe respondiendo otra cosa sobre el mismo trabajo.
+        """
         data.session = replace(
             data.session,
             agent=replace(data.session.agent, status=AgentStatus.VERIFYING),
@@ -1050,17 +1207,7 @@ class AgentLoop:
                 },
             )
         )
-        if verification.permits_completion:
-            return await self._complete_run(response, data, workspace, budget, verification)
-        if verification.status is VerificationStatus.INCONCLUSIVE:
-            # Un run cuyos checks no pudieron ejecutarse no ha fallado la verificacion: ha
-            # fallado en verificar. Contar lo segundo como lo primero le echa la culpa al
-            # cambio de una maquina rota, y quien lo lea corregira lo que no estaba mal.
-            raise VerificationInconclusive(
-                verification.summary,
-                details={"reason": (razon or InconclusiveReason.AMBIGUOUS_RESULT).value},
-            )
-        return await self._start_repair_cycle(data, verification)
+        return verification, razon
 
     async def _start_repair_cycle(
         self, data: _RunData, verification: VerificationResult

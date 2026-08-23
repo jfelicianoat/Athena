@@ -18,6 +18,7 @@ from athena.diagnosis import (
     FailureKind,
     InconclusiveReason,
     diagnose,
+    diagnose_result,
     inconclusive_reason,
 )
 from athena.verification import (
@@ -242,6 +243,92 @@ def test_a_check_that_could_not_run_leaves_no_evidence_either_way() -> None:
     assert inconclusive_reason(diagnosis) is InconclusiveReason.TOOL_UNAVAILABLE
 
 
+def _entregables(*faltan: str, producidos: tuple[str, ...] = ()) -> VerificationResult:
+    """Lo que publica `ArtifactVerificationPolicy` cuando revisa entregables."""
+    evidencia = tuple(
+        VerificationEvidence(
+            kind="artifact",
+            summary=f"{nombre}: {'produced' if nombre in producidos else 'not produced'}",
+            reference=nombre,
+            metadata={"name": nombre, "passed": nombre in producidos},
+        )
+        for nombre in (*producidos, *faltan)
+    )
+    return VerificationResult(
+        VerificationStatus.FAILED,
+        evidencia,
+        "Verification failed: " + ", ".join(faltan) + " was not produced as a non-empty file.",
+    )
+
+
+def test_a_deliverable_that_was_not_produced_is_a_failure_and_not_a_hole() -> None:
+    """El fichero no está. Eso se sabe, no es que no se haya podido comprobar.
+
+    Salió de un run real de perfil `documents`: la comprobación de entregables no ejecuta
+    ningún comando, así que no trae código de salida, y la regla de «el comando no pudo
+    ejecutarse» la adoptaba. El run terminaba como `verification_inconclusive` —en la
+    interfaz, «Terminado sin comprobar»— cuando lo cierto era que el trabajo no se hizo.
+    """
+    diagnosis = diagnose_result(_entregables("NOTAS.md"))
+
+    assert diagnosis.kind is FailureKind.MISSING_DELIVERABLE
+    assert diagnosis.failing_checks == ("NOTAS.md",)
+    # Y por tanto no es un hueco en la evidencia: es un fallo, y se puede reparar.
+    assert inconclusive_reason(diagnosis) is None
+    assert diagnosis.is_worth_repairing
+
+
+def test_only_the_deliverables_that_are_missing_are_named() -> None:
+    diagnosis = diagnose_result(_entregables("NOTAS.md", producidos=("README.md",)))
+
+    assert diagnosis.failing_checks == ("NOTAS.md",)
+
+
+def test_a_command_that_also_failed_outranks_a_missing_file() -> None:
+    """Un test en rojo dice más del trabajo que un fichero que falta."""
+    mezcla = VerificationResult(
+        VerificationStatus.FAILED,
+        (
+            VerificationEvidence(
+                kind="artifact",
+                summary="NOTAS.md: not produced",
+                metadata={"name": "NOTAS.md", "passed": False},
+            ),
+            VerificationEvidence(
+                kind="test",
+                summary="tests: failed",
+                metadata={
+                    "name": "tests",
+                    "passed": False,
+                    "exit_code": 1,
+                    "command": "pytest",
+                    "output_tail": "E AssertionError: x",
+                },
+            ),
+        ),
+        "Verification failed",
+    )
+
+    assert diagnose_result(mezcla).kind is FailureKind.CODE_ERROR
+
+
+def test_a_check_with_no_command_is_not_a_command_that_failed_to_run() -> None:
+    """La regla del código de salida es sobre comandos, y sólo sobre comandos."""
+    sin_comando = CheckOutcome(
+        name="NOTAS.md",
+        kind=CheckKind.TEST,
+        command="",
+        passed=False,
+        exit_code=None,
+        duration_seconds=0.0,
+        output_tail="",
+    )
+
+    diagnosis = diagnose(failed(), [sin_comando])
+
+    assert diagnosis.kind is not FailureKind.TOOL_FAILURE
+
+
 # ------------------------------------------------------------------ what the model sees
 
 
@@ -297,8 +384,17 @@ def test_a_diagnosis_is_serialisable_for_an_event() -> None:
 
 
 def test_only_things_a_model_could_fix_are_worth_another_cycle() -> None:
-    """Spending a repair cycle on a full disk is how a run burns its budget looking busy."""
-    fixable = {FailureKind.CODE_ERROR, FailureKind.TEST_ERROR, FailureKind.UNKNOWN}
+    """Spending a repair cycle on a full disk is how a run burns its budget looking busy.
+
+    Un entregable que falta sí está en la lista: se arregla escribiéndolo, que es
+    exactamente lo que el modelo puede hacer y lo que se le había pedido.
+    """
+    fixable = {
+        FailureKind.CODE_ERROR,
+        FailureKind.TEST_ERROR,
+        FailureKind.MISSING_DELIVERABLE,
+        FailureKind.UNKNOWN,
+    }
 
     for kind in FailureKind:
         diagnosis = FailureDiagnosis(kind=kind, summary="", guidance="")

@@ -42,6 +42,7 @@ from athena.graph_executor import GraphResult
 from athena.graph_store import StoredPlan
 from athena.hooks import HookRegistry
 from athena.metrics import MetricsCollector, SqliteMetricsStore
+from athena.model_catalog import ModelCatalog
 from athena.models import ModelProvider
 from athena.mutation_tools import workspace_mutation_tools
 from athena.permissions import PermissionPolicy, PolicyPermissionEngine
@@ -137,6 +138,11 @@ class RunOptions:
     #: ellos la evidencia por artefactos comprueba lo que el run dice haber escrito, que
     #: es mas debil; con ellos comprueba lo que se pidio.
     deliverables: tuple[str, ...] = ()
+    #: El modelo pedido para este run. Vacio = el de por defecto del despliegue. Igual que
+    #: `profile`: un nombre que el despliegue no ofrece es un 400, no una caida silenciosa
+    #: al de por defecto — quien elige un modelo y recibe otro no se entera hasta que el
+    #: trabajo sale mal, y para entonces ya ha pagado el run entero.
+    model: str = ""
 
     @classmethod
     def from_json(cls, payload: Mapping[str, object]) -> RunOptions:
@@ -180,6 +186,7 @@ class RunOptions:
             execution_mode=chosen,
             profile=str(payload.get("profile") or ""),
             deliverables=_paths(payload.get("deliverables")),
+            model=str(payload.get("model") or "").strip(),
         )
 
 
@@ -254,10 +261,15 @@ class RunRegistry:
         metrics_store: SqliteMetricsStore | None = None,
         event_log: RunEventLog | None = None,
         profiles: ProfileRegistry | None = None,
+        models: ModelCatalog | None = None,
     ) -> None:
         #: Los perfiles que este despliegue ofrece. Uno solo por defecto seria decir que
         #: Athena sirve para una cosa, que es justo lo que la fase venia a desmentir.
         self.profiles = profiles or ProfileRegistry()
+        #: Los modelos entre los que un run puede elegir. `None` = este despliegue no
+        #: ofrece eleccion y corre siempre con lo que tenga configurado el proveedor, que
+        #: es la conducta anterior y sigue siendo valida.
+        self.models = models
         self.provider = provider
         self.event_bus = event_bus
         self.session_store = session_store
@@ -535,6 +547,22 @@ class RunRegistry:
         profiles = {role: budgeted(profile, reloj) for role, profile in DEFAULT_PROFILES.items()}
         return DelegateTaskTool(service, catalog, self.policy_for(options), profiles=profiles)
 
+    def model_for(self, options: RunOptions) -> str:
+        """El modelo con el que corre este run, o un error si pidio uno que no se ofrece.
+
+        Sin catalogo no hay eleccion que validar: el run sale con cadena vacia y el
+        proveedor aplica lo que tenga configurado. Pedir un modelo a un despliegue que no
+        ofrece ninguno si es un error — es pedir algo que nadie puede conceder.
+        """
+        if self.models is None:
+            if options.model:
+                raise ToolValidationError(
+                    "Este despliegue no ofrece eleccion de modelo: configura "
+                    "ATHENA_ALLOWED_MODELS para poder pedir uno"
+                )
+            return ""
+        return self.models.resolve(options.model)
+
     def _build(
         self, run_id: str, workspace: Workspace, options: RunOptions, notes: str = ""
     ) -> AgentLoop:
@@ -564,6 +592,7 @@ class RunRegistry:
                 max_iterations=options.max_iterations,
                 session_timeout_seconds=options.session_timeout_seconds,
                 max_repair_cycles=options.max_repair_cycles,
+                model=self.model_for(options),
             ),
         )
 
@@ -708,6 +737,10 @@ class RunRegistry:
         # forma: un nombre que no existe tiene que rebotar como peticion invalida, no
         # dejar un run creado que fallara mas tarde por una razon que ya se sabia.
         self.profiles.get(settings.profile)
+        # Y el modelo por el mismo motivo. Antes de `decide`, que gasta una lectura del
+        # repositorio y puede gastar una llamada al modelo: rechazar despues de eso seria
+        # cobrar el trabajo de preparar un run que ya se sabia invalido.
+        self.model_for(settings)
         # La forma se decide antes de que exista el run. Al revés, una petición rechazada
         # —pedir grafo donde no hay planificación— dejaba un run vivo que nadie iba a
         # ejecutar ni a cerrar, contado en `/v1/health` y ocupando memoria hasta el

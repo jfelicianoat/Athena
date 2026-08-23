@@ -1,13 +1,12 @@
 # Athena
 
-Athena is a provider-neutral autonomous-agent runtime. H1 implements a functional,
-read-only repository-investigation loop on top of the contracts frozen in H0. H2 adds
-mutation and local execution behind a deterministic permission engine. H3 makes
-completion conditional on evidence, and lets Athena repair its own broken changes. H4
-makes a session durable, so a long run can be compacted and an interrupted one resumed.
-H5 opens the runtime to extension without letting an extension widen what it may do,
-and H6 adds three bounded delegates rather than a general swarm. H7 adds task
-management, controlled concurrency, background processes and local checkpoints.
+Athena is a provider-neutral autonomous-agent runtime. It provides repository
+investigation, opt-in mutation and local execution, deterministic permissions,
+evidence-based completion, bounded repair, durable recovery, three isolated delegates,
+controlled concurrency, project memory, rollback and a loopback HTTP/SSE service.
+
+The current implementation index is [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md).
+Milestone and acceptance documents are dated evidence; they are not the current status.
 
 ## Architecture
 
@@ -123,13 +122,14 @@ The service listens on `127.0.0.1:8770` by default. `ATHENA_SERVICE_PORT` and
 `ATHENA_STATE_DIR` may override the port and durable state directory. Do not publish this
 endpoint on the LAN; authentication is required even though it is bound to loopback.
 
-Which model answers is not a detail. Athena drives its loop on a JSON decision matching the
-schema it supplies, and a model that replies in prose cannot drive it at all. Name one with
-`ATHENA_PREFERRED_MODEL`: without it the broker routes on its own, and `output.format` is
-not a promise it enforces — by AI_Broker's own contract it only warns for models it has
-probed as incapable of structured output. The preference stays soft, because routing is the
-broker's decision to make; a reply that arrives as prose is treated as transient and retried
-rather than ending the run.
+Which model answers is not a detail. Athena drives its loop with a structured JSON decision.
+`ATHENA_ALLOWED_MODELS` is a comma-separated deployment allowlist and
+`ATHENA_PREFERRED_MODEL` is its default. A run may choose one of the offered models through
+`POST /v1/runs`; an explicit choice is strict and disables Broker fallback. If the run omits
+the model, the default remains a soft deployment preference and the Broker may route. A
+deployment with no catalogue keeps fixed/routed behaviour and `/v1/models` answers 404
+`models_fixed`. See
+[ADR-034](docs/adr/034-the-model-is-a-choice-of-the-run-and-the-deployment-bounds-it.md).
 
 ## Verification and self-repair
 
@@ -153,7 +153,8 @@ Athena keeps three kinds of memory, with different lifetimes:
 - the **conversation** is disposable and compactable;
 - the **working memory** — objective, constraints, plan, files, decisions, errors,
   verification, remaining work — is structured, validated and persisted;
-- **project memory** is an interface only; nothing writes to it yet.
+- **project memory** is durable and earned: observations are proposed, recalled only when
+  their verification state permits it, and can be confirmed, expired or forgotten.
 
 Sessions and externalized tool results are stored in SQLite under `<workspace>/.athena`
 (override with `--state-dir`). On startup any session still marked live is moved to

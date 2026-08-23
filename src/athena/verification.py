@@ -567,13 +567,39 @@ class CommandVerificationPolicy:
                 tuple(evidence),
                 (f"Failing checks with no baseline to compare against: {', '.join(unattributed)}."),
             )
-        summary = "All project checks pass."
         if pre_existing:
-            summary += (
-                f" {len(pre_existing)} check(s) were already failing before this change "
+            still_red = (
+                f"{len(pre_existing)} check(s) were already failing before this change "
                 f"and are unchanged: {', '.join(pre_existing)}."
             )
-        return VerificationResult(VerificationStatus.PASSED, tuple(evidence), summary)
+            # Que sigan en rojo no se le imputa a este run —para eso esta la atribucion—
+            # pero tampoco se puede encabezar el veredicto con «todas las comprobaciones
+            # pasan». Eran dos frases seguidas, una falsa y otra verdadera, y la falsa iba
+            # primera; la que se leia en una interfaz era la primera.
+            if not _declared_paths(state):
+                # Y sin un solo fichero tocado no hay nada que atribuir: el run no rompio
+                # nada porque no hizo nada, y darlo por bueno convierte la verificacion en
+                # un sello. Es el caso medido: `granite4.1:30b`, ante unos tests en rojo,
+                # delego una tarea inventada, no cambio un fichero, y Athena publico
+                # `agent.completed`.
+                #
+                # INCONCLUSIVE y no FAILED: no hay regresion que denunciar, y denunciarla
+                # mandaria a buscar algo que no existe. Lo que pasa es que no se probo
+                # nada (ADR-027).
+                return VerificationResult(
+                    VerificationStatus.INCONCLUSIVE,
+                    tuple(evidence),
+                    f"{still_red} This run changed no file, so nothing is proven either way.",
+                )
+            # Con trabajo hecho y sin regresiones, lo que se puede afirmar es eso y no mas.
+            return VerificationResult(
+                VerificationStatus.PASSED,
+                tuple(evidence),
+                f"This change broke no check. {still_red}",
+            )
+        return VerificationResult(
+            VerificationStatus.PASSED, tuple(evidence), "All project checks pass."
+        )
 
     # -- internals --------------------------------------------------------
 

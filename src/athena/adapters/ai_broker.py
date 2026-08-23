@@ -169,11 +169,21 @@ class AiBrokerModelProvider(ModelProvider):
                 "format": "json",
                 "json_schema": dict(prepared.output_schema),
             }
-        model = request.model or self._preferred_model
+        # `request.model` es una eleccion de este run; `_preferred_model`, el ajuste del
+        # despliegue. La diferencia decide si el broker puede sustituirlo.
+        chosen = (request.model or "").strip()
+        model = chosen or self._preferred_model
         if model:
-            # Named, not imposed: the broker may still route elsewhere, and it is the
-            # component entitled to make that call.
-            body["model_requirements"] = {"preferred_model": model, "fallback_allowed": True}
+            body["model_requirements"] = {
+                "preferred_model": model,
+                # Un ajuste del despliegue se nombra sin imponerse: el broker es quien
+                # tiene derecho a enrutar y sabe que hay caido. Pero una eleccion
+                # explicita de este run NO se sustituye: quien eligio un modelo y recibe
+                # otro no se entera hasta que el trabajo sale mal, y un selector que
+                # puede ser ignorado en silencio no es un selector. Preferimos que el
+                # run falle diciendo que ese modelo no esta disponible.
+                "fallback_allowed": not chosen,
+            }
         status, payload = await self._call("POST", "/api/v1/tasks", body, cancellation)
         if status >= 500 or status in (408, 429):
             raise ModelTransientError(f"AI_Broker refused the task with HTTP {status}")

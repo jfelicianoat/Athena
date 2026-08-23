@@ -11,7 +11,7 @@ from pathlib import Path
 
 from athena.async_utils import await_cancellable
 from athena.cancellation import CancellationToken
-from athena.errors import WorkspaceBoundaryError
+from athena.errors import WorkspaceBoundaryError, WorkspacePathNotFoundError
 from athena.models import ModelMessage, ModelRequest, ModelRole
 from athena.types import JSONObject
 from athena.workspace import Workspace
@@ -93,7 +93,7 @@ class ContextBuilder:
         for raw_path in discovered_paths:
             try:
                 resolved = self.workspace.resolve(raw_path)
-            except WorkspaceBoundaryError:
+            except (WorkspaceBoundaryError, WorkspacePathNotFoundError):
                 continue
             current = resolved if resolved.is_dir() else resolved.parent
             directories: list[Path] = []
@@ -111,7 +111,7 @@ class ContextBuilder:
                 continue
             try:
                 canonical = self.workspace.resolve(candidate)
-            except WorkspaceBoundaryError:
+            except (WorkspaceBoundaryError, WorkspacePathNotFoundError):
                 continue
             if canonical in seen or not canonical.is_file():
                 continue
@@ -124,7 +124,7 @@ class ContextBuilder:
     def _git_context(self) -> JSONObject:
         try:
             git_marker = self.workspace.resolve(".git")
-        except WorkspaceBoundaryError:
+        except (WorkspaceBoundaryError, WorkspacePathNotFoundError):
             return {}
         if not git_marker.is_dir():
             return {}

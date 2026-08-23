@@ -1,5 +1,8 @@
 \# Informe de ejecución para completar Athena y convertirla en un agente jerárquico plenamente integrado
 
+> **Historical planning report.** It is preserved as input to the ADR process and is not
+> the current implementation status. See `../CURRENT_STATE.md` and the accepted ADR index.
+
 
 
 \## 1. Propósito

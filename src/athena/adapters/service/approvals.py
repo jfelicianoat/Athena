@@ -22,7 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from uuid import uuid4
 
-from athena.errors import AthenaRuntimeError
+from athena.errors import ApprovalAbandonedError
 from athena.permissions import PermissionDecision, PermissionRequest
 from athena.security import redact_sensitive
 from athena.types import JSONObject, JSONValue
@@ -60,12 +60,6 @@ def sanitise_arguments(arguments: JSONObject) -> JSONObject:
             summarised[key] = value
     redacted = redact_sensitive(summarised)
     return redacted if isinstance(redacted, dict) else {}
-
-
-class ApprovalAbandonedError(AthenaRuntimeError):
-    """Repeated approval requests went unanswered, so nobody is coming back."""
-
-    code = "approval_abandoned"
 
 
 @dataclass(slots=True)
@@ -212,15 +206,15 @@ class RemotePermissionPrompt:
         finally:
             self.registry.discard(pending.request_id)
 
-        if decision is PermissionDecision.ALLOW:
-            self.consecutive_timeouts = 0
         return decision
 
     async def _await_decision(self, pending: PendingApproval) -> PermissionDecision:
         # First window: has the prompt reached a screen at all?
         try:
-            return await asyncio.wait_for(
-                asyncio.shield(pending.future), timeout=self.delivery_timeout_seconds
+            return self._answered(
+                await asyncio.wait_for(
+                    asyncio.shield(pending.future), timeout=self.delivery_timeout_seconds
+                )
             )
         except TimeoutError:
             pass
@@ -229,11 +223,24 @@ class RemotePermissionPrompt:
 
         # Second window: the human is looking, so give them the time to decide.
         try:
-            return await asyncio.wait_for(
-                asyncio.shield(pending.future), timeout=pending.seconds_remaining or 0.01
+            return self._answered(
+                await asyncio.wait_for(
+                    asyncio.shield(pending.future), timeout=pending.seconds_remaining or 0.01
+                )
             )
         except TimeoutError:
             return self._timed_out("The approval request was not answered in time")
+
+    def _answered(self, decision: PermissionDecision) -> PermissionDecision:
+        """Alguien contesto. Cual fue la respuesta da igual para esta cuenta.
+
+        La cuenta mide ausencia, no desacuerdo. Antes solo un ALLOW la reiniciaba, asi que
+        un humano presente que dice «no» tres veces seguidas —o dos noes con un silencio
+        entre medias— quedaba clasificado como «nadie va a contestar» y se le mataba el run
+        en la cara. Un DENY escrito por una persona es la prueba mas directa de que la hay.
+        """
+        self.consecutive_timeouts = 0
+        return decision
 
     def _timed_out(self, reason: str) -> PermissionDecision:
         self.consecutive_timeouts += 1

@@ -47,6 +47,7 @@ from athena.checkpoints import CheckpointStore
 from athena.events import InMemoryEventBus
 from athena.graph_store import SqliteGraphStore
 from athena.metrics import MetricsCollector, SqliteMetricsStore
+from athena.model_catalog import ModelCatalog
 from athena.models import ModelProvider
 from athena.planning import PlanBoard
 from athena.project_memory import SqliteProjectMemory
@@ -125,6 +126,21 @@ class ServiceSettings:
     #: Cuánto puede durar una tarea del plan. Tiene que caber más de una llamada al
     #: modelo, o una tarea no llega a terminar ni su primer turno.
     task_timeout_seconds: float = 1800.0
+    #: Entre qué modelos puede elegir un run, separados por comas. Vacío = no se elige y
+    #: todos los runs usan `preferred_model`, que es la conducta anterior. La lista la
+    #: pone quien despliega y no el catálogo del broker: ese anuncia ciento y pico
+    #: modelos, embeddings incluidos, y ofrecerlos todos no es ofrecer una elección.
+    allowed_models: tuple[str, ...] = ()
+
+    def model_catalog(self) -> ModelCatalog | None:
+        """Los modelos ofrecidos, o `None` si este despliegue no ofrece elección.
+
+        Un solo modelo configurado tampoco es una elección, pero sí es una respuesta que
+        un cliente puede enseñar («este despliegue corre con X»), así que se ofrece igual.
+        """
+        if not self.allowed_models and not self.preferred_model:
+            return None
+        return ModelCatalog(self.allowed_models, default=self.preferred_model or "")
 
     @classmethod
     def from_environment(cls) -> ServiceSettings:
@@ -175,6 +191,9 @@ class ServiceSettings:
 
         planning = _flag("ATHENA_PLANNING", default=True)
 
+        allowed = os.environ.get("ATHENA_ALLOWED_MODELS", "")
+        allowed_models = tuple(item.strip() for item in allowed.split(",") if item.strip())
+
         model_wait = _positive("ATHENA_MODEL_WAIT_SECONDS", 900.0)
         task_timeout = _positive("ATHENA_TASK_TIMEOUT_SECONDS", 1800.0)
         if task_timeout < model_wait:
@@ -197,6 +216,7 @@ class ServiceSettings:
             planning=planning,
             model_wait_seconds=model_wait,
             task_timeout_seconds=task_timeout,
+            allowed_models=allowed_models,
         )
 
 
@@ -274,6 +294,9 @@ def build_service(settings: ServiceSettings) -> AthenaService:
         # Los hechos duran aunque el proceso no: tras un reinicio, el estado dice dónde
         # quedó un run y esto dice cómo llegó.
         event_log=RunEventLog(settings.state_dir / "events.db"),
+        # Los modelos que este despliegue admite. `None` cuando no hay ninguno declarado:
+        # el servicio corre como siempre y `/v1/models` contesta que aqui no se elige.
+        models=settings.model_catalog(),
     )
     return AthenaService(
         registry,

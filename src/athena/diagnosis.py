@@ -47,6 +47,8 @@ class FailureKind(StrEnum):
     PREEXISTING_FAILURE = "preexisting_failure"
     #: The check itself could not run.
     TOOL_FAILURE = "tool_failure"
+    #: Lo que se pidio entregar no se produjo. Es un negativo firme, no un hueco.
+    MISSING_DELIVERABLE = "missing_deliverable"
     #: Nothing ran, so nothing was proven either way.
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
     #: Recognised as a failure and nothing more. Routes to undirected repair.
@@ -126,6 +128,11 @@ _GUIDANCE: dict[FailureKind, str] = {
     FailureKind.TOOL_FAILURE: (
         "The check could not be executed at all. Report the command and its output."
     ),
+    FailureKind.MISSING_DELIVERABLE: (
+        "The deliverable this run was asked for does not exist, or is empty. Write it "
+        "with write_file. Nothing is broken in the environment: the file is simply not "
+        "there."
+    ),
     FailureKind.INSUFFICIENT_EVIDENCE: (
         "Nothing ran, so nothing is proven. Do not treat this as either success or failure."
     ),
@@ -160,6 +167,9 @@ class FailureDiagnosis:
         return self.kind in (
             FailureKind.CODE_ERROR,
             FailureKind.TEST_ERROR,
+            # Un entregable que falta se arregla escribiendolo, que es justo lo que el
+            # modelo puede hacer y lo que se le pidio en primer lugar.
+            FailureKind.MISSING_DELIVERABLE,
             FailureKind.UNKNOWN,
         )
 
@@ -228,7 +238,13 @@ def diagnose(
 
     # A check that could not run at all is a different problem from one that ran and
     # disagreed, and the exit code is the only place that distinction survives.
-    unrunnable = [check for check in failing if check.exit_code is None]
+    #
+    # `command` acota la regla a lo que de verdad es un comando. Sin eso, una comprobacion
+    # que no ejecuta nada —la de entregables mira si el fichero existe— entraba aqui por
+    # no tener codigo de salida, y un negativo firme («NOTAS.md no se produjo») se
+    # reportaba como «el comando no se pudo ejecutar»: la interfaz lo enseñaba como
+    # «Terminado sin comprobar», que manda a revisar la maquina en vez del trabajo.
+    unrunnable = [check for check in failing if check.exit_code is None and check.command]
     if unrunnable and len(unrunnable) == len(failing):
         return FailureDiagnosis(
             kind=FailureKind.TOOL_FAILURE,
@@ -260,6 +276,33 @@ def diagnose(
     )
 
 
+def _missing_deliverable(result: VerificationResult) -> FailureDiagnosis | None:
+    """El caso en que todo lo que falló fue un entregable que no existe.
+
+    Sólo cuando **todo** lo que falla es de esa clase: si además falló un comando, el
+    comando manda, porque un test en rojo dice más sobre el trabajo que un fichero que
+    falta y el modelo debe mirar eso primero.
+    """
+    if result.status is not VerificationStatus.FAILED:
+        return None
+    artefactos = [item for item in result.evidence if item.kind == "artifact"]
+    if not artefactos or len(artefactos) != len(result.evidence):
+        return None
+    faltan = tuple(
+        str(item.metadata.get("name", item.reference or ""))
+        for item in artefactos
+        if not item.metadata.get("passed")
+    )
+    if not faltan:
+        return None
+    return FailureDiagnosis(
+        kind=FailureKind.MISSING_DELIVERABLE,
+        summary=result.summary or "The declared deliverable was not produced.",
+        guidance=_GUIDANCE[FailureKind.MISSING_DELIVERABLE],
+        failing_checks=faltan,
+    )
+
+
 def diagnose_result(result: VerificationResult) -> FailureDiagnosis:
     """Diagnose from the result alone, which is all a caller usually has.
 
@@ -267,6 +310,14 @@ def diagnose_result(result: VerificationResult) -> FailureDiagnosis:
     `attribution`, which is the baseline's verdict on whether the change caused it. Asking
     the caller to supply the baseline separately would invite the two to disagree.
     """
+    # Un entregable que no se produjo lo dice la evidencia de artefacto, y sólo aquí se
+    # sabe de qué clase es cada pieza: `CheckOutcome` describe comandos y no tiene dónde
+    # guardarlo. Es un negativo concreto —el fichero no está—, así que se nombra como tal
+    # en vez de dejar que la regla de los comandos lo lea como un hueco en la evidencia.
+    deliverable = _missing_deliverable(result)
+    if deliverable is not None:
+        return deliverable
+
     checks: list[CheckOutcome] = []
     preexisting: list[str] = []
     for item in result.evidence:
@@ -331,6 +382,11 @@ _INCONCLUSIVE_KINDS: dict[FailureKind, InconclusiveReason] = {
     FailureKind.ENVIRONMENT_ERROR: InconclusiveReason.ENVIRONMENT_INCOMPLETE,
     FailureKind.TOOL_FAILURE: InconclusiveReason.TOOL_UNAVAILABLE,
     FailureKind.INSUFFICIENT_EVIDENCE: InconclusiveReason.NO_CHECKS_DEFINED,
+    # Una comprobacion que ya estaba en rojo y sigue en rojo no la rompio este run, pero
+    # tampoco esta probada: parte del proyecto quedo sin comprobar y eso es exactamente
+    # `PARTIAL_VERIFICATION`. Antes esa situacion se reportaba como «todas las
+    # comprobaciones pasan», que es la unica de las tres lecturas que es falsa.
+    FailureKind.PREEXISTING_FAILURE: InconclusiveReason.PARTIAL_VERIFICATION,
 }
 
 

@@ -45,6 +45,7 @@ from athena.errors import (
     ToolResultUnavailableError,
     ToolValidationError,
     WorkspaceBoundaryError,
+    WorkspacePathNotFoundError,
 )
 from athena.identity import IdentityDirectory
 from athena.permissions import PermissionDecision
@@ -263,6 +264,10 @@ class AthenaService:
             return await self._dispatch(request)
         except WorkspaceBoundaryError as exc:
             return Response(403, error_to_json("workspace_boundary", exc.message))
+        except WorkspacePathNotFoundError as exc:
+            # 404, no 403: la ruta esta dentro y no esta. Devolver «prohibido» por algo que
+            # solo falta manda a revisar permisos en vez de el nombre del fichero.
+            return Response(404, error_to_json(exc.code, exc.message))
         except ToolResultUnavailableError as exc:
             return Response(410, error_to_json(exc.code, exc.message))
         except ToolValidationError as exc:
@@ -312,6 +317,16 @@ class AthenaService:
                     ],
                 },
             )
+        if path == "/v1/models" and method == "GET":
+            # Lo mismo que `/v1/profiles` y por el mismo motivo: un selector no puede
+            # inventarse las opciones. 404 cuando no hay eleccion que ofrecer, igual que
+            # metricas y memoria — «este despliegue no hace eso» no es un fallo.
+            if self.registry.models is None:
+                return Response(
+                    404,
+                    error_to_json("models_fixed", "This deployment does not offer a model choice"),
+                )
+            return Response(200, self.registry.models.to_json())
         if path == "/v1/metrics" and method == "GET":
             return await self._metrics()
         if path == "/v1/auth/check" and method == "GET":

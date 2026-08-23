@@ -31,6 +31,20 @@ class WorkspaceBoundaryError(PermissionDeniedError):
     code = "workspace_boundary_error"
 
 
+class WorkspacePathNotFoundError(AthenaRuntimeError):
+    """Una ruta que esta DENTRO del workspace pero no existe.
+
+    Deliberadamente NO hereda de `WorkspaceBoundaryError`. La regla 8 hace del workspace
+    un limite de seguridad, y un error de limite tiene que significar que alguien intento
+    cruzarlo; si tambien significa «te equivocaste de nombre de fichero», la senal deja de
+    distinguir un escape real de una errata y la politica de recuperacion aborta las dos
+    igual. Una ruta que no existe es un hecho sobre el arbol, y el modelo puede corregirlo
+    en cuanto se le cuente la verdad.
+    """
+
+    code = "workspace_path_not_found"
+
+
 class ToolExecutionError(AthenaRuntimeError):
     code = "tool_execution_error"
 
@@ -112,6 +126,29 @@ class VerificationInconclusive(AthenaRuntimeError):
 
 class BudgetExceededError(AthenaRuntimeError):
     code = "budget_exceeded"
+
+
+class ApprovalAbandonedError(AthenaRuntimeError):
+    """Peticiones de aprobacion seguidas sin respuesta: no hay nadie al otro lado.
+
+    Vive en el nucleo, no en el adaptador que la lanza, porque la politica de recuperacion
+    tiene que poder nombrarla y el nucleo no importa de `adapters/`. Que la levante el
+    prompt remoto es un detalle del transporte; lo que significa —«nadie va a contestar»—
+    es una decision de runtime.
+    """
+
+    code = "approval_abandoned"
+
+
+class NoProgressError(AthenaRuntimeError):
+    """El run repite el mismo turno y recibe el mismo resultado: no avanza.
+
+    Deliberadamente NO es `BudgetExceededError`. Los dos acaban el run, pero cuentan cosas
+    distintas y llevan a arreglos distintos: quedarse sin presupuesto sugiere subir el
+    limite, y estancarse dice que subirlo solo compraria mas vueltas iguales.
+    """
+
+    code = "no_progress"
 
 
 class FatalRuntimeError(AthenaRuntimeError):

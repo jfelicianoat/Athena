@@ -40,6 +40,15 @@ Mutation and execution resolve every path and working directory through
 workspace root. Traversal (`../`), absolute paths outside the root, and symlinks or
 junctions that escape are rejected before anything runs — for writes exactly as for reads.
 
+`resolve` answers two questions, and in this order: first whether the path escapes, and
+only then whether it exists. A path that escapes raises `WorkspaceBoundaryError` and aborts
+the run. A path inside the workspace that is simply not there raises
+`WorkspacePathNotFoundError`, which is not a permission error at all: the model is told the
+path does not exist so it can list the directory and ask for a real one. A path outside the
+root that also does not exist is still answered as an escape — saying "not found" about
+something outside already describes what is outside. The split is what keeps
+`workspace_boundary_error` worth alerting on; see ADR-033.
+
 ## Writes
 
 - `write_file` refuses to replace an existing file unless `overwrite=true`, and refuses an

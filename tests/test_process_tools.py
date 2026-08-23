@@ -267,3 +267,32 @@ def test_policy_can_forbid_additional_executables() -> None:
     policy = CommandPolicy(forbidden_commands=("pytest",))
 
     assert policy.classify(parse_command("pytest -q"), ".").tier is RiskTier.R4_FORBIDDEN
+
+
+def test_a_command_that_does_not_ask_for_a_timeout_gets_the_whole_ceiling() -> None:
+    """No decir cuanto vas a tardar no es pedir que te corten pronto.
+
+    El default eran 30 s, y `pytest` en frio sobre un repositorio pequeno ya se pasa de
+    ahi: medido, uno de cada seis runs de `qwen3.8:27b` moria con `process_timeout` sobre
+    la suite por un motivo que no tenia nada que ver con el trabajo pedido.
+
+    600 y no 660: 660 es el techo del ejecutor, que va por encima a proposito para que
+    sobre margen al arrancar y al matar el arbol de procesos.
+    """
+    tool = BashTool()
+
+    assert tool.validate({"command": "pytest -q"})["timeout_seconds"] == 600.0
+    assert tool.default_timeout_seconds == tool.max_timeout_seconds
+    assert BashTool.spec.timeout_seconds is not None
+    assert tool.max_timeout_seconds < BashTool.spec.timeout_seconds, (
+        "el techo del comando tiene que quedar por debajo del de la tool, o el fallo se "
+        "atribuye al ejecutor en vez de decir que comando se paso"
+    )
+
+
+def test_a_command_may_still_ask_to_be_cut_short() -> None:
+    """Quien sabe que su comando debe ser corto lo sigue diciendo."""
+    assert (
+        BashTool().validate({"command": "pytest -q", "timeout_seconds": 5})["timeout_seconds"]
+        == 5.0
+    )

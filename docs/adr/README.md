@@ -62,3 +62,9 @@ of rewritten history.
   [Memory is earned, and it expires](031-memory-is-earned-and-it-expires.md)
 - ADR-032:
   [Undoing is asked for, and scoped to what this run wrote](032-undoing-is-asked-for-and-scoped-to-what-this-run-wrote.md)
+- ADR-033:
+  [A run that repeats itself is abandoned, and a missing path is not a boundary crossing](033-a-run-that-repeats-itself-is-abandoned-and-a-missing-path-is-not-a-boundary.md)
+- ADR-034:
+  [The model is a choice of the run, and the deployment bounds it](034-the-model-is-a-choice-of-the-run-and-the-deployment-bounds-it.md)
+- ADR-035:
+  [A check that is still red is not a check that passed](035-a-check-that-is-still-red-is-not-a-check-that-passed.md)

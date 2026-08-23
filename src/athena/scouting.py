@@ -23,7 +23,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from athena.errors import AthenaRuntimeError, WorkspaceBoundaryError
+from athena.errors import (
+    AthenaRuntimeError,
+    WorkspaceBoundaryError,
+    WorkspacePathNotFoundError,
+)
 from athena.planning import DecompositionSignals
 from athena.types import JSONObject
 from athena.verification import VerificationPlanner
@@ -175,7 +179,7 @@ class RepositoryScout:
                 continue
             try:
                 resolved = workspace.resolve(candidate, must_exist=True)
-            except (WorkspaceBoundaryError, OSError, ValueError):
+            except (WorkspaceBoundaryError, WorkspacePathNotFoundError, OSError, ValueError):
                 # Not a path in this repository. That is the filter, not an error: an
                 # objective mentioning `README.md` from another project is prose here.
                 continue

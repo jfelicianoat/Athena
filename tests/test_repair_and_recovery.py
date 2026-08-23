@@ -12,12 +12,14 @@ from athena.agent_loop import AgentLoop, AgentLoopConfig, AgentRunStatus
 from athena.cancellation import CancellationSource, CancellationToken
 from athena.context import ContextBuilder
 from athena.errors import (
+    ApprovalAbandonedError,
     AthenaRuntimeError,
     ContextOverflowError,
     ModelTransientError,
     PermissionDeniedError,
     ToolValidationError,
     WorkspaceBoundaryError,
+    WorkspacePathNotFoundError,
 )
 from athena.events import EventName, InMemoryEventBus, ModelEvent, RuntimeEvent
 from athena.models import (
@@ -467,6 +469,10 @@ def test_recovery_policy_maps_every_documented_error_to_one_action() -> None:
     assert policy.decide(ToolValidationError("bad")).action is RecoveryAction.INFORM_MODEL
     assert policy.decide(PermissionDeniedError("no")).action is RecoveryAction.NO_RETRY
     assert policy.decide(WorkspaceBoundaryError("out")).action is RecoveryAction.ABORT
+    # Una ruta que no existe se le cuenta al modelo; un escape se aborta. Que sean dos
+    # acciones distintas es justo lo que las separa.
+    assert policy.decide(WorkspacePathNotFoundError("gone")).action is RecoveryAction.INFORM_MODEL
+    assert policy.decide(ApprovalAbandonedError("nobody")).action is RecoveryAction.ABORT
     assert policy.decide(ContextOverflowError("big")).action is RecoveryAction.COMPACT_CONTEXT
     assert policy.decide(ModelTransientError("busy")).max_attempts == 3
 
@@ -507,5 +513,75 @@ def test_a_refused_tool_call_is_not_recorded_as_work_done(tmp_path: Path) -> Non
         assert result.working_state is not None
         assert result.working_state.files_modified == ()
         assert any(error.code == "permission_denied" for error in result.working_state.errors)
+
+    asyncio.run(scenario())
+
+
+def test_a_stuck_run_is_verified_once_before_it_is_thrown_away(tmp_path: Path) -> None:
+    """Un modelo que se atasca despues de arreglar el codigo ya ha terminado el encargo.
+
+    Lo que no sabe es decirlo. Medido en un run real: `nemotron-3.5-lightning:30b` arreglo
+    el bug, se quedo repitiendo `pytest`, y el run se abandono por estancamiento sin llegar
+    a verificar — asi que un trabajo bueno y comprobable se reporto como fallo.
+
+    Esto no le regala el final al modelo. La regla 10 dice que terminar depende de la
+    evidencia y no de que el LLM diga «done»: aqui no hay «done» por ninguna parte y se
+    exige la evidencia entera, la misma que exigiria el camino normal.
+    """
+    root = _sandbox(tmp_path, {"calc.py": CALC_BROKEN, "test_calc.py": CALC_TEST})
+
+    async def scenario() -> None:
+        arreglo = _call(
+            "fix-1",
+            "edit_file",
+            {"path": "calc.py", "old_string": "a - b", "new_string": "a + b"},
+        )
+        # Arregla y despues se queda leyendo el mismo fichero una y otra vez, con un
+        # `call_id` nuevo cada vez, como hace un modelo de verdad.
+        vueltas = [_call(f"read-{numero}", "read_file", {"path": "calc.py"}) for numero in range(8)]
+        provider = FakeModelProvider([arreglo, *vueltas])
+        loop, workspace, source, events = _runtime(root, provider)
+
+        result = await loop.run("Arregla calc.add", workspace, source.token)
+
+        assert result.status is AgentRunStatus.COMPLETED, (
+            "el trabajo estaba hecho y comprobado: tirarlo seria reportar mal"
+        )
+        assert result.verification is not None
+        assert result.verification.permits_completion
+        assert (root / "calc.py").read_text(encoding="utf-8") == CALC_FIXED
+        # Y se dice lo que paso, sin ponerle al modelo una conclusion que no saco.
+        assert result.answer is not None
+        assert "repetirse sin avanzar" in result.answer
+        # El estancamiento se anuncia igual: no se tapa porque acabara bien.
+        assert [
+            event.payload["verdict"]
+            for event in events
+            if event.name is EventName.RECOVERY_ACTION
+            and event.payload.get("action") == "no_progress"
+        ] == ["repeating", "stuck"]
+
+    asyncio.run(scenario())
+
+
+def test_a_stuck_run_with_nothing_to_show_is_still_abandoned(tmp_path: Path) -> None:
+    """El rescate mira si el trabajo estaba hecho; no lo da por hecho.
+
+    Sin un fichero tocado no hay nada que comprobar, y gastar la suite de tests para
+    confirmar que no se hizo nada es gastar por gastar.
+    """
+    root = _sandbox(tmp_path, {"calc.py": CALC_BROKEN, "test_calc.py": CALC_TEST})
+
+    async def scenario() -> None:
+        vueltas = [_call(f"read-{numero}", "read_file", {"path": "calc.py"}) for numero in range(8)]
+        provider = FakeModelProvider(vueltas)
+        loop, workspace, source, _ = _runtime(root, provider)
+
+        result = await loop.run("Arregla calc.add", workspace, source.token)
+
+        assert result.status is AgentRunStatus.FAILED
+        assert result.error is not None
+        assert result.error.code == "no_progress"
+        assert (root / "calc.py").read_text(encoding="utf-8") == CALC_BROKEN
 
     asyncio.run(scenario())

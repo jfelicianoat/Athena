@@ -11,12 +11,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from athena.errors import (
+    ApprovalAbandonedError,
     AthenaRuntimeError,
     BudgetExceededError,
     ContextOverflowError,
     FatalRuntimeError,
     ModelPermanentError,
     ModelTransientError,
+    NoProgressError,
     PermissionDeniedError,
     ProcessTimeoutError,
     ToolExecutionError,
@@ -24,6 +26,7 @@ from athena.errors import (
     VerificationFailure,
     VerificationInconclusive,
     WorkspaceBoundaryError,
+    WorkspacePathNotFoundError,
 )
 from athena.state import ExecutionOutcome, classify_outcome
 
@@ -106,10 +109,30 @@ class RecoveryPolicy:
                 else "The session was cancelled."
             )
             return RecoveryDirective(RecoveryAction.CANCELLED, wording)
+        if isinstance(error, NoProgressError):
+            # Reintentar es literalmente lo que ya no funciona.
+            return RecoveryDirective(
+                RecoveryAction.ABORT,
+                "The run is repeating itself without progress and is abandoned.",
+            )
+        if isinstance(error, ApprovalAbandonedError):
+            # Nadie contesta. Seguir solo gasta el presupuesto en negarse a si mismo, que
+            # es literalmente lo que el mensaje del error promete no hacer.
+            return RecoveryDirective(
+                RecoveryAction.ABORT,
+                "Nobody answered the approval requests, so the run is abandoned.",
+            )
         if isinstance(error, WorkspaceBoundaryError):
             return RecoveryDirective(
                 RecoveryAction.ABORT,
                 "The action left the workspace boundary and is abandoned.",
+            )
+        if isinstance(error, WorkspacePathNotFoundError):
+            # No es un escape: es una ruta inventada. Se le dice al modelo cual, porque es
+            # lo unico que le permite mirar el arbol y pedir la que existe.
+            return RecoveryDirective(
+                RecoveryAction.INFORM_MODEL,
+                "The path does not exist in the workspace; list the directory and use a real path.",
             )
         if isinstance(error, PermissionDeniedError):
             return RecoveryDirective(
