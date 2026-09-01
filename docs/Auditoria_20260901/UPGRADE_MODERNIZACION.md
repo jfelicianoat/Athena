@@ -1,5 +1,9 @@
 # Resumen ejecutivo de modernización
 
+> **Fuente actual verificada (2026-09-01):** repositorio público `jfelicianoat/Athena`, rama `main`: https://github.com/jfelicianoat/Athena  
+> El contraste web confirma que `pyproject.toml`, `LICENSE`, `README.md` y `docs/CURRENT_STATE.md` mantienen los puntos materiales usados en este informe. `docs/CURRENT_STATE.md` declara estar reconciliado con el source tree el 2026-08-23.
+
+
 La modernización propuesta conserva los invariantes de seguridad y completion, pero reduce el coste de evolución del sistema.
 
 Target:

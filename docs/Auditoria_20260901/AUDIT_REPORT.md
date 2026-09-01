@@ -1,5 +1,9 @@
 # Resumen ejecutivo
 
+> **Fuente actual verificada (2026-09-01):** repositorio público `jfelicianoat/Athena`, rama `main`: https://github.com/jfelicianoat/Athena  
+> El contraste web confirma que `pyproject.toml`, `LICENSE`, `README.md` y `docs/CURRENT_STATE.md` mantienen los puntos materiales usados en este informe. `docs/CURRENT_STATE.md` declara estar reconciliado con el source tree el 2026-08-23.
+
+
 - Athena es un runtime de agentes autónomos en Python con diseño explícitamente provider-neutral, límites de permisos deterministas, verificación antes de completar, persistencia SQLite, recuperación, delegación y varias interfaces (CLI, desktop, servicio HTTP/SSE y Telegram).
 - La arquitectura conceptual está bien documentada mediante ADRs y el código refleja varias de esas fronteras: `ModelProvider`, `Tool`, `PermissionEngine`, `Workspace`, `EventBus` y stores.
 - **High — Packaging/Legal:** `pyproject.toml` declara `license = { text = "Proprietary" }`, mientras `LICENSE` contiene MIT. La metadata distribuida y la licencia del repositorio se contradicen.

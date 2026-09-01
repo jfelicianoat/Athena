@@ -1,5 +1,9 @@
 # Resumen ejecutivo de actualización (conservador)
 
+> **Fuente actual verificada (2026-09-01):** repositorio público `jfelicianoat/Athena`, rama `main`: https://github.com/jfelicianoat/Athena  
+> El contraste web confirma que `pyproject.toml`, `LICENSE`, `README.md` y `docs/CURRENT_STATE.md` mantienen los puntos materiales usados en este informe. `docs/CURRENT_STATE.md` declara estar reconciliado con el source tree el 2026-08-23.
+
+
 Objetivo: recuperar reproducibilidad, compatibilidad y soporte con el menor cambio posible, sin re-arquitecturar el runtime.
 
 Prioridades:
