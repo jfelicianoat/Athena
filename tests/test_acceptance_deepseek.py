@@ -423,7 +423,10 @@ def test_el_servicio_ofrece_todo_lo_que_las_fases_anadieron(tmp_path: Path) -> N
     import athena.adapters.service.server as modulo
 
     del tmp_path
-    texto = Path(modulo.__file__).read_text(encoding="utf-8")
+    # El servicio es un paquete: se leen todos sus modulos, porque las rutas
+    # viven en `servicio.py` y no en la fachada.
+    paquete = Path(modulo.__file__).parent
+    texto = "\n".join(f.read_text(encoding="utf-8") for f in sorted(paquete.rglob("*.py")))
     for ruta in (
         "/v1/runs/{}/history",  # fase 6
         "/v1/profiles",  # fase 8

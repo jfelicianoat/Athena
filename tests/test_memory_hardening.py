@@ -214,8 +214,9 @@ def test_athena_no_puede_ascender_un_recuerdo_a_confirmado_por_el_usuario() -> N
     respondió por esto». Athena llega a `VERIFIED` porque ejecuta cosas; no puede llegar
     más arriba, porque no es una persona.
 
-    Los dos sitios exentos son el módulo que define el estado y el endpoint HTTP, que es
-    exactamente el sitio por donde entra la persona.
+    Los dos sitios exentos son el módulo que define el estado y el módulo de
+    endpoints HTTP donde vive `/v1/memory`, que es exactamente el sitio por donde
+    entra la persona.
     """
     import athena
 
@@ -223,7 +224,7 @@ def test_athena_no_puede_ascender_un_recuerdo_a_confirmado_por_el_usuario() -> N
     culpables = [
         str(fichero.relative_to(raiz))
         for fichero in raiz.rglob("*.py")
-        if fichero.name not in ("project_memory.py", "server.py")
+        if fichero.name not in ("project_memory.py", "endpoints_varios.py")
         and "USER_CONFIRMED" in fichero.read_text(encoding="utf-8")
     ]
 

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from athena import __version__
 from athena.agent_loop import AgentRunResult
 from athena.cancellation import CancellationSource
 from athena.events import EventName, RuntimeEvent
@@ -92,7 +93,7 @@ class AthenaDesktopApp:
         self.root.after(75, self._drain_messages)
 
     def _configure_window(self) -> None:
-        self.root.title("Athena Desktop")
+        self.root.title(f"Athena Desktop v{__version__}")
         self.root.geometry("1180x780")
         self.root.minsize(920, 640)
         style = ttk.Style(self.root)

@@ -783,13 +783,17 @@ def test_planning_names_no_concrete_provider() -> None:
 
     import athena
 
-    module = Path(athena.__file__).parent / "planning.py"
-    tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
-    imported = {
-        node.module or ""
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("athena")
-    }
+    # La planificacion es un paquete: se miran todos sus modulos, porque basta
+    # con que uno solo importe un proveedor concreto para romper la regla.
+    package = Path(athena.__file__).parent / "planning"
+    imported: set[str] = set()
+    for module in sorted(package.rglob("*.py")):
+        tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
+        imported |= {
+            node.module or ""
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("athena")
+        }
 
     assert "athena.adapters.openai_compatible" not in imported
     assert "athena.models" in imported, "it depends on the port, and only the port"

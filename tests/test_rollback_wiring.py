@@ -101,8 +101,8 @@ def test_nada_del_runtime_deshace_por_su_cuenta() -> None:
     """Un rollback automático tiraría trabajo que una persona podría querer mirar.
 
     Estructural a propósito: el runtime deja el material —copia antes de editar y anota lo
-    escrito— y `roll_back` sólo se llama desde el endpoint HTTP, que es donde hay una
-    persona pidiéndolo.
+    escrito— y `roll_back` sólo se llama desde el endpoint HTTP de runs, que es donde
+    hay una persona pidiéndolo.
     """
     import athena
 
@@ -110,7 +110,7 @@ def test_nada_del_runtime_deshace_por_su_cuenta() -> None:
     culpables = [
         str(fichero.relative_to(raiz))
         for fichero in raiz.rglob("*.py")
-        if fichero.name not in ("rollback.py", "server.py")
+        if fichero.name not in ("rollback.py", "endpoints_runs.py")
         and "roll_back(" in fichero.read_text(encoding="utf-8")
     ]
 
