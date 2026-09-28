@@ -16,6 +16,10 @@ worktree per task buys isolation and costs a checkout, a merge, and a second cop
 build artefact. Right now writes are serialised, so the isolation buys nothing and the cost
 is real. The trigger to revisit is evidence that two write tasks genuinely need to run at
 once — not the observation that worktrees exist.
+
+`isolation.py` and `integration.py` are a tested library for that future, not a strategy
+this module offers: nothing in the runtime calls them, and `WORKTREE` here keeps refusing
+until they are integrated with permissions, concurrency, persistence and cleanup.
 """
 
 from __future__ import annotations

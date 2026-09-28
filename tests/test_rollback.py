@@ -80,8 +80,8 @@ def test_a_task_s_change_can_be_put_back(tmp_path: Path) -> None:
         workspace = _workspace(tmp_path)
         ledger = _ledger(tmp_path)
         await ledger.checkpoint("T01", workspace, ["calc.py"])
-        ledger.record_written("T01", ["calc.py"])
         (workspace.root / "calc.py").write_text("def add(a, b):\n    return 0\n")
+        ledger.record_written("T01", ["calc.py"])
 
         result = await ledger.roll_back(workspace, task_id="T01")
 
@@ -103,8 +103,8 @@ def test_a_file_this_run_never_wrote_is_left_alone(tmp_path: Path) -> None:
         ledger = _ledger(tmp_path)
         await ledger.checkpoint("T01", workspace, ["calc.py", "notes.md"])
         # The agent wrote calc.py. A person edited notes.md while it worked.
-        ledger.record_written("T01", ["calc.py"])
         (workspace.root / "calc.py").write_text("broken\n")
+        ledger.record_written("T01", ["calc.py"])
         (workspace.root / "notes.md").write_text("a person wrote this, and then more\n")
 
         result = await ledger.roll_back(workspace, task_id="T01")
@@ -123,8 +123,8 @@ def test_a_file_the_task_created_is_removed_again(tmp_path: Path) -> None:
         workspace = _workspace(tmp_path)
         ledger = _ledger(tmp_path)
         await ledger.checkpoint("T01", workspace, ["new_module.py"])
-        ledger.record_written("T01", ["new_module.py"])
         (workspace.root / "new_module.py").write_text("print('hello')\n")
+        ledger.record_written("T01", ["new_module.py"])
 
         await ledger.roll_back(workspace, task_id="T01")
 
@@ -142,10 +142,10 @@ def test_undoing_one_task_leaves_its_sibling_alone(tmp_path: Path) -> None:
         ledger = _ledger(tmp_path)
         await ledger.checkpoint("T01", workspace, ["calc.py"])
         await ledger.checkpoint("T02", workspace, ["api.py"])
-        ledger.record_written("T01", ["calc.py"])
-        ledger.record_written("T02", ["api.py"])
         (workspace.root / "calc.py").write_text("broken\n")
         (workspace.root / "api.py").write_text("good work\n")
+        ledger.record_written("T01", ["calc.py"])
+        ledger.record_written("T02", ["api.py"])
 
         await ledger.roll_back(workspace, task_id="T01")
 
@@ -166,10 +166,10 @@ def test_a_subgraph_rollback_takes_what_it_covers(tmp_path: Path) -> None:
         await ledger.checkpoint(
             "T02", workspace, ["api.py"], scope=RollbackScope.SUBGRAPH, covers=["T02"]
         )
-        ledger.record_written("T01", ["calc.py"])
-        ledger.record_written("T02", ["api.py"])
         (workspace.root / "calc.py").write_text("broken\n")
         (workspace.root / "api.py").write_text("also broken\n")
+        ledger.record_written("T01", ["calc.py"])
+        ledger.record_written("T02", ["api.py"])
 
         result = await ledger.roll_back(workspace, task_id="T02", scope=RollbackScope.SUBGRAPH)
 
@@ -185,10 +185,10 @@ def test_a_run_rollback_undoes_everything_it_wrote(tmp_path: Path) -> None:
         ledger = _ledger(tmp_path)
         await ledger.checkpoint("T01", workspace, ["calc.py"])
         await ledger.checkpoint("T02", workspace, ["api.py"])
-        ledger.record_written("T01", ["calc.py"])
-        ledger.record_written("T02", ["api.py"])
         (workspace.root / "calc.py").write_text("broken\n")
         (workspace.root / "api.py").write_text("also broken\n")
+        ledger.record_written("T01", ["calc.py"])
+        ledger.record_written("T02", ["api.py"])
 
         result = await ledger.roll_back(workspace, scope=RollbackScope.RUN)
 
@@ -210,11 +210,11 @@ def test_two_tasks_that_touched_one_file_restore_the_older_state(tmp_path: Path)
         workspace = _workspace(tmp_path)
         ledger = _ledger(tmp_path)
         await ledger.checkpoint("T01", workspace, ["calc.py"])
-        ledger.record_written("T01", ["calc.py"])
         (workspace.root / "calc.py").write_text("first change\n")
+        ledger.record_written("T01", ["calc.py"])
         await ledger.checkpoint("T02", workspace, ["calc.py"])
-        ledger.record_written("T02", ["calc.py"])
         (workspace.root / "calc.py").write_text("second change\n")
+        ledger.record_written("T02", ["calc.py"])
 
         await ledger.roll_back(workspace, scope=RollbackScope.RUN)
 

@@ -40,6 +40,7 @@ from pathlib import Path
 
 from athena.errors import AthenaRuntimeError
 from athena.events import EventName, RuntimeEvent
+from athena.sqlite_support import closing_connection, migrate
 from athena.types import JSONObject
 
 #: Lo que merece sobrevivir al proceso.
@@ -219,15 +220,14 @@ class RunEventLog:
         self._lineage: dict[str, Provenance] = {}
         try:
             with self._connect() as connection:
-                connection.executescript(_SCHEMA)
+                migrate(connection, _SCHEMA, 1, "events")
         except sqlite3.Error as exc:
             raise RunEventLogError(f"No se pudo abrir el log de eventos: {exc}") from exc
         self.load_lineage()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database, timeout=10.0)
-        connection.execute("PRAGMA journal_mode=WAL")
-        return connection
+    def _connect(self) -> closing_connection:
+        # Se cierra al salir del `with`, no cuando el recolector la encuentre (A22).
+        return closing_connection(self.database)
 
     # -- escritura ---------------------------------------------------------
 

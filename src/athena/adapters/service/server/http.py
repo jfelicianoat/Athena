@@ -99,8 +99,11 @@ _REASONS = {
     405: "Method Not Allowed",
     409: "Conflict",
     410: "Gone",
+    408: "Request Timeout",
     413: "Payload Too Large",
+    431: "Request Header Fields Too Large",
     500: "Internal Server Error",
+    503: "Service Unavailable",
 }
 
 Handler = Callable[[Request], Awaitable[Response]]

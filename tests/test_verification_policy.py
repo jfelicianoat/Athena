@@ -12,6 +12,7 @@ from athena.state import AgentState, SessionState
 from athena.verification import (
     ChangeIntegrityPolicy,
     CheckKind,
+    ChecksAlwaysAuthorized,
     CommandVerificationPolicy,
     IntegrityAuthorization,
     PlanSource,
@@ -73,7 +74,9 @@ def _session(*modified: str) -> SessionState:
 
 
 def _policy(root: Path) -> CommandVerificationPolicy:
-    return CommandVerificationPolicy(VerificationPlanner(Workspace.from_path(root)))
+    return CommandVerificationPolicy(
+        VerificationPlanner(Workspace.from_path(root)), authorizer=ChecksAlwaysAuthorized()
+    )
 
 
 # --------------------------------------------------------------- planning

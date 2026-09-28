@@ -25,6 +25,7 @@ from enum import StrEnum
 
 from athena.types import JSONObject
 from athena.verification import (
+    NOT_AUTHORIZED_EVIDENCE,
     CheckKind,
     CheckOutcome,
     VerificationResult,
@@ -51,6 +52,8 @@ class FailureKind(StrEnum):
     MISSING_DELIVERABLE = "missing_deliverable"
     #: Nothing ran, so nothing was proven either way.
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    #: Habia comprobaciones, pero ejecutarlas no estaba autorizado en este run.
+    EXECUTION_NOT_AUTHORIZED = "execution_not_authorized"
     #: Recognised as a failure and nothing more. Routes to undirected repair.
     UNKNOWN = "unknown"
 
@@ -136,6 +139,10 @@ _GUIDANCE: dict[FailureKind, str] = {
     FailureKind.INSUFFICIENT_EVIDENCE: (
         "Nothing ran, so nothing is proven. Do not treat this as either success or failure."
     ),
+    FailureKind.EXECUTION_NOT_AUTHORIZED: (
+        "The project defines checks, but running them was not authorized for this run. "
+        "Nothing was executed. Enable or approve local execution to verify the work."
+    ),
     FailureKind.UNKNOWN: (
         "The failure was not recognised. Read the output below and decide what it means "
         "before changing anything."
@@ -212,6 +219,14 @@ def diagnose(
     else's bug on Athena's budget.
     """
     if result.status is VerificationStatus.INCONCLUSIVE:
+        if any(item.kind == NOT_AUTHORIZED_EVIDENCE for item in result.evidence):
+            # No es «el proyecto no define checks»: los define, y no se ejecutaron porque
+            # nadie lo autorizo. Mandar a configurar checks que ya existen seria mentir.
+            return FailureDiagnosis(
+                kind=FailureKind.EXECUTION_NOT_AUTHORIZED,
+                summary=result.summary or "Running the checks was not authorized.",
+                guidance=_GUIDANCE[FailureKind.EXECUTION_NOT_AUTHORIZED],
+            )
         return FailureDiagnosis(
             kind=FailureKind.INSUFFICIENT_EVIDENCE,
             summary=result.summary or "Nothing was proven either way.",
@@ -374,6 +389,7 @@ class InconclusiveReason(StrEnum):
     AMBIGUOUS_RESULT = "ambiguous_result"
     PARTIAL_VERIFICATION = "partial_verification"
     EXTERNAL_SERVICE_UNAVAILABLE = "external_service_unavailable"
+    EXECUTION_NOT_AUTHORIZED = "execution_not_authorized"
 
 
 #: Which diagnoses mean "we could not tell", as opposed to "it is broken".
@@ -382,6 +398,7 @@ _INCONCLUSIVE_KINDS: dict[FailureKind, InconclusiveReason] = {
     FailureKind.ENVIRONMENT_ERROR: InconclusiveReason.ENVIRONMENT_INCOMPLETE,
     FailureKind.TOOL_FAILURE: InconclusiveReason.TOOL_UNAVAILABLE,
     FailureKind.INSUFFICIENT_EVIDENCE: InconclusiveReason.NO_CHECKS_DEFINED,
+    FailureKind.EXECUTION_NOT_AUTHORIZED: InconclusiveReason.EXECUTION_NOT_AUTHORIZED,
     # Una comprobacion que ya estaba en rojo y sigue en rojo no la rompio este run, pero
     # tampoco esta probada: parte del proyecto quedo sin comprobar y eso es exactamente
     # `PARTIAL_VERIFICATION`. Antes esa situacion se reportaba como «todas las

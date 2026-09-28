@@ -15,6 +15,7 @@ from athena.process_tools import run_process
 from athena.state import SessionState
 from athena.types import JSONObject
 from athena.verification.artefactos import _declared_paths
+from athena.verification.autorizacion import CheckAuthorizer
 from athena.verification.contratos import (
     _CHECK_ENVIRONMENT,
     _DEFAULT_CHECK_TIMEOUT,
@@ -27,9 +28,18 @@ from athena.verification.contratos import (
     VerificationResult,
     VerificationStatus,
 )
-from athena.verification.integridad import ChangeIntegrityPolicy, IntegrityFinding
+from athena.verification.integridad import (
+    ChangeIntegrityPolicy,
+    IntegrityFinding,
+    without_preexisting,
+)
 from athena.verification.plan import VerificationPlanner
 from athena.workspace import Workspace
+from athena.workspace_access import WORKSPACE_ACCESS
+
+#: La clase de evidencia que deja una verificacion que no pudo ejecutar el plan porque
+#: nadie lo autorizo. El diagnostico la lee para no llamarla «no hay checks».
+NOT_AUTHORIZED_EVIDENCE = "authorization"
 
 
 class LoopCompletionVerificationPolicy:
@@ -74,31 +84,57 @@ class CommandVerificationPolicy:
         self,
         planner: VerificationPlanner,
         *,
+        authorizer: CheckAuthorizer,
         event_bus: EventBus | None = None,
         integrity: ChangeIntegrityPolicy | None = None,
         check_timeout_seconds: float = _DEFAULT_CHECK_TIMEOUT,
     ) -> None:
         self.planner = planner
+        #: Obligatorio y sin valor por defecto: cada entrada tiene que decir quien
+        #: autoriza ejecutar codigo del proyecto. Un defecto permisivo es justo como la
+        #: verificacion acabo ejecutando tests con la ejecucion desactivada (A01).
+        self.authorizer = authorizer
         self.event_bus = event_bus
         self.integrity = integrity or ChangeIntegrityPolicy()
         self.check_timeout_seconds = check_timeout_seconds
         self.plan = planner.plan()
         self.baseline = Baseline()
+        self._baseline_diff = ""
 
     async def capture_baseline(
         self, workspace: Workspace, cancellation: CancellationToken
     ) -> Baseline:
         """Run the plan before any change, so later failures can be attributed."""
+        # La instantanea del diff va primero y sin pedir permiso: `git diff` con los
+        # drivers externos apagados no ejecuta nada del proyecto, y sin ella la integridad
+        # le atribuiria al run lo que la persona ya tenia cambiado (A19).
+        self._baseline_diff = await self._git_diff(workspace, cancellation) or ""
         if self.plan.is_empty:
             return self.baseline
+        if not await self.authorizer.authorize(
+            self.plan.checks, workspace, cancellation, session_id="baseline"
+        ):
+            # Sin autorizacion no hay linea base: nada del proyecto se ejecuta.
+            return self.baseline
         outcomes: dict[str, bool] = {}
-        for check in self.plan.checks:
-            outcome = await self._run_check(check, workspace, cancellation, session_id="baseline")
-            outcomes[check.name] = outcome.passed
+        async with WORKSPACE_ACCESS.hold(workspace.root, write=False):
+            for check in self.plan.checks:
+                outcome = await self._run_check(
+                    check, workspace, cancellation, session_id="baseline"
+                )
+                outcomes[check.name] = outcome.passed
         self.baseline = Baseline(outcomes, captured=True)
         return self.baseline
 
     async def verify(
+        self, state: SessionState, workspace: Workspace, cancellation: CancellationToken
+    ) -> VerificationResult:
+        # Se juzga un estado quieto: nadie escribe en la carpeta mientras se lee el diff y
+        # corren los checks, o se aprobaria un estado distinto del que se comprobo (A09).
+        async with WORKSPACE_ACCESS.hold(workspace.root, write=False):
+            return await self._verify(state, workspace, cancellation)
+
+    async def _verify(
         self, state: SessionState, workspace: Workspace, cancellation: CancellationToken
     ) -> VerificationResult:
         cancellation.raise_if_cancelled()
@@ -141,6 +177,25 @@ class CommandVerificationPolicy:
                     ),
                 ),
                 "Verification is inconclusive: the project defines no checks Athena may run.",
+            )
+
+        if not await self.authorizer.authorize(
+            self.plan.checks, workspace, cancellation, session_id=session_id
+        ):
+            return VerificationResult(
+                VerificationStatus.INCONCLUSIVE,
+                (
+                    VerificationEvidence(
+                        kind=NOT_AUTHORIZED_EVIDENCE,
+                        summary=(
+                            "The project's checks were not run: local execution is "
+                            "disabled for this run or was not authorized."
+                        ),
+                        metadata=self.plan.describe(),
+                    ),
+                ),
+                "Verification is inconclusive: running the project's checks was not "
+                "authorized, so nothing was executed and nothing is proven.",
             )
 
         introduced: list[str] = []
@@ -238,7 +293,7 @@ class CommandVerificationPolicy:
         diff = await self._git_diff(workspace, cancellation)
         if diff is None:
             return ()
-        return self.integrity.inspect(diff)
+        return self.integrity.inspect(without_preexisting(diff, self._baseline_diff))
 
     async def _git_diff(self, workspace: Workspace, cancellation: CancellationToken) -> str | None:
         if not (workspace.root / ".git").exists():
@@ -250,6 +305,10 @@ class CommandVerificationPolicy:
             "-C",
             str(workspace.root),
             "diff",
+            # Un driver de diff o un `textconv` configurado en el repositorio es un
+            # comando que el proyecto elige: leer el diff no debe ejecutarlo.
+            "--no-ext-diff",
+            "--no-textconv",
             "HEAD",
         )
         try:

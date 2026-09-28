@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -32,6 +31,7 @@ from athena.planning import (
     TaskGraph,
     TaskNode,
 )
+from athena.sqlite_support import closing_connection, migrate
 from athena.subagents import SubagentRole
 from athena.types import JSONObject
 
@@ -89,13 +89,11 @@ class SqliteGraphStore:
             self.database.parent.mkdir(parents=True, exist_ok=True)
         self._lock = asyncio.Lock()
         with self._connect() as connection:
-            connection.executescript(_SCHEMA)
+            migrate(connection, _SCHEMA, 1, "graphs")
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database, timeout=10.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        return connection
+    def _connect(self) -> closing_connection:
+        # Se cierra al salir del `with`, no cuando el recolector la encuentre (A22).
+        return closing_connection(self.database)
 
     # -- writing -----------------------------------------------------------
 

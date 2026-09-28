@@ -8,8 +8,6 @@ import pytest
 from athena.adapters.ai_broker import AiBrokerModelProvider
 from athena.adapters.openai_compatible import OpenAICompatibleModelProvider
 from athena.events import InMemoryEventBus
-from athena.verification import LoopCompletionVerificationPolicy
-from athena.workspace import Workspace
 from athena_desktop.config import (
     DesktopSettings,
     ProviderKind,
@@ -18,11 +16,12 @@ from athena_desktop.config import (
     resolve_token,
 )
 from athena_desktop.runtime import (
+    DesktopStores,
     RunConfiguration,
     build_provider,
-    build_tools,
-    build_verification,
+    build_registry,
     requires_workspace_change,
+    run_options,
 )
 
 
@@ -126,10 +125,20 @@ def test_broker_allows_athena_capabilities_through_its_adapter(tmp_path: Path) -
     configuration.validate()
 
 
-def test_desktop_uses_loop_completion_when_a_folder_defines_no_checks(tmp_path: Path) -> None:
-    policy = build_verification(Workspace.from_path(tmp_path), InMemoryEventBus())
+def test_each_task_kind_maps_to_its_profile_and_evidence(tmp_path: Path) -> None:
+    question = run_options(_configuration(tmp_path, writes="allow"))
+    change = run_options(_configuration(tmp_path, writes="ask", task_kind="change"))
+    documents = run_options(
+        _configuration(tmp_path, writes="ask", task_kind="documents", deliverables=("a.md",))
+    )
 
-    assert isinstance(policy, LoopCompletionVerificationPolicy)
+    assert (question.profile, question.writes.value, question.require_change) == (
+        "questions",
+        "off",
+        False,
+    )
+    assert (change.profile, change.require_change) == ("software_engineering", True)
+    assert (documents.profile, documents.deliverables) == ("documents", ("a.md",))
 
 
 def test_desktop_recognises_an_explicit_file_change_objective() -> None:
@@ -141,9 +150,13 @@ def test_desktop_recognises_an_explicit_file_change_objective() -> None:
 
 
 def test_desktop_registers_only_explicitly_enabled_capabilities(tmp_path: Path) -> None:
-    event_bus = InMemoryEventBus()
-    read_only = build_tools(_configuration(tmp_path), event_bus)
-    enabled = build_tools(_configuration(tmp_path, writes="ask", execution="ask"), event_bus)
+    registry = build_registry(_configuration(tmp_path), DesktopStores(tmp_path / "state"))
+    bus = InMemoryEventBus()
+    read_only = registry.tools_for(run_options(_configuration(tmp_path)), bus)
+    enabled = registry.tools_for(
+        run_options(_configuration(tmp_path, writes="ask", execution="ask", task_kind="change")),
+        bus,
+    )
 
     read_names = {tool.spec.name for tool in read_only}
     enabled_names = {tool.spec.name for tool in enabled}

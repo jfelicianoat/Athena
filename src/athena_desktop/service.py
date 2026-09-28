@@ -16,6 +16,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from athena.adapters.service.launch import ServiceEndpoint, parse_service_ready
+from athena.process_tree import ProcessTreeHandle
 
 
 class ServiceAlreadyRunning(RuntimeError):
@@ -53,6 +54,8 @@ class ManagedAthenaService:
     #: exit code 1, so without recording the request a clean shutdown is indistinguishable
     #: from a crash — and would be reported to a person as one.
     stop_requested: bool = False
+    #: El arbol del proceso, para que parar no deje al interprete hijo con el puerto.
+    tree: ProcessTreeHandle | None = None
 
     @property
     def state(self) -> ServiceState:
@@ -61,15 +64,26 @@ class ManagedAthenaService:
         return ServiceState.STOPPED if self.stop_requested else ServiceState.FAILED
 
     def stop(self, timeout_seconds: float = 5.0) -> None:
+        """Parar el servicio y todo lo que lanzo, con plazo.
+
+        Los runs que tuviera en marcha no se pierden: quedan guardados en su ultimo
+        checkpoint y el siguiente arranque los marca como recuperables.
+        """
         self.stop_requested = True
-        if self.process.poll() is not None:
-            return
-        self.process.terminate()
         try:
-            self.process.wait(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.wait(timeout=timeout_seconds)
+            if self.process.poll() is None:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait(timeout=timeout_seconds)
+        finally:
+            if self.tree is not None:
+                # Tambien si el padre ya salio: lo que quede en su arbol es un huerfano.
+                self.tree.kill()
+                self.tree.close()
+                self.tree = None
 
 
 def default_service_state_dir(environment: dict[str, str] | None = None) -> Path:
@@ -130,6 +144,7 @@ def start_managed_service(
         env=environment,
         creationflags=creationflags,
     )
+    tree = ProcessTreeHandle(process.pid)
     salida = process.stdout
     errores = process.stderr
     if salida is None or errores is None:
@@ -171,13 +186,15 @@ def start_managed_service(
             continue
         endpoint = parse_service_ready(line.strip())
         if endpoint is not None:
-            return ManagedAthenaService(endpoint, process)
+            return ManagedAthenaService(endpoint, process, tree=tree)
 
     process.terminate()
     try:
         process.wait(timeout=2)
     except subprocess.TimeoutExpired:
         process.kill()
+    tree.kill()
+    tree.close()
     raise TimeoutError("Athena no anunció su token antes de agotar el tiempo de arranque")
 
 

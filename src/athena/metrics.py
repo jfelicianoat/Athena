@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from athena.events import EventName, RuntimeEvent
+from athena.sqlite_support import closing_connection, migrate
 from athena.state import ExecutionOutcome
 from athena.types import JSONObject
 
@@ -359,13 +360,11 @@ class SqliteMetricsStore:
             self.database.parent.mkdir(parents=True, exist_ok=True)
         self._lock = asyncio.Lock()
         with self._connect() as connection:
-            connection.executescript(_SCHEMA)
+            migrate(connection, _SCHEMA, 1, "metrics")
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database, timeout=10.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        return connection
+    def _connect(self) -> closing_connection:
+        # Se cierra al salir del `with`, no cuando el recolector la encuentre (A22).
+        return closing_connection(self.database)
 
     async def save(self, metrics: RunMetrics) -> None:
         async with self._lock:

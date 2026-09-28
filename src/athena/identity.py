@@ -35,6 +35,7 @@ from uuid import uuid4
 
 from athena.channels import ChannelIdentity
 from athena.errors import AthenaRuntimeError
+from athena.sqlite_support import closing_connection, migrate
 
 #: Unambiguous when typed or read aloud: no I, L, O, U, 0 or 1. A code that arrives by chat
 #: gets retyped by hand, and a character pair nobody can tell apart is a support ticket.
@@ -282,14 +283,11 @@ class SqliteIdentityDirectory:
         self.attempt_window = attempt_window
         self._lock = asyncio.Lock()
         with self._connect() as connection:
-            connection.executescript(_SCHEMA)
+            migrate(connection, _SCHEMA, 1, "identity")
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database, timeout=10.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA foreign_keys=ON")
-        return connection
+    def _connect(self) -> closing_connection:
+        # Se cierra al salir del `with`, no cuando el recolector la encuentre (A22).
+        return closing_connection(self.database, foreign_keys=True)
 
     # -- users --------------------------------------------------------------------------
 

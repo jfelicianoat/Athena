@@ -52,6 +52,9 @@ class LiveRun:
     #: revisa habla con el servicio, no con el bucle, y el bucle puede estar dentro de una
     #: llamada al modelo cuando llega el cambio.
     goal: GoalBoard | None = None
+    #: Si el run va por el grafo. El grafo no recoge revisiones del objetivo, asi que
+    #: aceptarlas seria prometer un cambio que nadie aplica (A06): se rechazan.
+    hierarchical: bool = False
     #: The tail of this run's event stream, newest last. Ordering here is the ordering the
     #: bus published in, which is what makes "preserve order per run" a property of the
     #: transport rather than a hope about scheduling.

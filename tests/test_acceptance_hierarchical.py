@@ -60,6 +60,7 @@ from athena.subagents import DEFAULT_PROFILES, SubagentRole, SubagentRunner
 from athena.tasks import TaskManager
 from athena.tools import Tool
 from athena.verification import (
+    ChecksAlwaysAuthorized,
     CommandVerificationPolicy,
     VerificationPlanner,
     VerificationStatus,
@@ -154,7 +155,9 @@ def _verification(workspace: Workspace) -> CommandVerificationPolicy:
     Built the same way `RunRegistry` builds it, so a mismatch between the acceptance suite
     and the runtime would show up here rather than being hidden behind a stub.
     """
-    return CommandVerificationPolicy(VerificationPlanner(workspace))
+    return CommandVerificationPolicy(
+        VerificationPlanner(workspace), authorizer=ChecksAlwaysAuthorized()
+    )
 
 
 def _executor(
@@ -433,8 +436,8 @@ def test_a_run_can_be_undone_without_touching_a_person_s_work(tmp_path: Path) ->
         (workspace.root / "notes.md").write_text("a person wrote this\n", encoding="utf-8")
         ledger = RollbackLedger(CheckpointStore(tmp_path / "checkpoints"))
         await ledger.checkpoint("T02", workspace, ["calc.py", "notes.md"])
-        ledger.record_written("T02", ["calc.py"])
         (workspace.root / "calc.py").write_text("a bad fix\n", encoding="utf-8")
+        ledger.record_written("T02", ["calc.py"])
         (workspace.root / "notes.md").write_text("edited meanwhile\n", encoding="utf-8")
 
         result = await ledger.roll_back(workspace, scope=RollbackScope.RUN)

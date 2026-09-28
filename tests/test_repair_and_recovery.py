@@ -42,6 +42,7 @@ from athena.testing import FakeModelProvider, ScriptedPermissionPrompt
 from athena.tool_executor import ToolExecutor
 from athena.types import JSONObject
 from athena.verification import (
+    ChecksAlwaysAuthorized,
     CommandVerificationPolicy,
     VerificationEvidence,
     VerificationPlanner,
@@ -106,7 +107,7 @@ def _runtime(
         prompt=ScriptedPermissionPrompt((PermissionDecision.ALLOW,) * approvals),
     )
     verification_policy = verification or CommandVerificationPolicy(
-        VerificationPlanner(workspace), event_bus=bus
+        VerificationPlanner(workspace), authorizer=ChecksAlwaysAuthorized(), event_bus=bus
     )
     loop = AgentLoop(
         provider,

@@ -32,6 +32,7 @@ from athena.stores import SqliteToolResultStore
 from athena.testing import ScriptedPermissionPrompt
 from athena.tool_executor import ToolExecutor
 from athena.verification import (
+    ChecksAlwaysAuthorized,
     CommandVerificationPolicy,
     VerificationPlanner,
     VerificationStatus,
@@ -163,7 +164,9 @@ def _build(
         executor,
         ContextBuilder(workspace),
         bus,
-        verification=CommandVerificationPolicy(VerificationPlanner(workspace), event_bus=bus),
+        verification=CommandVerificationPolicy(
+            VerificationPlanner(workspace), authorizer=ChecksAlwaysAuthorized(), event_bus=bus
+        ),
         session_store=store,
         config=AgentLoopConfig(max_iterations=8, session_timeout_seconds=600.0),
     )

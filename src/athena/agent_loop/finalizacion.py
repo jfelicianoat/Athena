@@ -311,8 +311,9 @@ class FinalizacionMixin(EjecucionMixin):
         # inventa una: se dice lo que paso. Poner aqui una frase en su nombre seria
         # atribuirle una conclusion que no llego a sacar.
         aviso = ModelResponse(
-            "El run se abandono por repetirse sin avanzar. El trabajo que quedo en el "
-            "workspace si pasa las comprobaciones del proyecto; la evidencia va adjunta.",
+            "El modelo se detuvo por repetirse sin avanzar. Lo que dejó escrito "
+            "en el proyecto sí supera la verificación de este trabajo; la evidencia va "
+            "adjunta.",
             "athena",
             "stop",
         )

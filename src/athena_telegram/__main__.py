@@ -112,7 +112,13 @@ async def serve(settings: ServiceSettings, *, stop: asyncio.Event | None = None)
             + ", ".join(sin_permiso)
         )
 
-    adapter = TelegramAdapter(TelegramApi(resolve_token()), security)
+    # El offset y los ids vistos viven junto al estado del servicio: un reinicio no
+    # vuelve a lanzar el run de un mensaje que ya se recibio (A23).
+    adapter = TelegramAdapter(
+        TelegramApi(resolve_token()),
+        security,
+        state_path=settings.state_dir / "telegram-updates.json",
+    )
     service = build_service(settings)
     host, port = await service.start()
     endpoint = ServiceEndpoint(f"http://{host}:{port}", settings.service_token)

@@ -1,5 +1,8 @@
 """Bringing isolated writers back together, with git deciding what conflicts.
 
+**Estado: biblioteca experimental, no conectada** (ver `isolation.py`). Ningun camino de
+ejecucion la llama todavia.
+
 `isolation.py` gives each writer its own checkout and reports which files more than one of
 them touched. Overlap is not conflict — two tasks can edit opposite ends of a file and
 agree perfectly — so this is the step that finds out, and it finds out by asking git rather

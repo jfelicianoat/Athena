@@ -44,6 +44,7 @@ from athena.tools import (
 )
 from athena.types import JSONValue
 from athena.workspace import Workspace
+from athena.workspace_access import WORKSPACE_ACCESS
 
 
 class ToolExecutor:
@@ -158,14 +159,20 @@ class ToolExecutor:
                         "resources": list(request.resources),
                     },
                 )
-            result = await await_cancellable(
-                tool.execute(context, arguments, cancellation),
-                cancellation,
-                # Lo que la tool declare, y si no declara nada, el techo generico. Al
-                # reves —el generico siempre— una delegacion moria a los 30 s pasara lo
-                # que pasara, y el fallo se atribuia al delegado en vez de al reloj.
-                timeout=tool.spec.timeout_seconds or self.tool_timeout_seconds,
-            )
+            # Dentro de la carpeta segun lo que hace la tool: leer se solapa con leer;
+            # escribir o ejecutar va solo. Si la tarea ya tiene la carpeta (el coder de un
+            # grafo), no se vuelve a pedir (A09).
+            async with WORKSPACE_ACCESS.hold(
+                workspace.root, write=not tool.is_read_only(arguments)
+            ):
+                result = await await_cancellable(
+                    tool.execute(context, arguments, cancellation),
+                    cancellation,
+                    # Lo que la tool declare, y si no declara nada, el techo generico. Al
+                    # reves —el generico siempre— una delegacion moria a los 30 s pasara lo
+                    # que pasara, y el fallo se atribuia al delegado en vez de al reloj.
+                    timeout=tool.spec.timeout_seconds or self.tool_timeout_seconds,
+                )
             correlated = replace(result, call_id=call.call_id)
             # El contrato se comprueba sobre el resultado canonico, antes de externalizar:
             # despues, lo que hay es el recibo del almacen y no lo que la tool prometio, y

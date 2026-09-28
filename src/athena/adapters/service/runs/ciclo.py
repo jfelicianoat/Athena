@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Iterator
+from dataclasses import replace
 from uuid import uuid4
 
 from athena.adapters.service.approvals import (
@@ -23,7 +25,13 @@ from athena.adapters.service.runs.opciones import (
 )
 from athena.adapters.service.runs.suscripcion import LiveRun
 from athena.agent_loop import AgentRunResult
-from athena.cancellation import CancellationSource
+from athena.cancellation import (
+    CancellationReason,
+    CancellationScope,
+    CancellationSource,
+    CancellationToken,
+    chained_source,
+)
 from athena.errors import AthenaRuntimeError, ToolValidationError
 from athena.events import EventName, RuntimeEvent
 from athena.goals import GoalBoard
@@ -31,7 +39,41 @@ from athena.graph_store import StoredPlan
 from athena.security import redact_sensitive
 from athena.session_store import SessionRecord
 from athena.state import AgentStatus
-from athena.workspace import Workspace
+from athena.types import JSONObject
+from athena.workspace import Workspace, project_identity
+
+#: Runs terminados que se conservan en memoria para replay y consulta rapida.
+_MAX_FINISHED_RUNS = 100
+
+
+@contextlib.contextmanager
+def _deadline(source: CancellationSource, seconds: float) -> Iterator[CancellationToken]:
+    """El plazo del run entero, como una cancelacion con motivo `timed_out`.
+
+    El bucle mide su propio reloj; el grafo no tenia ninguno y un run jerarquico con
+    `session_timeout_seconds=0.01` seguia hasta el final (A06). Encadenado al token del
+    run, alcanza al planificador, a cada hijo y a sus procesos por la misma via que una
+    cancelacion pedida, y `classify_outcome` lo cuenta como tiempo agotado.
+    """
+    limited = chained_source(source.token, CancellationScope.RUN)
+    handle = asyncio.get_running_loop().call_later(
+        seconds, limited.cancel, CancellationReason.TIMED_OUT
+    )
+    try:
+        yield limited.token
+    finally:
+        handle.cancel()
+
+
+def run_manifest(objective: str, workspace: Workspace, options: RunOptions) -> JSONObject:
+    """Lo que se autorizo al crear un run, en una forma que sobrevive al proceso."""
+    return {
+        "version": 1,
+        "workspace_root": str(workspace.root),
+        "project_id": workspace.workspace_id,
+        "objective": objective,
+        "options": options.to_json(),
+    }
 
 
 class CicloMixin(ConstruccionMixin):
@@ -97,6 +139,7 @@ class CicloMixin(ConstruccionMixin):
             return await self._work(run_id, objective, workspace, options, shape, source)
         finally:
             await self._measure(run_id)
+            self._evict_finished(keep=run_id)
 
     async def _measure(self, run_id: str) -> None:
         """Guardar lo contado, cuando el run ya no va a cambiar.
@@ -134,19 +177,24 @@ class CicloMixin(ConstruccionMixin):
             await self.orchestrator.announce(run_id, shape)
         if shape.hierarchical:
             catalog = {tool.spec.name: tool for tool in self.tools_for(options, self.event_bus)}
-            result = await self.orchestrator.run_graph(
-                run_id,
-                objective,
-                workspace,
-                shape,
-                catalog,
-                self.policy_for(options),
-                verification=self.verification_for(options, workspace),
-                prompt=prompt,
-                cancellation=source.token,
-            )
+            with _deadline(source, options.session_timeout_seconds) as limited:
+                result = await self.orchestrator.run_graph(
+                    run_id,
+                    objective,
+                    workspace,
+                    shape,
+                    catalog,
+                    self.policy_for(options),
+                    verification=self.verification_for(run_id, options, workspace),
+                    prompt=prompt,
+                    cancellation=limited,
+                    provider=self.provider_for(options),
+                )
             if result is not None:
                 return _from_graph(run_id, workspace, result)
+            # El plan no salio y el objetivo se hace con el bucle: desde aqui si se pueden
+            # recoger revisiones del objetivo.
+            self._runs[run_id].hierarchical = False
         loop = self._build(run_id, workspace, options, notes)
         resultado = await loop.run(
             objective,
@@ -189,7 +237,14 @@ class CicloMixin(ConstruccionMixin):
         shape = self.orchestrator.decide(workspace, objective, mode=settings.execution_mode)
         run_id = str(uuid4())
         source = CancellationSource()
-        self._runs[run_id] = LiveRun(run_id, workspace, settings, source, goal=GoalBoard(objective))
+        self._runs[run_id] = LiveRun(
+            run_id,
+            workspace,
+            settings,
+            source,
+            goal=GoalBoard(objective),
+            hierarchical=shape.hierarchical,
+        )
 
         started = asyncio.Event()
 
@@ -197,6 +252,9 @@ class CicloMixin(ConstruccionMixin):
             if event.session_id == run_id:
                 started.set()
 
+        # Lo autorizado, guardado antes de empezar a trabajar: tras un reinicio es lo
+        # unico que dice con que permisos, perfil, entregables y presupuesto se creo (A07).
+        await self.session_store.save_manifest(run_id, run_manifest(objective, workspace, settings))
         unsubscribe = self.event_bus.subscribe(note, (EventName.SESSION_PERSISTED,))
         self._runs[run_id].task = asyncio.ensure_future(
             self._execute(run_id, objective, workspace, settings, shape, source)
@@ -227,7 +285,7 @@ class CicloMixin(ConstruccionMixin):
             raise ToolValidationError(
                 f"Run {run_id} is {record.status.value}, not recovery_pending"
             )
-        options = self._runs[run_id].options if run_id in self._runs else RunOptions()
+        options = await self._resumed_options(run_id, record, workspace)
         source = CancellationSource()
         stored = await self.orchestrator.stored_plan(run_id)
         if stored is not None:
@@ -243,18 +301,76 @@ class CicloMixin(ConstruccionMixin):
                     f"unknown outcome: {names}. Somebody has to say what happened to them "
                     "before the plan can go on."
                 )
-            self._runs[run_id] = LiveRun(run_id, workspace, options, source)
+            self._runs[run_id] = LiveRun(
+                run_id,
+                workspace,
+                options,
+                source,
+                goal=GoalBoard(record.objective),
+                hierarchical=True,
+            )
             self._runs[run_id].task = asyncio.ensure_future(
                 self._continue(run_id, stored, workspace, options, source)
             )
             return run_id
 
-        self._runs[run_id] = LiveRun(run_id, workspace, options, source)
+        self._runs[run_id] = LiveRun(
+            run_id, workspace, options, source, goal=GoalBoard(record.objective)
+        )
         loop = self._build(run_id, workspace, options)
         self._runs[run_id].task = asyncio.ensure_future(
             loop.resume(run_id, workspace, source.token)
         )
         return run_id
+
+    async def _resumed_options(
+        self, run_id: str, record: SessionRecord, workspace: Workspace
+    ) -> RunOptions:
+        """Las condiciones con las que se creo el run, no unas por defecto.
+
+        Antes, tras un reinicio, `resume` usaba `RunOptions()`: un run de documentos con
+        escrituras `off`, un entregable y 3 iteraciones volvia como `ask/ask`, sin perfil,
+        sin entregable y con 12 iteraciones — y aceptaba otra carpeta (A07).
+
+        Ahora se lee el manifiesto: la raiz tiene que ser la misma, y el presupuesto es lo
+        que quedaba, no uno nuevo. Un run de antes de que existiera el manifiesto se
+        reanuda con los valores prudentes (`ask`), y se dice.
+        """
+        manifest = await self.session_store.load_manifest(run_id)
+        if manifest is None:
+            if run_id in self._runs:
+                return self._runs[run_id].options
+            return RunOptions()
+        stored_root = str(manifest.get("workspace_root") or "")
+        if project_identity(stored_root) != project_identity(workspace.root):
+            raise ToolValidationError(
+                f"Run {run_id} belongs to {stored_root}, not to {workspace.root}. "
+                "A run is resumed in the project it was created for."
+            )
+        raw = manifest.get("options")
+        options = RunOptions.from_json(raw if isinstance(raw, dict) else {})
+        used_iterations = max(
+            (
+                int(value)
+                for checkpoint in record.checkpoints
+                if isinstance(value := checkpoint.payload.get("iteration"), int)
+            ),
+            default=0,
+        )
+        elapsed = max(0.0, (record.updated_at - record.created_at).total_seconds())
+        remaining_iterations = options.max_iterations - used_iterations
+        remaining_seconds = options.session_timeout_seconds - elapsed
+        if remaining_iterations <= 0 or remaining_seconds <= 0:
+            raise ToolValidationError(
+                f"Run {run_id} already used its budget ({used_iterations} of "
+                f"{options.max_iterations} iterations, {elapsed:.0f} of "
+                f"{options.session_timeout_seconds:.0f} s). Start a new run to go on."
+            )
+        return replace(
+            options,
+            max_iterations=remaining_iterations,
+            session_timeout_seconds=remaining_seconds,
+        )
 
     async def _continue(
         self,
@@ -264,16 +380,18 @@ class CicloMixin(ConstruccionMixin):
         options: RunOptions,
         source: CancellationSource,
     ) -> AgentRunResult:
-        result = await self.orchestrator.continue_graph(
-            run_id,
-            stored,
-            workspace,
-            {tool.spec.name: tool for tool in self.tools_for(options, self.event_bus)},
-            self.policy_for(options),
-            verification=self.verification_for(options, workspace),
-            prompt=self._ask(run_id),
-            cancellation=source.token,
-        )
+        with _deadline(source, options.session_timeout_seconds) as limited:
+            result = await self.orchestrator.continue_graph(
+                run_id,
+                stored,
+                workspace,
+                {tool.spec.name: tool for tool in self.tools_for(options, self.event_bus)},
+                self.policy_for(options),
+                verification=self.verification_for(run_id, options, workspace),
+                prompt=self._ask(run_id),
+                cancellation=limited,
+                provider=self.provider_for(options),
+            )
         return _from_graph(run_id, workspace, result)
 
     async def cancel(self, run_id: str) -> None:
@@ -318,6 +436,23 @@ class CicloMixin(ConstruccionMixin):
         """
         while self._writes:
             await asyncio.gather(*tuple(self._writes), return_exceptions=True)
+
+    def _evict_finished(self, *, keep: str) -> None:
+        """Soltar de memoria los runs terminados mas viejos.
+
+        El registro guardaba todos los runs que habian pasado por el proceso: cada replay
+        estaba acotado a 256 eventos, pero el numero de runs no (A21). Lo que se suelta
+        sigue en disco —sesion, historial y copias— y se consulta desde ahi.
+        """
+        finished = [
+            run_id
+            for run_id, run in self._runs.items()
+            if run_id != keep and run.finished and not run.subscribers
+        ]
+        for run_id in finished[: max(0, len(finished) - _MAX_FINISHED_RUNS)]:
+            self._runs.pop(run_id, None)
+            self._forget_lineage(run_id)
+            self.orchestrator.forget_ledger(run_id)
 
     def replay(self, run_id: str, last_event_id: str) -> tuple[RuntimeEvent, ...] | None:
         """What a reconnecting client missed, or `None` if it must resynchronise."""

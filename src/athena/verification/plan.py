@@ -71,7 +71,9 @@ class VerificationPlanner:
         for check in checks:
             if not check.command:
                 continue
-            classification = self.command_policy.classify(check.command, ".")
+            classification = self.command_policy.classify(
+                check.command, ".", workspace_root=self.workspace.root
+            )
             if classification.tier is RiskTier.R2_LOCAL_EXECUTION:
                 allowed.append(check)
         return tuple(allowed)
@@ -120,17 +122,41 @@ class VerificationPlanner:
         if not isinstance(tools, dict):
             return ()
         checks: list[VerificationCheck] = []
+        python = self._interpreter()
         if "pytest" in tools:
             checks.append(
-                VerificationCheck("pytest", CheckKind.TEST, ("python", "-m", "pytest", "-q"))
+                VerificationCheck("pytest", CheckKind.TEST, (python, "-m", "pytest", "-q"))
             )
         if "ruff" in tools:
             checks.append(
-                VerificationCheck("ruff", CheckKind.LINT, ("python", "-m", "ruff", "check", "."))
+                VerificationCheck("ruff", CheckKind.LINT, (python, "-m", "ruff", "check", "."))
+            )
+            # El formato es otra puerta, y la de Athena la exige: `check` no la mira.
+            checks.append(
+                VerificationCheck(
+                    "ruff-format", CheckKind.LINT, (python, "-m", "ruff", "format", "--check", ".")
+                )
             )
         if "mypy" in tools:
-            checks.append(VerificationCheck("mypy", CheckKind.TYPECHECK, ("python", "-m", "mypy")))
+            checks.append(VerificationCheck("mypy", CheckKind.TYPECHECK, (python, "-m", "mypy")))
         return tuple(checks)
+
+    def _interpreter(self) -> str:
+        """El Python del proyecto si tiene entorno virtual propio, y si no el del PATH.
+
+        `python` a secas es el del sistema, que puede no tener las dependencias del
+        proyecto: la comprobacion fallaba por el entorno y se leia como fallo del trabajo
+        (A19). Solo se usa un entorno que este dentro del proyecto.
+        """
+        for candidate in (
+            self.workspace.root / ".venv" / "Scripts" / "python.exe",
+            self.workspace.root / ".venv" / "bin" / "python",
+            self.workspace.root / "venv" / "Scripts" / "python.exe",
+            self.workspace.root / "venv" / "bin" / "python",
+        ):
+            if candidate.is_file():
+                return str(candidate)
+        return "python"
 
     def _from_package_json(self) -> tuple[VerificationCheck, ...]:
         config = self.workspace.root / "package.json"

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path, PurePath
-from uuid import uuid4
 
 from athena.errors import WorkspaceBoundaryError, WorkspacePathNotFoundError
 
@@ -25,7 +26,15 @@ class Workspace:
 
     @classmethod
     def from_path(cls, root: Path | str, workspace_id: str | None = None) -> Workspace:
-        return cls(workspace_id or str(uuid4()), Path(root))
+        """El workspace de una carpeta, con una identidad que no cambia entre runs.
+
+        Antes cada llamada inventaba un UUID, asi que dos runs sobre la misma carpeta eran
+        dos proyectos distintos para todo lo que se indexa por identidad: la memoria de
+        proyecto guardaba lo aprendido bajo un id que nadie volveria a usar, y el replay
+        de una peticion idempotente devolvia otro workspace (A08).
+        """
+        path = Path(root)
+        return cls(workspace_id or project_identity(path), path)
 
     def resolve(self, requested: Path | str, *, must_exist: bool = True) -> Path:
         """Canonicaliza una ruta pedida y responde a dos preguntas en este orden.
@@ -65,8 +74,26 @@ class Workspace:
             raise WorkspaceBoundaryError(f"Pattern escapes workspace: {pattern}")
         return pattern.replace("\\", "/")
 
-    def relative(self, path: Path) -> str:
-        canonical = path.resolve(strict=True)
+    def relative(self, path: Path, *, must_exist: bool = True) -> str:
+        # `must_exist=False` para rutas que aun no existen: la copia previa de un fichero
+        # que se va a crear necesita su ruta relativa antes de que exista (A10).
+        canonical = path.resolve(strict=must_exist)
         if not canonical.is_relative_to(self.root):
             raise WorkspaceBoundaryError(f"Path escapes workspace: {path}")
         return canonical.relative_to(self.root).as_posix()
+
+
+def project_identity(root: Path | str) -> str:
+    """Identidad duradera de un proyecto: la de su ruta canonica.
+
+    Canonica de verdad: resuelta (enlaces incluidos) y, en Windows, sin distinguir
+    mayusculas, porque `D:\\Repo` y `d:\\repo` son la misma carpeta. Mover el proyecto
+    de sitio le da otra identidad; es lo esperable de algo que se identifica por donde
+    esta, y se documenta asi en vez de adivinar que dos carpetas son la misma.
+    """
+    try:
+        canonical = Path(root).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        canonical = Path(root).expanduser().absolute()
+    key = os.path.normcase(str(canonical))
+    return "proj-" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]

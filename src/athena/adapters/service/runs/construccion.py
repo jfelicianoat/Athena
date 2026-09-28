@@ -11,12 +11,14 @@ import asyncio
 import contextlib
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from athena.adapters.service.approvals import (
     DEFAULT_APPROVAL_TIMEOUT_SECONDS,
     DEFAULT_DELIVERY_TIMEOUT_SECONDS,
     ApprovalRegistry,
+    PendingApproval,
     RemotePermissionPrompt,
 )
 from athena.adapters.service.orchestration import (
@@ -43,6 +45,7 @@ from athena.graph_executor import GraphResult
 from athena.hooks import HookRegistry
 from athena.metrics import MetricsCollector, SqliteMetricsStore
 from athena.model_catalog import ModelCatalog
+from athena.model_pinning import pinned
 from athena.models import ModelProvider
 from athena.mutation_tools import workspace_mutation_tools
 from athena.permissions import PermissionPolicy, PolicyPermissionEngine
@@ -50,7 +53,7 @@ from athena.process_tools import BashTool
 from athena.profiles import Evidence, ProfileRegistry
 from athena.registry import ToolRegistry
 from athena.repository_tools import repository_read_tools
-from athena.rollback import checkpointing_hook
+from athena.rollback import checkpointing_hooks
 from athena.run_event_log import RunEventLog
 from athena.session_store import SessionStore
 from athena.state import ExecutionOutcome, SessionState
@@ -65,8 +68,10 @@ from athena.tool_executor import ToolExecutor
 from athena.tools import Tool
 from athena.types import JSONObject
 from athena.verification import (
+    AnswerVerificationPolicy,
     ArtifactVerificationPolicy,
     CommandVerificationPolicy,
+    PermissionCheckAuthorizer,
     VerificationPlanner,
     VerificationPolicy,
 )
@@ -75,6 +80,12 @@ from athena.workspace import Workspace
 
 class ConstruccionMixin:
     """Estado del registro y armado de cada run."""
+
+    if TYPE_CHECKING:
+        # Lo que aporta `CicloMixin`, declarado para el comprobador de tipos (A24).
+        def _durable(self, event: RuntimeEvent) -> None: ...
+        def _require(self, run_id: str) -> LiveRun: ...
+        def _publish_approval(self, pending: PendingApproval) -> None: ...
 
     def __init__(
         self,
@@ -276,6 +287,13 @@ class ConstruccionMixin:
             raise ToolValidationError(f"El run {run_id} ya termino: su objetivo no cambia")
         if run.goal is None:  # pragma: no cover - todo run vivo se crea con tablero
             raise ToolValidationError(f"El run {run_id} no admite revisiones")
+        if run.hierarchical:
+            # El grafo no lee el tablero entre tareas: aceptar la revision y seguir con el
+            # encargo anterior es lo que encontro la auditoria (A06). Se dice que no.
+            raise ToolValidationError(
+                f"El run {run_id} se ejecuta como plan de tareas y no puede cambiar de "
+                "objetivo a mitad: cancelalo y lanza uno nuevo con el objetivo revisado"
+            )
         return run.goal.revise(text, base_revision=base_revision, reason=reason)
 
     def goal_of(self, run_id: str) -> GoalBoard:
@@ -295,19 +313,35 @@ class ConstruccionMixin:
         libro = self.orchestrator.ledger_for(run_id)
         if libro is None:
             return HookRegistry()
-        return HookRegistry((checkpointing_hook(libro, workspace),))
+        return HookRegistry(checkpointing_hooks(libro, workspace))
 
-    def verification_for(self, options: RunOptions, workspace: Workspace) -> VerificationPolicy:
+    def verification_for(
+        self, run_id: str, options: RunOptions, workspace: Workspace
+    ) -> VerificationPolicy:
         """Como se prueba que el trabajo esta hecho, segun para que se use Athena.
 
         Un solo sitio y no tres. Los caminos directo, jerarquico y reanudado montaban cada
         uno el suyo, asi que un perfil nuevo habria entrado en uno y no en los otros — y el
         mismo run se habria verificado distinto segun por donde entrase.
+
+        Ejecutar las comprobaciones del proyecto es ejecutar su codigo, asi que pasa por
+        la misma autoridad que `bash`: con `execution=off` no se ejecuta nada, con `ask`
+        se pregunta por el mismo canal que el resto del run (A01).
         """
         perfil = self.profiles.get(options.profile)
         if perfil.evidence is Evidence.PRODUCED_ARTIFACTS:
             return ArtifactVerificationPolicy(options.deliverables)
-        return CommandVerificationPolicy(VerificationPlanner(workspace), event_bus=self.event_bus)
+        if perfil.evidence is Evidence.ANSWER_ONLY:
+            return AnswerVerificationPolicy()
+        authorizer = PermissionCheckAuthorizer(
+            PolicyPermissionEngine(self.policy_for(options)),
+            enabled=options.execution is not CapabilityMode.OFF,
+            prompt=self._ask(run_id),
+            event_bus=self.event_bus,
+        )
+        return CommandVerificationPolicy(
+            VerificationPlanner(workspace), authorizer=authorizer, event_bus=self.event_bus
+        )
 
     def _ask(self, run_id: str) -> RemotePermissionPrompt:
         """El canal por el que este run pregunta, sea cual sea su forma.
@@ -364,7 +398,7 @@ class ConstruccionMixin:
         # por su cuenta abriría una segunda vía de aprobación para el mismo run, y el
         # cliente vería preguntas sin saber de quién son.
         runner = SubagentRunner(
-            self.provider, catalog, self.event_bus, self.result_store, prompt=None
+            self.provider_for(options), catalog, self.event_bus, self.result_store, prompt=None
         )
         service = SubagentService(SubagentProviderRegistry((NativeAthenaSubagentProvider(runner),)))
         # El reloj del despliegue, igual que en el camino jerárquico. Sin esto un
@@ -376,6 +410,14 @@ class ConstruccionMixin:
         reloj = self.orchestrator.settings.task_timeout_seconds
         profiles = {role: budgeted(profile, reloj) for role, profile in DEFAULT_PROFILES.items()}
         return DelegateTaskTool(service, catalog, self.policy_for(options), profiles=profiles)
+
+    def provider_for(self, options: RunOptions) -> ModelProvider:
+        """El proveedor de este run, con su modelo fijado en toda llamada.
+
+        Lo usan el bucle, el planificador, los delegados y los hijos de un grafo. Antes
+        solo el bucle ponia el modelo en su peticion y el resto salia con `None` (A06).
+        """
+        return pinned(self.provider, self.model_for(options))
 
     def model_for(self, options: RunOptions) -> str:
         """El modelo con el que corre este run, o un error si pidio uno que no se ofrece.
@@ -409,20 +451,23 @@ class ConstruccionMixin:
             hooks=self._hooks_for(run_id, workspace),
         )
         return AgentLoop(
-            self.provider,
+            self.provider_for(options),
             registry,
             executor,
             ContextBuilder(
                 workspace, notes=notes, subject=self.profiles.get(options.profile).subject
             ),
             self.event_bus,
-            verification=self.verification_for(options, workspace),
+            verification=self.verification_for(run_id, options, workspace),
             session_store=self.session_store,
             config=AgentLoopConfig(
                 max_iterations=options.max_iterations,
                 session_timeout_seconds=options.session_timeout_seconds,
                 max_repair_cycles=options.max_repair_cycles,
                 model=self.model_for(options),
+                # Quien encarga un cambio lo dice, y un run asi no termina con solo texto
+                # (A04). Antes solo el escritorio lo decidia, con una lista de palabras.
+                require_workspace_change=options.require_change,
             ),
         )
 

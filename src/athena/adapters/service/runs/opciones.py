@@ -14,6 +14,7 @@ from athena.adapters.service.orchestration import (
     ExecutionMode,
 )
 from athena.errors import ToolValidationError
+from athena.types import JSONObject
 
 _SUBSCRIBER_QUEUE_LIMIT = 512
 
@@ -83,6 +84,24 @@ class RunOptions:
     #: al de por defecto — quien elige un modelo y recibe otro no se entera hasta que el
     #: trabajo sale mal, y para entonces ya ha pagado el run entero.
     model: str = ""
+    #: El encargo pide cambiar el proyecto. Un run asi no se da por terminado con solo
+    #: una respuesta: tiene que haber al menos un fichero escrito con exito (A04).
+    require_change: bool = False
+
+    def to_json(self) -> JSONObject:
+        """Las mismas claves que acepta `from_json`, para poder guardarlas y releerlas."""
+        return {
+            "writes": self.writes.value,
+            "exec": self.execution.value,
+            "max_iterations": self.max_iterations,
+            "max_repair_cycles": self.max_repair_cycles,
+            "session_timeout_seconds": self.session_timeout_seconds,
+            "execution_mode": self.execution_mode.value,
+            "profile": self.profile,
+            "deliverables": list(self.deliverables),
+            "model": self.model,
+            "require_change": self.require_change,
+        }
 
     @classmethod
     def from_json(cls, payload: Mapping[str, object]) -> RunOptions:
@@ -127,4 +146,5 @@ class RunOptions:
             profile=str(payload.get("profile") or ""),
             deliverables=_paths(payload.get("deliverables")),
             model=str(payload.get("model") or "").strip(),
+            require_change=payload.get("require_change") is True,
         )

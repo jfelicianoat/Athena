@@ -183,9 +183,27 @@ class EndpointsRunsMixin(TransporteMixin):
         task_id = payload.get("task_id")
         if task_id is not None and not isinstance(task_id, str):
             raise ToolValidationError("task_id must be a string")
-        run = self.registry.run(run_id)
-        resultado = await libro.roll_back(run.workspace, task_id=task_id, scope=scope)
+        workspace = await self._workspace_of(run_id)
+        resultado = await libro.roll_back(workspace, task_id=task_id, scope=scope)
         return Response(200, resultado.to_json())
+
+    async def _workspace_of(self, run_id: str) -> Workspace:
+        """El proyecto de un run, vivo o de antes de un reinicio.
+
+        Antes solo valia un run vivo, asi que tras reiniciar el servicio las copias
+        seguian en el disco y nadie podia usarlas (A13). El manifiesto dice en que carpeta
+        se creo el run; si no hay manifiesto, no se adivina.
+        """
+        if run_id in self.registry.live_ids():
+            return self.registry.run(run_id).workspace
+        manifest = await self.registry.session_store.load_manifest(run_id)
+        root = None if manifest is None else manifest.get("workspace_root")
+        if not isinstance(root, str) or not root:
+            raise ToolValidationError(
+                f"Run {run_id} is not live and its project is not recorded; "
+                "it cannot be rolled back"
+            )
+        return build_workspace(root, self.config.authorized_workspace)
 
     async def _history(self, run_id: str, request: Request) -> Response:
         """Lo que ocurrió en un run, leido del registro y no del run vivo.

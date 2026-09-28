@@ -46,6 +46,9 @@ class Evidence(StrEnum):
     #: Los entregables existen, no están vacíos y los escribió este run. Prueba que algo
     #: se produjo, no que sea bueno.
     PRODUCED_ARTIFACTS = "produced_artifacts"
+    #: Hubo respuesta y no se toco ningun fichero. Es lo unico que una consulta puede
+    #: demostrar, y se etiqueta asi: una respuesta no es trabajo material (A04).
+    ANSWER_ONLY = "answer_only"
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,11 +142,25 @@ DOCUMENTS = AthenaProfile(
 )
 
 
+QUESTIONS = AthenaProfile(
+    name="questions",
+    subject="a project to explain",
+    evidence=Evidence.ANSWER_ONLY,
+    proves=(
+        "The run answered without changing any file. It does not establish that the "
+        "answer is correct: nothing was built, run or written."
+    ),
+    # Solo lectura: una consulta que pudiera escribir dejaria de ser una consulta.
+    tools=_READING,
+    description="Preguntas sobre un proyecto: se lee y se responde, no se cambia nada.",
+)
+
+
 class ProfileRegistry:
     """Los perfiles que este despliegue ofrece."""
 
     def __init__(self, profiles: Iterable[AthenaProfile] = (), *, default: str = "") -> None:
-        entries = tuple(profiles) or (SOFTWARE_ENGINEERING, DOCUMENTS)
+        entries = tuple(profiles) or (SOFTWARE_ENGINEERING, DOCUMENTS, QUESTIONS)
         self._profiles = {profile.name: profile for profile in entries}
         if len(self._profiles) != len(entries):
             raise ValueError("Dos perfiles con el mismo nombre")
@@ -177,6 +194,7 @@ class ProfileRegistry:
 
 __all__ = [
     "DOCUMENTS",
+    "QUESTIONS",
     "SOFTWARE_ENGINEERING",
     "AthenaProfile",
     "Evidence",

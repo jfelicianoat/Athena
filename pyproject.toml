@@ -4,7 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "athena-agent-runtime"
-version = "0.1.1"
+# Una sola fuente de verdad: `athena.__version__`, que es la que ensena la ventana.
+dynamic = ["version"]
 description = "Provider-neutral contracts for the Athena autonomous-agent runtime"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -20,14 +21,19 @@ athena-service = "athena_service:main"
 athena-desktop = "athena_desktop.app:main"
 
 [project.optional-dependencies]
+# Fijadas: son las versiones con las que se comprueban las cuatro puertas (A24). Un
+# rango deja que la misma instalacion de resultados distintos segun el dia.
 dev = [
-  "mypy>=1.11,<2",
-  "pytest>=8.3,<9",
-  "ruff>=0.8,<1",
+  "mypy==1.18.2",
+  "pytest==8.4.2",
+  "ruff==0.16.4",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "athena.__version__" }
 
 [tool.setuptools.package-data]
 athena = ["py.typed"]

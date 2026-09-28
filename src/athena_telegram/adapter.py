@@ -11,7 +11,11 @@ knows about them:
 
 - **Duplicates.** `getUpdates` with an offset usually prevents them, but a crash between
   receiving and committing the offset replays the batch. An update acted on twice is a run
-  started twice, so seen ids are remembered.
+  started twice, so seen ids are remembered — and, when a state file is given, remembered
+  on disk before the update is handed on, so a restart does not replay it either (A23).
+  That makes delivery at-most-once: an update received just before a crash is not acted on
+  twice, and may not be acted on at all. For an agent that edits projects, a missed
+  message the person can resend is the lesser harm.
 - **Malformed and irrelevant updates.** A bot receives edits, joins, stickers and whatever
   the API adds next. None of that is an error, and none of it is a message.
 - **Rate limits.** Telegram allows roughly one message per second to a chat. A run
@@ -22,9 +26,12 @@ knows about them:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import time
 from collections import OrderedDict
+from pathlib import Path
 
 from athena.channels import ChannelIdentity, ChannelMessage, ChannelResponse, ResponseKind
 from athena.errors import AthenaRuntimeError
@@ -72,8 +79,10 @@ class TelegramAdapter:
         security: TelegramSecurity,
         *,
         idle_backoff_seconds: float = 3.0,
+        state_path: Path | None = None,
     ) -> None:
         self._api = api
+        self._state_path = state_path
         self._security = security
         self._idle_backoff = idle_backoff_seconds
         self._offset: int | None = None
@@ -88,6 +97,42 @@ class TelegramAdapter:
         self.dropped_malformed = 0
         self.refused_identities = 0
         self.coalesced_progress = 0
+        self._load_state()
+
+    # -- durable state -------------------------------------------------------------------
+
+    def _load_state(self) -> None:
+        if self._state_path is None or not self._state_path.is_file():
+            return
+        try:
+            payload = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            _logger.warning("telegram.state_unreadable path=%s", self._state_path)
+            return
+        if not isinstance(payload, dict):
+            return
+        offset = payload.get("offset")
+        if isinstance(offset, int) and not isinstance(offset, bool):
+            self._offset = offset
+        seen = payload.get("seen")
+        if isinstance(seen, list):
+            for item in seen[-_SEEN_UPDATES:]:
+                if isinstance(item, int) and not isinstance(item, bool):
+                    self._seen[item] = None
+
+    def _save_state(self) -> None:
+        """Guardar offset y vistos antes de entregar nada. Atomico: un corte a mitad no
+        puede dejar un estado que se lea como «no he visto nada»."""
+        if self._state_path is None:
+            return
+        payload = json.dumps({"offset": self._offset, "seen": list(self._seen)})
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
+            temporary.write_text(payload, encoding="utf-8")
+            os.replace(temporary, self._state_path)
+        except OSError as error:
+            _logger.warning("telegram.state_not_saved %s", error)
 
     @property
     def channel(self) -> str:
@@ -159,14 +204,17 @@ class TelegramAdapter:
 
         accepted = False
         for raw in raw_updates:
+            raw_id = raw.get("update_id") if isinstance(raw, dict) else None
+            if isinstance(raw_id, int) and not isinstance(raw_id, bool):
+                # The offset moves for every update Telegram numbered, including stickers,
+                # edits and whatever this adapter does not act on. Moving it only for the
+                # ones it parsed left a batch of ignored updates being re-read forever.
+                self._offset = max(self._offset or 0, raw_id + 1)
             update = parse_update(raw)
             if update is None:
                 self.dropped_malformed += 1
                 _logger.info("telegram.update_ignored")
                 continue
-            # The offset moves for every well-formed update, including ones this adapter
-            # will not act on. Leaving it behind would mean re-reading them forever.
-            self._offset = max(self._offset or 0, update.update_id + 1)
             if update.update_id in self._seen:
                 self.dropped_duplicates += 1
                 _logger.info("telegram.update_duplicate id=%s", update.update_id)
@@ -174,6 +222,8 @@ class TelegramAdapter:
             self._remember(update.update_id)
             self._pending.append(update)
             accepted = True
+        if raw_updates:
+            self._save_state()
         return accepted
 
     def _remember(self, update_id: int) -> None:

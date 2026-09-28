@@ -6,7 +6,9 @@ thinking time, because a false denial throws away a whole run.
 
 So the wait is split:
 
-- nobody attached           -> deny at once, which is Athena's unattended default anyway;
+- nobody attached           -> deny at once, which is Athena's unattended default anyway —
+                               except in the first seconds of a run, when a client that
+                               just created it may still be subscribing;
 - attached, not yet shown   -> a short delivery window;
 - confirmed on screen       -> the full human window, which only starts on acknowledgement.
 
@@ -30,6 +32,13 @@ from athena.types import JSONObject, JSONValue
 DEFAULT_DELIVERY_TIMEOUT_SECONDS = 30.0
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
 DEFAULT_MAX_CONSECUTIVE_TIMEOUTS = 3
+#: Cuanto se espera, al principio de un run, a que se enganche el cliente que lo creo.
+#:
+#: La primera pregunta de un run llega muy pronto —la de ejecutar los checks del proyecto
+#: para la linea base, antes de tocar nada— y el cliente se suscribe despues de que
+#: `start` le devuelva el id. Sin esta ventana esa pregunta se denegaba siempre por «no
+#: hay nadie», y un run con `exec=ask` no podia verificar nunca.
+DEFAULT_ATTACH_GRACE_SECONDS = 5.0
 
 #: How much of a long argument value a human needs in order to judge the request.
 _ARGUMENT_PREVIEW_CHARS = 200
@@ -172,6 +181,7 @@ class RemotePermissionPrompt:
         delivery_timeout_seconds: float = DEFAULT_DELIVERY_TIMEOUT_SECONDS,
         approval_timeout_seconds: float = DEFAULT_APPROVAL_TIMEOUT_SECONDS,
         max_consecutive_timeouts: int = DEFAULT_MAX_CONSECUTIVE_TIMEOUTS,
+        attach_grace_seconds: float | None = None,
     ) -> None:
         if delivery_timeout_seconds <= 0 or approval_timeout_seconds <= 0:
             raise ValueError("Approval windows must be positive")
@@ -185,8 +195,14 @@ class RemotePermissionPrompt:
         self.approval_timeout_seconds = approval_timeout_seconds
         self.max_consecutive_timeouts = max_consecutive_timeouts
         self.consecutive_timeouts = 0
+        grace = (
+            DEFAULT_ATTACH_GRACE_SECONDS if attach_grace_seconds is None else attach_grace_seconds
+        )
+        self.attach_deadline = time.monotonic() + max(0.0, grace)
 
     async def confirm(self, request: PermissionRequest) -> PermissionDecision:
+        while not self.has_client() and time.monotonic() < self.attach_deadline:
+            await asyncio.sleep(0.05)
         if not self.has_client():
             # Unattended. Athena's default has always been to refuse rather than guess.
             return PermissionDecision.DENY
@@ -255,6 +271,7 @@ class RemotePermissionPrompt:
 
 __all__ = [
     "DEFAULT_APPROVAL_TIMEOUT_SECONDS",
+    "DEFAULT_ATTACH_GRACE_SECONDS",
     "DEFAULT_DELIVERY_TIMEOUT_SECONDS",
     "DEFAULT_MAX_CONSECUTIVE_TIMEOUTS",
     "ApprovalAbandonedError",

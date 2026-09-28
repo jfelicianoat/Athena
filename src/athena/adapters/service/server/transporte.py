@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hmac
+from typing import TYPE_CHECKING
 
 from athena.adapters.service.approvals import ApprovalRegistry
 from athena.adapters.service.projections import (
@@ -40,9 +41,51 @@ from athena.errors import (
     WorkspacePathNotFoundError,
 )
 
+#: Plazos de lectura. Sin ellos una conexion que manda la cabecera a trocitos, o que
+#: anuncia un cuerpo y no lo manda, retiene su tarea indefinidamente.
+_HEADER_TIMEOUT = 10.0
+_BODY_TIMEOUT = 30.0
+#: Conexiones abiertas a la vez. El servicio es loopback, pero sin techo un cliente con
+#: errores puede agotar descriptores y dejar a los demas sin servicio.
+_MAX_CONNECTIONS = 64
+
+
+class _BadRequest(Exception):
+    """Una peticion que se rechaza con una respuesta concreta."""
+
+    def __init__(self, status: int, code: str, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.code = code
+        self.message = message
+
 
 class TransporteMixin:
     """Aceptacion de conexiones y enrutado hacia el endpoint."""
+
+    if TYPE_CHECKING:
+        # El contrato con los mixins de endpoints, dicho para el comprobador de tipos. El
+        # enrutado vive aqui y los manejadores alli; sin esta declaracion mypy no puede
+        # saber que existen, y el refactor de septiembre dejo 44 errores por eso (A24).
+        async def _memory(self, request: Request) -> Response: ...
+        async def _confirm_memory(self, item_id: str) -> Response: ...
+        async def _forget_memory(self, item_id: str) -> Response: ...
+        async def _metrics(self) -> Response: ...
+        async def _list_runs(self, request: Request) -> Response: ...
+        async def _start_run(self, request: Request) -> Response: ...
+        async def _get_run(self, run_id: str) -> Response: ...
+        async def _history(self, run_id: str, request: Request) -> Response: ...
+        def _revise_goal(self, run_id: str, request: Request) -> Response: ...
+        def _rollback_points(self, run_id: str) -> Response: ...
+        async def _rollback(self, run_id: str, request: Request) -> Response: ...
+        async def _resume_run(self, run_id: str, request: Request) -> Response: ...
+        def _acknowledge(self, run_id: str, request_id: str) -> Response: ...
+        def _decide(self, run_id: str, request_id: str, request: Request) -> Response: ...
+        async def _artifact(self, key: str) -> Response: ...
+        async def _create_user(self, request: Request) -> Response: ...
+        async def _issue_link_code(self, request: Request) -> Response: ...
+        async def _list_links(self, user_id: str) -> Response: ...
+        async def _stream_events(self, request: Request, writer: asyncio.StreamWriter) -> None: ...
 
     def __init__(self, registry: RunRegistry, config: ServiceConfig | None = None) -> None:
         self.registry = registry
@@ -63,15 +106,20 @@ class TransporteMixin:
         return str(socket_name[0]), int(socket_name[1])
 
     async def stop(self) -> None:
+        # Las conexiones se cancelan antes de esperar al servidor: desde Python 3.12
+        # `wait_closed` espera a que terminen todos los manejadores, y un stream SSE cuyo
+        # cliente ya se fue no se entera hasta el siguiente latido. Parar el servicio
+        # tardaba eso en cada cliente inactivo.
         if self._server is not None:
             self._server.close()
-            with contextlib.suppress(Exception):
-                await self._server.wait_closed()
-            self._server = None
         for task in tuple(self._connections):
             task.cancel()
             with contextlib.suppress(BaseException):
                 await task
+        if self._server is not None:
+            with contextlib.suppress(Exception):
+                await self._server.wait_closed()
+            self._server = None
         await self.registry.shutdown()
 
     # -- transport --------------------------------------------------------
@@ -81,11 +129,31 @@ class TransporteMixin:
         if task is not None:
             self._connections.add(task)
         try:
-            request = await self._read_request(reader)
+            if len(self._connections) > _MAX_CONNECTIONS:
+                await self._write(
+                    writer, Response(503, error_to_json("busy", "Too many open connections"))
+                )
+                return
+            try:
+                request = await self._read_request(reader)
+            except _BadRequest as refused:
+                # Una peticion mal formada tiene respuesta, no un 500 ni un cierre mudo
+                # (A20): el cliente necesita saber que fue su peticion, y cual.
+                await self._write(
+                    writer, Response(refused.status, error_to_json(refused.code, refused.message))
+                )
+                return
             if request is None:
                 return
             if not self._authorised(request):
                 await self._write(writer, Response(401, error_to_json("unauthorized", "Bad token")))
+                return
+            try:
+                request = await self._read_body(reader, request)
+            except _BadRequest as refused:
+                await self._write(
+                    writer, Response(refused.status, error_to_json(refused.code, refused.message))
+                )
                 return
             if request.method == "GET" and _match(request.path, "/v1/runs/{}/events"):
                 await self._stream_events(request, writer)
@@ -115,24 +183,70 @@ class TransporteMixin:
                 await writer.wait_closed()
 
     async def _read_request(self, reader: asyncio.StreamReader) -> Request | None:
-        head = await reader.readuntil(b"\r\n\r\n")
+        """La cabecera, con plazo y con framing estricto. El cuerpo se lee aparte.
+
+        Se separa a proposito: la credencial se comprueba **antes** de leer el cuerpo, asi
+        que un cliente sin token no puede hacer que el servicio reserve 4 MiB por
+        conexion (A20). `None` cuando el cliente cerro sin mandar nada.
+        """
+        try:
+            head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), _HEADER_TIMEOUT)
+        except asyncio.LimitOverrunError:
+            raise _BadRequest(431, "headers_too_large", "Request headers are too large") from None
+        except asyncio.IncompleteReadError as incomplete:
+            if not incomplete.partial:
+                return None
+            raise _BadRequest(400, "bad_request", "The request ended before its headers") from None
+        except TimeoutError:
+            raise _BadRequest(408, "request_timeout", "The request headers took too long") from None
         if len(head) > _MAX_HEADER_BYTES:
-            return None
+            raise _BadRequest(431, "headers_too_large", "Request headers are too large")
         lines = head.decode("latin-1").split("\r\n")
-        method, _, rest = lines[0].partition(" ")
-        target = rest.rpartition(" ")[0] or "/"
+        parts = lines[0].split(" ")
+        if len(parts) != 3 or not parts[0].isalpha() or not parts[2].startswith("HTTP/"):
+            raise _BadRequest(400, "bad_request", "Malformed request line")
+        method, target = parts[0], parts[1] or "/"
         path, _, raw_query = target.partition("?")
-        headers = {}
+        headers: dict[str, str] = {}
+        lengths: set[str] = set()
         for line in lines[1:]:
             if not line.strip():
                 continue
-            name, _, value = line.partition(":")
-            headers[name.strip().lower()] = value.strip()
-        length = int(headers.get("content-length", "0") or 0)
+            name, separator, value = line.partition(":")
+            if not separator or not name.strip() or name != name.strip():
+                raise _BadRequest(400, "bad_request", "Malformed header line")
+            key = name.strip().lower()
+            if key == "content-length":
+                lengths.add(value.strip())
+            headers[key] = value.strip()
+        if "transfer-encoding" in headers:
+            # Sin soporte de chunked: aceptarlo junto a un Content-Length es la forma
+            # clasica de que dos lectores discrepen sobre donde acaba una peticion.
+            raise _BadRequest(400, "unsupported_framing", "Transfer-Encoding is not supported")
+        if len(lengths) > 1:
+            raise _BadRequest(400, "bad_request", "Conflicting Content-Length headers")
+        raw_length = next(iter(lengths), "0") or "0"
+        if not raw_length.isdigit():
+            raise _BadRequest(400, "bad_request", "Content-Length must be a non-negative integer")
+        length = int(raw_length)
         if length > _MAX_BODY_BYTES:
-            return None
-        body = await reader.readexactly(length) if length else b""
-        return Request(method.upper(), path, _parse_query(raw_query), headers, body)
+            raise _BadRequest(413, "payload_too_large", "The request body is too large")
+        headers["content-length"] = str(length)
+        return Request(method.upper(), path, _parse_query(raw_query), headers, b"")
+
+    async def _read_body(self, reader: asyncio.StreamReader, request: Request) -> Request:
+        length = int(request.headers.get("content-length", "0"))
+        if not length:
+            return request
+        try:
+            body = await asyncio.wait_for(reader.readexactly(length), _BODY_TIMEOUT)
+        except asyncio.IncompleteReadError:
+            raise _BadRequest(
+                400, "bad_request", "The body is shorter than Content-Length"
+            ) from None
+        except TimeoutError:
+            raise _BadRequest(408, "request_timeout", "The request body took too long") from None
+        return Request(request.method, request.path, request.query, request.headers, body)
 
     def _authorised(self, request: Request) -> bool:
         if request.path == "/v1/health":

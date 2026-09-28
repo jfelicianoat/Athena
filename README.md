@@ -55,9 +55,25 @@ runtime offers only read-only tools.
 
 ## Desktop application
 
-Athena includes a native desktop interface for Windows. It can select a project, configure
-AI_Broker or an OpenAI-compatible endpoint, choose capability permissions, start a run,
-show its result and activity, resolve individual approval requests, and cancel work.
+Athena includes a native desktop interface for Windows. It runs on the same `RunRegistry`
+as the service, so a desktop run has the same guarantees as a ChatyGPT run: evidence
+profiles, project memory, checkpoints and rollback, history and resume.
+
+From the window a person can:
+
+- choose the project and test the connection (the broker token is checked against a
+  protected endpoint, not a public health check); each provider and URL keeps its own
+  credential, in memory only;
+- pick the kind of task —answer a question (reads only), change the project (a run that
+  only answers with text is not a success), or write documents (with declared
+  deliverables)— and the permissions for file changes and for running project code;
+- follow the run in plain Spanish, approve each action with a diff or the exact command in
+  front of them, change the objective of a running change task, and stop it;
+- read a result that says what was proven and what was not, undo the files a run wrote
+  (files changed afterwards are reported, never overwritten), and find every past run in
+  **Historial**, where interrupted runs can be resumed.
+
+Desktop state lives in `%LOCALAPPDATA%\Athena\desktop`, outside the project.
 
 Install the project and open the application:
 

@@ -35,6 +35,7 @@ from athena.stores import InMemoryToolResultStore
 from athena.testing import FakeModelProvider
 from athena.tool_executor import ToolExecutor
 from athena.verification import (
+    ChecksAlwaysAuthorized,
     CommandVerificationPolicy,
     VerificationEvidence,
     VerificationPlanner,
@@ -65,7 +66,9 @@ def _loop(root: Path) -> tuple[AgentLoop, Workspace, list[RuntimeEvent]]:
         ),
         ContextBuilder(workspace),
         bus,
-        verification=CommandVerificationPolicy(VerificationPlanner(workspace), event_bus=bus),
+        verification=CommandVerificationPolicy(
+            VerificationPlanner(workspace), authorizer=ChecksAlwaysAuthorized(), event_bus=bus
+        ),
         config=AgentLoopConfig(max_iterations=3, session_timeout_seconds=60.0),
     )
     return loop, workspace, eventos
@@ -168,6 +171,7 @@ def test_cada_diagnostico_cae_de_un_lado_o_del_otro_a_proposito() -> None:
         FailureKind.ENVIRONMENT_ERROR: InconclusiveReason.ENVIRONMENT_INCOMPLETE,
         FailureKind.TOOL_FAILURE: InconclusiveReason.TOOL_UNAVAILABLE,
         FailureKind.INSUFFICIENT_EVIDENCE: InconclusiveReason.NO_CHECKS_DEFINED,
+        FailureKind.EXECUTION_NOT_AUTHORIZED: InconclusiveReason.EXECUTION_NOT_AUTHORIZED,
     }
 
     obtenido = {kind: inconclusive_reason(_diagnostico(kind)) for kind in FailureKind}

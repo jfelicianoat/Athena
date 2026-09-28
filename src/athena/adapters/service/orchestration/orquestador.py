@@ -43,10 +43,10 @@ from athena.project_memory import (
     VerificationState,
     render_for_context,
 )
-from athena.rollback import RollbackLedger, checkpointing_hook
+from athena.rollback import RollbackLedger, checkpointing_hooks
 from athena.scouting import RepositoryScout, merge
 from athena.session_store import SessionRecord, SessionStore
-from athena.state import AgentStatus, ExecutionOutcome
+from athena.state import AgentStatus, ExecutionOutcome, classify_outcome
 from athena.stores import ToolResultStore
 from athena.subagents import (
     DEFAULT_PROFILES,
@@ -211,9 +211,16 @@ class Orchestrator:
             return None
         libro = self._ledgers.get(run_id)
         if libro is None:
-            libro = RollbackLedger(self.settings.checkpoints)
+            # Desde disco: las copias sobreviven al proceso y, desde A13, tambien lo que
+            # dice de quien son. Un libro nuevo y vacio tras un reinicio decia «nada que
+            # deshacer» con las copias en el disco.
+            libro = RollbackLedger.load(self.settings.checkpoints, run_id)
             self._ledgers[run_id] = libro
         return libro
+
+    def forget_ledger(self, run_id: str) -> None:
+        """Soltar de memoria el libro de un run terminado; sigue en disco."""
+        self._ledgers.pop(run_id, None)
 
     async def learn_from(
         self, project_id: str, verification: VerificationResult | None, run_id: str
@@ -270,6 +277,7 @@ class Orchestrator:
         verification: VerificationPolicy | None = None,
         prompt: PermissionPrompt | None = None,
         cancellation: CancellationToken,
+        provider: ModelProvider | None = None,
     ) -> GraphResult | None:
         """Plan the work, execute the plan, and leave a session behind either way.
 
@@ -283,13 +291,23 @@ class Orchestrator:
         """
         empty = WorkingState(objective=objective)
         await self._persist(run_id, workspace, empty, AgentStatus.RUNNING)
-        planner = Planner(self.provider, policy=self.settings.policy, limits=self.settings.limits)
+        # El proveedor del run, con su modelo fijado: el planificador tambien es una
+        # llamada del run, y antes salia con el del proceso (A06).
+        inferring = provider or self.provider
+        planner = Planner(inferring, policy=self.settings.policy, limits=self.settings.limits)
         graph: TaskGraph | None
         try:
             graph = await planner.plan(
                 objective, shape.signals, cancellation, decided=_settled(shape)
             )
         except AthenaRuntimeError as error:
+            if cancellation.is_cancelled:
+                # Cancelado o fuera de plazo mientras planificaba: no es un plan rechazado.
+                # Caer al bucle aqui empezaria el trabajo de nuevo con el reloj a cero. Se
+                # cierra como cualquier grafo parado, con su estado y su `agent.*` final.
+                stopped = GraphResult(outcome=classify_outcome(error), graph=_whole_goal(objective))
+                await self._finish(run_id, workspace, objective, stopped)
+                return stopped
             _logger.warning("planning.refused code=%s", error.code)
             graph = None
             reason = error.code
@@ -368,6 +386,7 @@ class Orchestrator:
             verification=verification,
             prompt=prompt,
             cancellation=cancellation,
+            provider=inferring,
         )
 
     async def stored_plan(self, run_id: str) -> StoredPlan | None:
@@ -396,6 +415,7 @@ class Orchestrator:
         verification: VerificationPolicy | None = None,
         prompt: PermissionPrompt | None = None,
         cancellation: CancellationToken,
+        provider: ModelProvider | None = None,
     ) -> GraphResult:
         """Seguir un plan donde se quedó, sin volver a planificar.
 
@@ -417,6 +437,7 @@ class Orchestrator:
             verification=verification,
             prompt=prompt,
             cancellation=cancellation,
+            provider=provider,
         )
 
     async def _drive(
@@ -431,6 +452,7 @@ class Orchestrator:
         verification: VerificationPolicy | None,
         prompt: PermissionPrompt | None,
         cancellation: CancellationToken,
+        provider: ModelProvider | None = None,
     ) -> GraphResult:
         """Ejecuta un grafo, venga de planificar o de recuperarlo.
 
@@ -452,7 +474,7 @@ class Orchestrator:
         }
         libro = self.ledger_for(run_id)
         runner = SubagentRunner(
-            self.provider,
+            provider or self.provider,
             catalog,
             self.event_bus,
             self.result_store,
@@ -460,7 +482,7 @@ class Orchestrator:
             prompt=prompt,
             # Los ganchos bajan al hijo: en un run jerarquico las escrituras pasan ahi, y
             # unos ganchos que se quedasen arriba no verian ni una sola escritura del run.
-            hooks=None if libro is None else HookRegistry((checkpointing_hook(libro, workspace),)),
+            hooks=None if libro is None else HookRegistry(checkpointing_hooks(libro, workspace)),
         )
         executor = GraphExecutor(
             runner,

@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator, Mapping
 from typing import cast
 from urllib.parse import urlsplit
 
+from athena.adapters.lectura import read_bounded
 from athena.cancellation import CancellationToken
 from athena.errors import (
     ModelPermanentError,
@@ -129,7 +130,7 @@ class OpenAICompatibleModelProvider(ModelProvider):
             cancellation.raise_if_cancelled()
             connection.request(method, path, body=body, headers=headers)
             response = connection.getresponse()
-            raw = response.read().decode("utf-8", errors="replace")
+            raw = read_bounded(response).decode("utf-8", errors="replace")
         except (OSError, http.client.HTTPException) as exc:
             cancellation.raise_if_cancelled()
             raise ModelTransientError(f"Model endpoint unavailable: {type(exc).__name__}") from exc

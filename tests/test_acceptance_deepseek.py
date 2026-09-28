@@ -52,7 +52,7 @@ from athena.profiles import DOCUMENTS, SOFTWARE_ENGINEERING, Evidence, ProfileRe
 from athena.project_memory import SqliteProjectMemory, render_for_context
 from athena.provider_router import ProviderEntry, ProviderRegistry, ProviderRouter
 from athena.recovery import RecoveryAction, RecoveryPolicy
-from athena.rollback import RollbackLedger, RollbackScope, checkpointing_hook
+from athena.rollback import RollbackLedger, RollbackScope, checkpointing_hooks
 from athena.run_event_log import RunEventLog, replay
 from athena.session_store import SqliteSessionStore
 from athena.stores import SqliteToolResultStore
@@ -395,10 +395,14 @@ def test_10_deshacer_toca_lo_del_run_y_respeta_lo_ajeno(tmp_path: Path) -> None:
     del_agente.write_text("original\n", encoding="utf-8")
 
     async def escenario() -> None:
-        await HookRegistry((checkpointing_hook(libro, workspace),)).run(
+        registro = HookRegistry(checkpointing_hooks(libro, workspace))
+        await registro.run(
             HookContext(HookEvent.PRE_EDIT, "run-1", {"resources": [str(del_agente)]})
         )
         del_agente.write_text("lo cambio el agente\n", encoding="utf-8")
+        await registro.run(
+            HookContext(HookEvent.POST_EDIT, "run-1", {"resources": [str(del_agente)]})
+        )
         de_la_persona.write_text("lo escribi yo\n", encoding="utf-8")
 
         resultado = await libro.roll_back(workspace, scope=RollbackScope.RUN)

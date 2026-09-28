@@ -38,6 +38,13 @@ class ChangeIntegrityPolicy:
     )
     _REMOVED_ASSERT = re.compile(r"^-\s*(assert\b|expect\(|self\.assert)")
     _ADDED_ASSERT = re.compile(r"^\+\s*(assert\b|expect\(|self\.assert)")
+    #: Una asercion que no puede fallar. Sustituir `assert calc(2, 3) == 5` por
+    #: `assert True` dejaba el recuento empatado y no se detectaba (A19).
+    _TRIVIAL_ASSERT = re.compile(
+        r"^\+\s*(?:assert\s+(?:True|1|not\s+False|\"[^\"]*\"|'[^']*')\s*(?:,.*)?$"
+        r"|self\.assert(?:True|Equal)\(\s*(?:True|1)\s*(?:,\s*(?:True|1))?\s*\)"
+        r"|expect\(\s*true\s*\)\.toBe\(\s*true\s*\))"
+    )
     _ADDED_SUPPRESSION = re.compile(
         r"^\+.*(#\s*noqa|#\s*type:\s*ignore|--exit-zero|ignore_errors\s*=\s*true"
         r"|--no-verify|eslint-disable|# ruff: noqa)"
@@ -66,7 +73,7 @@ class ChangeIntegrityPolicy:
             if self._REMOVED_ASSERT.match(line):
                 removed_assertions += 1
                 removed_assertion_lines.append(line.strip())
-            if self._ADDED_ASSERT.match(line):
+            if self._ADDED_ASSERT.match(line) and not self._TRIVIAL_ASSERT.match(line):
                 added_assertions += 1
             if self._ADDED_SUPPRESSION.match(line):
                 suppressions.append(line.strip())
@@ -107,6 +114,46 @@ class ChangeIntegrityPolicy:
                 )
             )
         return tuple(findings)
+
+
+def without_preexisting(diff: str, baseline: str) -> str:
+    """El diff sin las lineas que ya estaban cambiadas antes de que Athena empezase.
+
+    `git diff HEAD` incluye el trabajo sin commitear de la persona. Sin esta resta, un
+    `# noqa` o un test borrado por ella antes del run se atribuian al run (A19). Se
+    compara por fichero y por linea: lo que ya aparecia igual en la instantanea inicial
+    no es de este run.
+    """
+    if not baseline:
+        return diff
+    before = _changed_lines(baseline)
+    kept: list[str] = []
+    current = ""
+    for line in diff.splitlines():
+        if line.startswith("+++ "):
+            current = line[4:].strip()
+            kept.append(line)
+            continue
+        if line.startswith("--- "):
+            kept.append(line)
+            continue
+        if line[:1] in ("+", "-") and (current, line) in before:
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def _changed_lines(diff: str) -> set[tuple[str, str]]:
+    changed: set[tuple[str, str]] = set()
+    current = ""
+    for line in diff.splitlines():
+        if line.startswith("+++ "):
+            current = line[4:].strip()
+        elif line.startswith("--- "):
+            continue
+        elif line[:1] in ("+", "-"):
+            changed.add((current, line))
+    return changed
 
 
 # --------------------------------------------------------------------------- policies

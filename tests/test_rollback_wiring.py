@@ -20,6 +20,7 @@ from athena.rollback import (
     RollbackLedger,
     RollbackScope,
     checkpointing_hook,
+    checkpointing_hooks,
     is_worth_checkpointing,
 )
 from athena.workspace import Workspace
@@ -136,10 +137,11 @@ def test_la_copia_se_toma_justo_antes_de_editar(tmp_path: Path) -> None:
         assert not gancho.blocking, "una copia que falla no puede impedir trabajar"
 
         # Por el registro y no llamando al handler: es el camino que recorre de verdad.
-        await HookRegistry((gancho,)).run(
-            HookContext(HookEvent.PRE_EDIT, "run-1", {"resources": [str(fichero)]})
-        )
+        # PRE_EDIT copia; POST_EDIT, que solo llega si la escritura salio bien, la anota.
+        registro = HookRegistry(checkpointing_hooks(libro, workspace))
+        await registro.run(HookContext(HookEvent.PRE_EDIT, "run-1", {"resources": [str(fichero)]}))
         fichero.write_text("tocado\n", encoding="utf-8")
+        await registro.run(HookContext(HookEvent.POST_EDIT, "run-1", {"resources": [str(fichero)]}))
 
         resultado = await libro.roll_back(workspace, scope=RollbackScope.RUN)
 

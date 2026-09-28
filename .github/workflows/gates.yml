@@ -1,0 +1,38 @@
+# Las cuatro puertas de Athena en cada push y pull request (auditoria A24).
+# Windows porque es donde corre el escritorio y donde se cierran los arboles de procesos
+# con Job Objects; Linux para no depender de una sola plataforma. 3.11 es el minimo
+# declarado y 3.14 el que se usa en desarrollo.
+name: gates
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gates:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.11", "3.14"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Configure git for tests
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "CI"
+          git config --global init.defaultBranch main
+      - name: Tests
+        run: python -m pytest -q
+      - name: Lint
+        run: python -m ruff check .
+      - name: Format
+        run: python -m ruff format --check .
+      - name: Types
+        run: python -m mypy src tests

@@ -27,6 +27,7 @@ from athena.cancellation import (
 )
 from athena.errors import AthenaRuntimeError, BudgetExceededError
 from athena.process_tools import _spawn_process, _terminate_tree
+from athena.process_tree import ProcessTreeError, reap, release
 from athena.state import classify_outcome
 from athena.types import JSONObject
 
@@ -490,8 +491,16 @@ class BackgroundProcess:
             return
         if self._process.returncode is None:
             self._terminate()
-            with contextlib.suppress(Exception):
-                await self._process.wait()
+            # Con plazo: antes se esperaba sin limite, y un arbol que no moria dejaba
+            # colgado a quien lo mataba. Si no muere, se dice (A14).
+            try:
+                await reap(self._process)
+            except ProcessTreeError:
+                self._state = ProcessState.DEAD
+                self._release()
+                raise
+        else:
+            release(self._process)
         self._exit_code = self._process.returncode
         if self._state is not ProcessState.EXITED:
             self._state = ProcessState.KILLED

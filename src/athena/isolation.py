@@ -1,5 +1,11 @@
 """Giving two writers a workspace each, so they stop queueing behind one lock.
 
+**Estado: biblioteca experimental, no conectada.** Ni el servicio, ni el escritorio, ni
+el ejecutor de grafos la usan: la estrategia que corre es la compartida de
+`workspaces.py`, con los escritores serializados por `workspace_access`. Existe probada
+para cuando dos escritores simultaneos lo justifiquen; hasta integrarla con permisos,
+concurrencia, persistencia y limpieza no debe presentarse como capacidad (A25).
+
 `GraphExecutor` serialises writers. That is correct and it is also the bottleneck: two
 coders working on unrelated subsystems take turns for no reason other than that the runtime
 cannot tell they are unrelated. A git worktree gives each one a real checkout of the same
@@ -155,11 +161,22 @@ async def _git(
 
 
 async def _is_git_repository(root: Path, cancellation: CancellationToken) -> bool:
+    """Si `root` es la raiz de un repositorio, no si esta dentro de uno.
+
+    `rev-parse --git-dir` sube por los padres: una carpeta sin Git dentro de otro
+    repositorio contestaba que si, y el worktree se creaba del repositorio mayor, fuera
+    del ambito que la persona eligio (A25).
+    """
     try:
-        code, _, _ = await _git(("git", "rev-parse", "--git-dir"), root, cancellation)
+        code, top_level, _ = await _git(("git", "rev-parse", "--show-toplevel"), root, cancellation)
     except (ToolExecutionError, OSError):
         return False
-    return code == 0
+    if code != 0 or not top_level.strip():
+        return False
+    try:
+        return Path(top_level.strip()).resolve(strict=True) == root.resolve(strict=True)
+    except OSError:
+        return False
 
 
 async def _create_worktree(

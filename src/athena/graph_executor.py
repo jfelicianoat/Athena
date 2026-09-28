@@ -31,6 +31,7 @@ is what keeps the parent's context from growing with every delegate it uses.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
@@ -50,6 +51,7 @@ from athena.tasks import TaskBudget, TaskManager
 from athena.types import JSONObject
 from athena.verification import VerificationPolicy, VerificationResult
 from athena.workspace import Workspace
+from athena.workspace_access import WORKSPACE_ACCESS
 
 _logger = logging.getLogger(__name__)
 
@@ -173,9 +175,10 @@ class GraphExecutor:
         #: correct answer for a deployment that would rather lose a plan than keep one.
         self.store = store
         self.max_parallel_reads = max(1, max_parallel_reads)
-        #: One writer at a time in a shared workspace. Worktrees would remove the need for
-        #: this; until they exist, a lock is the only honest answer.
-        self._write_lock = asyncio.Lock()
+        #: Quien entra en la carpeta y como lo decide `WORKSPACE_ACCESS`, comun a todo el
+        #: proceso: un cerrojo propio por ejecutor solo serializaba a cada grafo consigo
+        #: mismo, y los lectores ni siquiera pasaban por el (A09).
+        self.access = WORKSPACE_ACCESS
 
     async def execute(
         self,
@@ -227,7 +230,7 @@ class GraphExecutor:
 
         goal = None
         if outcome is ExecutionOutcome.COMPLETED:
-            goal = await self._verify_goal(graph, workspace, cancellation, run_id)
+            goal = await self._verify_goal(graph, workspace, cancellation, run_id, evidence)
             if goal is not None and not goal.permits_completion:
                 # Every part reported success and the whole was not shown to work. Dos
                 # cosas distintas caben aqui —que el conjunto falle, y que no se pudiera
@@ -311,10 +314,10 @@ class GraphExecutor:
         reads: asyncio.Semaphore,
     ) -> TaskEvidence:
         writes = node.suggested_role in _WRITING_ROLES
-        # Writers queue behind the lock; readers behind a semaphore that bounds how many
-        # model calls are in flight at once rather than what they may touch.
-        gate: asyncio.Lock | asyncio.Semaphore = self._write_lock if writes else reads
-        async with gate:
+        # El semaforo acota cuantas llamadas al modelo hay en vuelo; el cerrojo de la
+        # carpeta decide que puede solaparse: lectores entre si, un escritor solo.
+        bound = contextlib.nullcontext() if writes else reads
+        async with bound, self.access.hold(workspace.root, write=writes):
             cancellation.raise_if_cancelled()
             graph.transition(node.id, PlanStatus.RUNNING)
             await self._publish(
@@ -412,7 +415,7 @@ class GraphExecutor:
         if evidence.succeeded and self.task_verification is not None and evidence.files_changed:
             evidence = replace(
                 evidence,
-                verification=await self._verify_task(node, workspace, cancellation),
+                verification=await self._verify_task(node, workspace, cancellation, evidence),
             )
             if evidence.verification is not None and not evidence.verification.permits_completion:
                 evidence = replace(evidence, outcome=ExecutionOutcome.FAILED)
@@ -442,12 +445,16 @@ class GraphExecutor:
     # -- verification ------------------------------------------------------
 
     async def _verify_task(
-        self, node: TaskNode, workspace: Workspace, cancellation: CancellationToken
+        self,
+        node: TaskNode,
+        workspace: Workspace,
+        cancellation: CancellationToken,
+        evidence: TaskEvidence,
     ) -> VerificationResult | None:
         if self.task_verification is None:
             return None
         return await self.task_verification.verify(
-            _session_for(node.id, workspace.workspace_id), workspace, cancellation
+            _session_for(node.id, workspace.workspace_id, (evidence,)), workspace, cancellation
         )
 
     async def _verify_goal(
@@ -456,12 +463,15 @@ class GraphExecutor:
         workspace: Workspace,
         cancellation: CancellationToken,
         run_id: str,
+        evidence: Sequence[TaskEvidence] = (),
     ) -> VerificationResult | None:
         if self.goal_verification is None:
             return None
         await self._publish(EventName.VERIFICATION_STARTED, run_id, {"scope": "goal"})
         result = await self.goal_verification.verify(
-            _session_for(run_id or "goal", workspace.workspace_id), workspace, cancellation
+            _session_for(run_id or "goal", workspace.workspace_id, evidence),
+            workspace,
+            cancellation,
         )
         razon = inconclusive_reason(diagnose_result(result))
         await self._publish(
@@ -536,9 +546,29 @@ def _budget_for(node: TaskNode) -> TaskBudget:
     return TaskBudget(max_iterations=8, max_tool_calls=40, wall_clock_seconds=600.0)
 
 
-def _session_for(identifier: str, workspace_id: str = "") -> SessionState:
-    """The minimum a `VerificationPolicy` needs to be asked a question."""
-    return SessionState(session_id=identifier, workspace_id=workspace_id)
+def _session_for(
+    identifier: str, workspace_id: str = "", evidence: Sequence[TaskEvidence] = ()
+) -> SessionState:
+    """Lo que una `VerificationPolicy` necesita para contestar, procedencia incluida.
+
+    Antes era el minimo (id y workspace) y la verificacion del grafo perdia lo que las
+    tareas habian escrito: un run jerarquico de documentos creaba `report.txt` y fallaba
+    con «report.txt was not produced», porque la politica de artefactos exige saber que
+    lo escribio este run y nadie se lo contaba (A05). Solo cuentan las tareas que
+    terminaron: lo que dejo a medias una fallida no es un entregable de este run.
+    """
+    files: dict[str, None] = {}
+    commands: dict[str, None] = {}
+    for item in evidence:
+        if not item.succeeded:
+            continue
+        files.update(dict.fromkeys(item.files_changed))
+        commands.update(dict.fromkeys(item.commands_run))
+    return SessionState(
+        session_id=identifier,
+        workspace_id=workspace_id,
+        attributes={"files_modified": list(files), "commands_run": list(commands)},
+    )
 
 
 def _evidence_from(node: TaskNode, result: SubagentResult) -> TaskEvidence:

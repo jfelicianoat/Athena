@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import socket
 import sqlite3
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -22,6 +24,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from athena.errors import AthenaRuntimeError
+from athena.sqlite_support import closing_connection, migrate, process_alive
 from athena.state import AgentStatus
 from athena.tools import ToolResultReference
 from athena.types import JSONObject
@@ -35,6 +38,8 @@ _LIVE_STATUSES = (
 )
 
 _MAX_CHECKPOINTS = 200
+
+_HOST = socket.gethostname()
 
 
 class SessionStoreError(AthenaRuntimeError):
@@ -90,6 +95,10 @@ class SessionStore(Protocol):
     async def mark_interrupted(self) -> tuple[str, ...]: ...
 
     async def delete(self, session_id: str) -> None: ...
+
+    async def save_manifest(self, session_id: str, manifest: JSONObject) -> None: ...
+
+    async def load_manifest(self, session_id: str) -> JSONObject | None: ...
 
 
 # --------------------------------------------------------------------------- serialisation
@@ -212,7 +221,26 @@ CREATE TABLE IF NOT EXISTS session_tool_references (
     PRIMARY KEY (session_id, store_key)
 );
 CREATE INDEX IF NOT EXISTS sessions_status ON sessions (status);
+CREATE TABLE IF NOT EXISTS session_owners (
+    session_id  TEXT PRIMARY KEY,
+    pid         INTEGER NOT NULL,
+    host        TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS run_manifests (
+    session_id  TEXT PRIMARY KEY,
+    manifest    TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
 """
+
+#: Version del esquema de esta base. Sube con cada cambio de forma; una base mas nueva
+#: que el codigo se rechaza en vez de leerse a medias (A22).
+_SCHEMA_VERSION = 3
+
+#: Una sesion viva que lleva esto sin escribir se da por huerfana aunque su proceso
+#: parezca vivo: cubre la reutilizacion de pids y los procesos colgados. Mas largo que
+#: cualquier plazo de run que Athena permite por defecto.
+_STALE_AFTER_SECONDS = 6 * 3600
 
 
 class SqliteSessionStore:
@@ -224,14 +252,10 @@ class SqliteSessionStore:
             self.database.parent.mkdir(parents=True, exist_ok=True)
         self._lock = asyncio.Lock()
         with self._connect() as connection:
-            connection.executescript(_SCHEMA)
+            migrate(connection, _SCHEMA, _SCHEMA_VERSION, "sessions")
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database, timeout=10.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA foreign_keys=ON")
-        return connection
+    def _connect(self) -> closing_connection:
+        return closing_connection(self.database, foreign_keys=True)
 
     async def save(self, record: SessionRecord) -> None:
         async with self._lock:
@@ -265,6 +289,17 @@ class SqliteSessionStore:
                         record.updated_at.isoformat(),
                     ),
                 )
+                if record.status.value in _LIVE_STATUSES:
+                    # Quien la esta ejecutando, para que otra instancia que arranque sobre
+                    # la misma base no la de por interrumpida mientras sigue viva (A22).
+                    connection.execute(
+                        """
+                        INSERT INTO session_owners (session_id, pid, host) VALUES (?, ?, ?)
+                        ON CONFLICT(session_id) DO UPDATE SET pid = excluded.pid,
+                                                              host = excluded.host
+                        """,
+                        (record.session_id, os.getpid(), _HOST),
+                    )
                 connection.execute(
                     "DELETE FROM session_tool_references WHERE session_id = ?",
                     (record.session_id,),
@@ -338,27 +373,45 @@ class SqliteSessionStore:
             return await asyncio.to_thread(self._mark_interrupted)
 
     def _mark_interrupted(self) -> tuple[str, ...]:
+        """Las sesiones vivas cuyo dueno ya no existe, y solo esas.
+
+        Antes se marcaban todas: el escritorio o la CLI, al arrancar sobre la misma base,
+        daban por recuperable el trabajo que otra instancia seguia haciendo (A22). Ahora
+        se mira el proceso que la escribio; una sesion sin dueno registrado (de antes de
+        esto) o sin latido en horas se recupera como antes.
+        """
         placeholders = ", ".join("?" for _ in _LIVE_STATUSES)
+        now = datetime.now(UTC)
         try:
             with self._connect() as connection:
                 rows = connection.execute(
-                    f"SELECT session_id FROM sessions WHERE status IN ({placeholders})",
+                    f"""
+                    SELECT s.session_id, s.updated_at, o.pid, o.host
+                    FROM sessions s LEFT JOIN session_owners o ON o.session_id = s.session_id
+                    WHERE s.status IN ({placeholders})
+                    """,
                     _LIVE_STATUSES,
                 ).fetchall()
-                identifiers = tuple(str(row["session_id"]) for row in rows)
-                if identifiers:
+                orphaned: list[str] = []
+                for row in rows:
+                    age = (now - _decode_moment(str(row["updated_at"]))).total_seconds()
+                    pid = row["pid"]
+                    alive = (
+                        pid is not None
+                        and int(pid) != os.getpid()
+                        and (row["host"] != _HOST or process_alive(int(pid)))
+                    )
+                    if alive and age < _STALE_AFTER_SECONDS:
+                        continue
+                    orphaned.append(str(row["session_id"]))
+                for session_id in orphaned:
                     connection.execute(
-                        f"UPDATE sessions SET status = ?, updated_at = ? "
-                        f"WHERE status IN ({placeholders})",
-                        (
-                            AgentStatus.RECOVERY_PENDING.value,
-                            datetime.now(UTC).isoformat(),
-                            *_LIVE_STATUSES,
-                        ),
+                        "UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?",
+                        (AgentStatus.RECOVERY_PENDING.value, now.isoformat(), session_id),
                     )
         except sqlite3.Error as exc:
             raise SessionStoreError("Cannot mark interrupted sessions") from exc
-        return identifiers
+        return tuple(orphaned)
 
     async def delete(self, session_id: str) -> None:
         async with self._lock:
@@ -371,8 +424,52 @@ class SqliteSessionStore:
                 connection.execute(
                     "DELETE FROM session_tool_references WHERE session_id = ?", (session_id,)
                 )
+                connection.execute("DELETE FROM run_manifests WHERE session_id = ?", (session_id,))
         except sqlite3.Error as exc:
             raise SessionStoreError(f"Cannot delete session {session_id}") from exc
+
+    async def save_manifest(self, session_id: str, manifest: JSONObject) -> None:
+        """Lo que se autorizo para este run, escrito una vez al crearlo.
+
+        En su propia tabla y no en la fila de la sesion: el bucle reescribe esa fila en
+        cada checkpoint sin saber nada del manifiesto, y compartirla obligaria a cada
+        escritura a no pisarlo.
+        """
+        async with self._lock:
+            await asyncio.to_thread(self._save_manifest, session_id, manifest)
+
+    def _save_manifest(self, session_id: str, manifest: JSONObject) -> None:
+        try:
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO run_manifests (session_id, manifest, created_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(session_id) DO UPDATE SET manifest = excluded.manifest
+                    """,
+                    (
+                        session_id,
+                        json.dumps(dict(manifest), ensure_ascii=False, default=str),
+                        datetime.now(UTC).isoformat(),
+                    ),
+                )
+        except sqlite3.Error as exc:
+            raise SessionStoreError(f"Cannot persist the manifest of {session_id}") from exc
+
+    async def load_manifest(self, session_id: str) -> JSONObject | None:
+        return await asyncio.to_thread(self._load_manifest, session_id)
+
+    def _load_manifest(self, session_id: str) -> JSONObject | None:
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT manifest FROM run_manifests WHERE session_id = ?", (session_id,)
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise SessionStoreError(f"Cannot read the manifest of {session_id}") from exc
+        if row is None:
+            return None
+        return _decode_json_object(str(row["manifest"]))
 
 
 def _row_to_record(row: sqlite3.Row, references: Iterable[sqlite3.Row]) -> SessionRecord:
@@ -408,6 +505,7 @@ class InMemorySessionStore:
 
     def __init__(self) -> None:
         self._records: dict[str, SessionRecord] = {}
+        self._manifests: dict[str, JSONObject] = {}
 
     async def save(self, record: SessionRecord) -> None:
         self._records[record.session_id] = record
@@ -435,6 +533,14 @@ class InMemorySessionStore:
 
     async def delete(self, session_id: str) -> None:
         self._records.pop(session_id, None)
+        self._manifests.pop(session_id, None)
+
+    async def save_manifest(self, session_id: str, manifest: JSONObject) -> None:
+        self._manifests[session_id] = dict(manifest)
+
+    async def load_manifest(self, session_id: str) -> JSONObject | None:
+        stored = self._manifests.get(session_id)
+        return None if stored is None else dict(stored)
 
 
 __all__ = [

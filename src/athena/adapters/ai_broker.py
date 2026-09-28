@@ -32,6 +32,7 @@ from typing import cast
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+from athena.adapters.lectura import read_bounded
 from athena.cancellation import CancellationToken
 from athena.errors import (
     ModelPermanentError,
@@ -150,6 +151,24 @@ class AiBrokerModelProvider(ModelProvider):
         if reported == "healthy":
             return ModelHealth(ModelHealthStatus.HEALTHY)
         return ModelHealth(ModelHealthStatus.DEGRADED, str(reported))
+
+    async def verify_credentials(self, cancellation: CancellationToken) -> tuple[bool, str]:
+        """Si el broker acepta este token, preguntado a un endpoint que lo exige.
+
+        `/health` y los demas GET publicos contestan 200 a cualquiera: comprobar el token
+        contra ellos da un «conectado» falso que se descubre en la primera tarea.
+        """
+        try:
+            status, _ = await self._call(
+                "GET", "/api/v1/dashboard/tasks?limit=1", None, cancellation
+            )
+        except ModelTransientError as error:
+            return False, f"No se pudo contactar con el broker: {error.message}"
+        if status == 200:
+            return True, "El broker acepta el token."
+        if status in (401, 403):
+            return False, f"El broker rechaza el token (HTTP {status})."
+        return False, f"El broker respondió HTTP {status}."
 
     # -- the bridge --------------------------------------------------------
 
@@ -294,7 +313,7 @@ class AiBrokerModelProvider(ModelProvider):
         try:
             connection.request(method, path, body=encoded, headers=headers)
             response = connection.getresponse()
-            raw = response.read().decode("utf-8", errors="replace")
+            raw = read_bounded(response).decode("utf-8", errors="replace")
         except (OSError, http.client.HTTPException) as exc:
             if cancellation is not None:
                 cancellation.raise_if_cancelled()

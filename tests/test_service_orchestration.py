@@ -28,6 +28,7 @@ from athena.adapters.service.orchestration import (
     budgeted,
 )
 from athena.adapters.service.runs import CapabilityMode, RunOptions, RunRegistry
+from athena.adapters.service.runs.ciclo import run_manifest
 from athena.cancellation import CancellationSource, CancellationToken
 from athena.context import ContextBuilder, _declared_names
 from athena.errors import AthenaRuntimeError, ToolValidationError
@@ -590,7 +591,13 @@ def test_a_task_asks_for_permission_through_the_run_that_owns_it(tmp_path: Path)
         run_id = await registry.start(
             "investigate the addition path",
             workspace,
-            RunOptions(writes=CapabilityMode.ASK, execution_mode=ExecutionMode.HIERARCHICAL),
+            # Sin ejecucion: esto va de la aprobacion de escritura. Con `exec=ask` la
+            # verificacion haria su propia pregunta, que este cliente no contesta.
+            RunOptions(
+                writes=CapabilityMode.ASK,
+                execution=CapabilityMode.OFF,
+                execution_mode=ExecutionMode.HIERARCHICAL,
+            ),
         )
         subscriber = registry.subscribe(run_id, control=True)
         try:
@@ -772,7 +779,11 @@ async def _seeded(tmp_path: Path, run_id: str, *, running: bool) -> SqliteGraphS
 
 
 async def _stopped(tmp_path: Path, run_id: str, workspace: Workspace) -> None:
-    """A session left behind by a runtime that stopped watching it."""
+    """A session left behind by a runtime that stopped watching it.
+
+    With the manifest a real run writes when it starts (A07): after a restart that is what
+    says which authority the run was created with.
+    """
     sessions = SqliteSessionStore(tmp_path / "sessions.db")
     await sessions.save(
         SessionRecord(
@@ -781,6 +792,14 @@ async def _stopped(tmp_path: Path, run_id: str, workspace: Workspace) -> None:
             status=AgentStatus.RECOVERY_PENDING,
             working_memory=WorkingState(objective="investigate the addition path"),
         )
+    )
+    await sessions.save_manifest(
+        run_id,
+        run_manifest(
+            "investigate the addition path",
+            workspace,
+            RunOptions(execution=CapabilityMode.ALLOW, writes=CapabilityMode.ALLOW),
+        ),
     )
 
 
@@ -1367,7 +1386,11 @@ def test_measuring_can_never_take_a_run_down(tmp_path: Path) -> None:
         run_id = await registry.start(
             "investigate the addition path",
             workspace,
-            RunOptions(execution_mode=ExecutionMode.DIRECT, max_iterations=3),
+            RunOptions(
+                execution_mode=ExecutionMode.DIRECT,
+                max_iterations=3,
+                execution=CapabilityMode.ALLOW,
+            ),
         )
         try:
             result = await asyncio.wait_for(registry.wait(run_id), timeout=180)

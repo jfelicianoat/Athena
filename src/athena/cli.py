@@ -37,7 +37,11 @@ from athena.stores import SqliteToolResultStore
 from athena.tool_executor import ToolExecutor
 from athena.tool_search import ToolSearchTool
 from athena.tools import Tool
-from athena.verification import CommandVerificationPolicy, VerificationPlanner
+from athena.verification import (
+    CommandVerificationPolicy,
+    PermissionCheckAuthorizer,
+    VerificationPlanner,
+)
 from athena.workspace import Workspace
 
 _CAPABILITY_MODES = ("off", "ask", "allow")
@@ -191,13 +195,20 @@ async def _run(arguments: argparse.Namespace, source: CancellationSource | None 
             allow_local_execution=arguments.execution == "allow",
         )
     )
-    executor = ToolExecutor(registry, engine, store, event_bus, prompt=ConsolePermissionPrompt())
+    prompt = ConsolePermissionPrompt()
+    executor = ToolExecutor(registry, engine, store, event_bus, prompt=prompt)
     provider = OpenAICompatibleModelProvider(
         arguments.base_url,
         arguments.model,
         api_key=os.getenv("ATHENA_API_KEY"),
     )
-    verification = CommandVerificationPolicy(VerificationPlanner(workspace), event_bus=event_bus)
+    # Las comprobaciones del proyecto son codigo del proyecto: la misma autoridad que bash.
+    authorizer = PermissionCheckAuthorizer(
+        engine, enabled=arguments.execution != "off", prompt=prompt, event_bus=event_bus
+    )
+    verification = CommandVerificationPolicy(
+        VerificationPlanner(workspace), authorizer=authorizer, event_bus=event_bus
+    )
     loop = AgentLoop(
         provider,
         registry,

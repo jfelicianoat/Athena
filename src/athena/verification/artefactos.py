@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 
 from athena.cancellation import CancellationToken
 from athena.errors import WorkspaceBoundaryError
@@ -69,21 +70,30 @@ class ArtifactVerificationPolicy:
                 ),
                 "Verification is inconclusive: no deliverable was produced or declared.",
             )
+        # Rutas canonicas en los dos lados: `./report.txt` y `report.txt` son el mismo
+        # fichero, y compararlas como texto hacia que un entregable escrito de verdad
+        # pareciera ajeno.
+        touched_paths = {path for path in (_canonical(workspace, i) for i in written) if path}
         evidence: list[VerificationEvidence] = []
-        missing: list[str] = []
+        problems: list[str] = []
         for relative in targets:
             cancellation.raise_if_cancelled()
             try:
                 path = workspace.resolve(relative, must_exist=False)
             except WorkspaceBoundaryError:
-                missing.append(relative)
+                problems.append(f"{relative} is outside the workspace")
                 continue
             exists = path.is_file()
             size = path.stat().st_size if exists else 0
-            touched = relative in written
+            touched = path in touched_paths
             passed = exists and size > 0 and (touched or not self.expected)
-            if not passed:
-                missing.append(relative)
+            # Tres negativos distintos que piden cosas distintas a quien lo lea.
+            if not exists:
+                problems.append(f"{relative} does not exist")
+            elif size == 0:
+                problems.append(f"{relative} is empty")
+            elif not passed:
+                problems.append(f"{relative} exists but was not written by this run")
             evidence.append(
                 VerificationEvidence(
                     kind="artifact",
@@ -98,19 +108,78 @@ class ArtifactVerificationPolicy:
                     },
                 )
             )
-        if missing:
+        if problems:
             return VerificationResult(
                 VerificationStatus.FAILED,
                 tuple(evidence),
-                "Verification failed: "
-                + ", ".join(sorted(missing))
-                + " was not produced as a non-empty file.",
+                "Verification failed: " + "; ".join(problems) + ".",
             )
         return VerificationResult(
             VerificationStatus.PASSED,
             tuple(evidence),
             f"{len(evidence)} deliverable(s) produced. {self.PROVES}",
         )
+
+
+class AnswerVerificationPolicy:
+    """La evidencia de una consulta: hay respuesta y no se toco nada.
+
+    Existe para no tener que elegir entre dos mentiras. Tratar una consulta como trabajo
+    de software la hace fallar siempre que no haya tests que correr (o correrlos para
+    nada); tratarla como «el modelo termino» la hacia pasar tambien cuando se habia pedido
+    cambiar un fichero y solo llego texto (A04). Aqui pasa si hubo respuesta y ningun
+    fichero cambio, y el resultado dice que eso es todo lo que demuestra.
+    """
+
+    PROVES = (
+        "The run answered without changing any file. It does not establish that the "
+        "answer is correct."
+    )
+
+    async def verify(
+        self, state: SessionState, workspace: Workspace, cancellation: CancellationToken
+    ) -> VerificationResult:
+        del workspace
+        cancellation.raise_if_cancelled()
+        answer = state.attributes.get("final_response")
+        written = _declared_paths(state)
+        if not isinstance(answer, str) or not answer.strip():
+            return VerificationResult(
+                VerificationStatus.FAILED,
+                (VerificationEvidence(kind="answer", summary="No answer was given."),),
+                "Verification failed: the run gave no answer.",
+            )
+        if written:
+            return VerificationResult(
+                VerificationStatus.FAILED,
+                (
+                    VerificationEvidence(
+                        kind="answer",
+                        summary="A question run changed files.",
+                        metadata={"written": list(written)},
+                    ),
+                ),
+                "Verification failed: a question run must not change files, and this one "
+                "changed " + ", ".join(written) + ".",
+            )
+        return VerificationResult(
+            VerificationStatus.PASSED,
+            (
+                VerificationEvidence(
+                    kind="answer",
+                    summary="Answered without changing any file.",
+                    metadata={"answer_chars": len(answer), "passed": True},
+                ),
+            ),
+            f"Answer given; no file was changed. {self.PROVES}",
+        )
+
+
+def _canonical(workspace: Workspace, relative: str) -> Path | None:
+    try:
+        return workspace.resolve(relative, must_exist=False)
+    except WorkspaceBoundaryError:
+        return None
 
 
 def _declared_paths(state: SessionState) -> tuple[str, ...]:

@@ -199,7 +199,13 @@ def test_e2e_01_un_objetivo_simple_se_hace_de_una_pieza_y_sin_grafo(tmp_path: Pa
 
     async def escenario() -> None:
         registry = _registry(tmp_path, provider, bus, planning=True)
-        run_id = await registry.start("Di como esta implementada la suma", workspace)
+        # Ejecucion concedida de forma explicita: los checks del sandbox son la evidencia
+        # de este escenario, y desde A01 nada del proyecto corre sin esa autoridad.
+        run_id = await registry.start(
+            "Di como esta implementada la suma",
+            workspace,
+            RunOptions(execution=CapabilityMode.ALLOW),
+        )
         await _settle(registry, run_id)
 
         record = await registry.snapshot(run_id)
