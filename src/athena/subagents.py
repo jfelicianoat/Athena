@@ -30,7 +30,7 @@ from athena.agent_loop import AgentLoop, AgentLoopConfig, AgentRunStatus
 from athena.cancellation import CancellationSource, CancellationToken
 from athena.context import ContextBuilder
 from athena.errors import AthenaRuntimeError, BudgetExceededError, ToolValidationError
-from athena.events import EventBus, EventName, SubagentEvent
+from athena.events import EventBus, EventName, RuntimeEvent, SubagentEvent
 from athena.hooks import HookRegistry
 from athena.models import ModelProvider
 from athena.permissions import (
@@ -41,6 +41,7 @@ from athena.permissions import (
 )
 from athena.registry import ToolRegistry
 from athena.stores import ToolResultStore
+from athena.system1 import System1
 from athena.tool_executor import ToolExecutor
 from athena.tools import Tool
 from athena.types import JSONObject, JSONValue
@@ -302,6 +303,7 @@ class SubagentResult:
     files_modified: tuple[str, ...] = ()
     commands_run: tuple[str, ...] = ()
     tool_call_ids: tuple[str, ...] = ()
+    review_required: bool = False
 
     @property
     def succeeded(self) -> bool:
@@ -385,12 +387,14 @@ class SubagentRunner:
         prompt: PermissionPrompt | None = None,
         hooks: HookRegistry | None = None,
         provider_name: str = "native",
+        system1: System1 | None = None,
     ) -> None:
         self.provider = provider
         #: Con qué nombre se anuncian los delegados que arranca este runner. Es el del
         #: proveedor que lo envuelve, no el del modelo: quien mira quiere saber quién
         #: ejecuta al delegado, no con qué pesos.
         self.provider_name = provider_name
+        self.system1 = system1
         self.catalog = dict(catalog)
         self.event_bus = event_bus
         self.result_store = result_store
@@ -405,6 +409,7 @@ class SubagentRunner:
         #: runner, que vive lo que vive el run: nadie tiene que acordarse de cerrarlos, y
         #: por tanto nadie puede olvidarse.
         self._sessions: dict[str, SubagentSession] = {}
+        self._review_required_sessions: set[str] = set()
 
     def profile_for(self, role: SubagentRole) -> SubagentProfile:
         try:
@@ -438,18 +443,20 @@ class SubagentRunner:
             self.provider,
             registry,
             executor,
-            ContextBuilder(workspace),
+            ContextBuilder(workspace, system1=self.system1),
             self.event_bus,
             # A delegate proves it produced an answer; the parent decides what that answer
             # is worth. Running the project's checks inside every child would verify the
             # same repository three times for one task.
             verification=LoopCompletionVerificationPolicy(),
+            system1=self.system1,
             config=AgentLoopConfig(
                 max_iterations=limits.max_iterations,
                 max_tool_calls=limits.max_tool_calls,
                 session_timeout_seconds=limits.timeout_seconds,
                 max_repair_cycles=0,
                 capture_baseline=False,
+                acceptance_criteria=brief.acceptance_criteria,
             ),
         )
 
@@ -463,6 +470,16 @@ class SubagentRunner:
         # nuevo, el registro enseñaria dos agentes donde hubo uno y el presupuesto
         # compartido no cuadraria con nada.
         child_session_id = session_id or str(uuid4())
+        # A follow-up cannot erase the risk recorded in the earlier child run.
+        review_required = session_id is not None and session_id in self._review_required_sessions
+
+        def observe_review(event: RuntimeEvent) -> None:
+            nonlocal review_required
+            if event.session_id == child_session_id:
+                review_required = review_required or event.payload.get("review_required") is True
+                review_required = review_required or event.name is EventName.TOOL_CONTRACT_VIOLATED
+
+        stop_observing = self.event_bus.subscribe(observe_review)
         await self.event_bus.publish(
             SubagentEvent(
                 EventName.SUBAGENT_STARTED,
@@ -497,6 +514,7 @@ class SubagentRunner:
             )
         finally:
             unsubscribe()
+            stop_observing()
 
         working = run.working_state
         result = SubagentResult(
@@ -507,8 +525,11 @@ class SubagentRunner:
             error=run.error,
             files_modified=working.files_modified if working else (),
             commands_run=working.commands_run if working else (),
+            review_required=review_required,
             tool_call_ids=run.tool_call_ids,
         )
+        if review_required:
+            self._review_required_sessions.add(result.session_id)
         if limits.max_follow_ups > 0 and result.session_id not in self._sessions:
             # `not in` y no sobrescribir: un seguimiento pasa por aqui con el mismo id, y
             # registrarlo de nuevo le pondria el contador a cero. Seria «tantas preguntas

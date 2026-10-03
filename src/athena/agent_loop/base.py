@@ -40,6 +40,7 @@ from athena.state import (
     BudgetState,
     SessionState,
 )
+from athena.system1 import System1
 from athena.tool_executor import ToolExecutor
 from athena.types import JSONObject, JSONValue
 from athena.verification import (
@@ -67,6 +68,7 @@ class BucleBase:
         hooks: HookRegistry | None = None,
         skills: SkillRegistry | None = None,
         config: AgentLoopConfig | None = None,
+        system1: System1 | None = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -80,6 +82,7 @@ class BucleBase:
         self.hooks = hooks or HookRegistry()
         self.skills = skills or SkillRegistry()
         self.config = config or AgentLoopConfig()
+        self.system1 = system1
         self.recovery = recovery or RecoveryPolicy(
             RecoveryLimits(
                 model_retries=self.config.max_model_retries,

@@ -39,7 +39,7 @@ class CapabilityMode(StrEnum):
 #: Las que cambian el workspace, y las que ejecutan algo. Por nombre, porque es lo que el
 #: perfil declara: deducirlo de `is_read_only()` mezclaria dos preguntas —que hace una
 #: tool y quien puede usarla— que el resto del sistema mantiene separadas a proposito.
-def _paths(raw: object) -> tuple[str, ...]:
+def _paths(raw: object, name: str = "deliverables") -> tuple[str, ...]:
     """Rutas relativas pedidas por el cliente, saneadas aqui y comprobadas mas tarde.
 
     Aqui solo se exige que sean cadenas: si estan dentro del workspace lo decide el
@@ -49,7 +49,7 @@ def _paths(raw: object) -> tuple[str, ...]:
     if raw is None:
         return ()
     if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
-        raise ToolValidationError("deliverables must be a list of paths")
+        raise ToolValidationError(f"{name} must be a list of strings")
     return tuple(item.strip() for item in raw if isinstance(item, str) and item.strip())
 
 
@@ -87,6 +87,8 @@ class RunOptions:
     #: El encargo pide cambiar el proyecto. Un run asi no se da por terminado con solo
     #: una respuesta: tiene que haber al menos un fichero escrito con exito (A04).
     require_change: bool = False
+    acceptance_criteria: tuple[str, ...] = ()
+    mandatory_review: bool = False
 
     def to_json(self) -> JSONObject:
         """Las mismas claves que acepta `from_json`, para poder guardarlas y releerlas."""
@@ -101,6 +103,8 @@ class RunOptions:
             "deliverables": list(self.deliverables),
             "model": self.model,
             "require_change": self.require_change,
+            "acceptance_criteria": list(self.acceptance_criteria),
+            "mandatory_review": self.mandatory_review,
         }
 
     @classmethod
@@ -147,4 +151,6 @@ class RunOptions:
             deliverables=_paths(payload.get("deliverables")),
             model=str(payload.get("model") or "").strip(),
             require_change=payload.get("require_change") is True,
+            acceptance_criteria=_paths(payload.get("acceptance_criteria"), "acceptance_criteria"),
+            mandatory_review=payload.get("mandatory_review") is True,
         )

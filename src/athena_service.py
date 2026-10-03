@@ -32,7 +32,7 @@ import secrets
 import signal
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from athena.adapters.ai_broker import (
@@ -43,6 +43,7 @@ from athena.adapters.openai_compatible import OpenAICompatibleModelProvider
 from athena.adapters.service import AthenaService, RunRegistry, ServiceConfig
 from athena.adapters.service.launch import ServiceEndpoint, service_ready_line
 from athena.adapters.service.orchestration import OrchestrationSettings
+from athena.adapters.system1_broker import AiBrokerSystem1Client
 from athena.checkpoints import CheckpointStore
 from athena.events import InMemoryEventBus
 from athena.graph_store import SqliteGraphStore
@@ -55,6 +56,7 @@ from athena.provider_router import ProviderEntry, ProviderRegistry, ProviderRout
 from athena.run_event_log import RunEventLog
 from athena.session_store import SqliteSessionStore
 from athena.stores import SqliteToolResultStore
+from athena.system1 import System1, System1Config
 
 
 def _flag(name: str, *, default: bool) -> bool:
@@ -131,6 +133,7 @@ class ServiceSettings:
     #: pone quien despliega y no el catálogo del broker: ese anuncia ciento y pico
     #: modelos, embeddings incluidos, y ofrecerlos todos no es ofrecer una elección.
     allowed_models: tuple[str, ...] = ()
+    system1: System1Config = field(default_factory=System1Config)
 
     def model_catalog(self) -> ModelCatalog | None:
         """Los modelos ofrecidos, o `None` si este despliegue no ofrece elección.
@@ -217,6 +220,7 @@ class ServiceSettings:
             model_wait_seconds=model_wait,
             task_timeout_seconds=task_timeout,
             allowed_models=allowed_models,
+            system1=System1Config.from_environment(),
         )
 
 
@@ -297,6 +301,15 @@ def build_service(settings: ServiceSettings) -> AthenaService:
         # Los modelos que este despliegue admite. `None` cuando no hay ninguno declarado:
         # el servicio corre como siempre y `/v1/models` contesta que aqui no se elige.
         models=settings.model_catalog(),
+        system1=System1(
+            AiBrokerSystem1Client(
+                settings.broker_base_url,
+                settings.broker_token,
+                timeout_seconds=settings.system1.timeout_seconds,
+            ),
+            settings.system1,
+            event_bus,
+        ),
     )
     return AthenaService(
         registry,

@@ -115,6 +115,8 @@ class AgentLoop(FinalizacionMixin):
             # Quien encargo el trabajo puede seguir hablando mientras se hace. Sin tablero
             # el objetivo es el que llego y no cambia, que es lo de siempre.
             goal=goal if goal is not None else GoalBoard(objective),
+            # The durable session does not retain a complete executor output to review.
+            review_required=resume_from is not None,
         )
         if resume_from is not None:
             data.references.extend(resume_from.tool_references)
@@ -286,12 +288,18 @@ class AgentLoop(FinalizacionMixin):
                     "tool_calls": budget.usage.tool_calls,
                     "repair_cycle": data.repair_cycles,
                     "working_state": data.working.summary(),
+                    **(
+                        {"acceptance_criteria": list(self.config.acceptance_criteria)}
+                        if self.config.acceptance_criteria
+                        else {}
+                    ),
                     "skills": render_skills(data.skills),
                     "deferred_tools_available": len(self.registry.deferred_names()),
                 },
                 tool_definitions=self.registry.definitions(data.revealed_tools),
                 cancellation=cancellation,
                 discovered_paths=tuple(sorted(data.discovered_paths)),
+                session_id=data.session.session_id,
             )
             if self.config.model:
                 request = replace(request, model=self.config.model)
@@ -316,6 +324,11 @@ class AgentLoop(FinalizacionMixin):
                     data,
                     budget,
                 )
+                completed = await self._system1_checkpoint(
+                    response, payloads, data, workspace, cancellation, budget
+                )
+                if completed is not None:
+                    return completed
                 estancado = await self._check_progress(response.tool_calls, payloads, data)
                 if estancado is not None:
                     # Antes de tirar el run, mirar si el trabajo ya estaba hecho. Un modelo

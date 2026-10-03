@@ -23,8 +23,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
 from athena.cancellation import CancellationToken
-from athena.errors import ToolValidationError
+from athena.errors import (
+    AthenaRuntimeError,
+    CancellationError,
+    ProcessCancelledError,
+    ToolValidationError,
+)
 from athena.permissions import PermissionPolicy, PermissionRequest, RiskLevel, RiskTier
+from athena.state import SessionState
 from athena.subagent_provider import Continuable, Delegator
 from athena.subagents import (
     DEFAULT_PROFILES,
@@ -33,9 +39,11 @@ from athena.subagents import (
     SubagentResult,
     SubagentRole,
 )
+from athena.system1 import System1, explicit_review, verification_input
 from athena.tool_projection import DisplayView, ModelView, ResultKind, ToolProjection
 from athena.tools import Tool, ToolContext, ToolLoadPolicy, ToolResult, ToolSpec
 from athena.types import JSONObject, JSONSchema
+from athena.verification import VerificationPolicy
 from athena.workspace import Workspace
 
 DELEGATE_TASK_NAME = "delegate_task"
@@ -308,11 +316,15 @@ class DelegateTaskTool:
         parent_policy: PermissionPolicy,
         *,
         profiles: Mapping[SubagentRole, SubagentProfile] | None = None,
+        system1: System1 | None = None,
+        verification: VerificationPolicy | None = None,
     ) -> None:
         self._delegator = delegator
         self._catalog = dict(catalog)
         self._parent_policy = parent_policy
         self._profiles = dict(profiles or DEFAULT_PROFILES)
+        self.system1 = system1
+        self.verification = verification
 
     @property
     def spec(self) -> ToolSpec:
@@ -358,6 +370,9 @@ class DelegateTaskTool:
         cancellation: CancellationToken,
     ) -> ToolResult:
         request = parse_delegation(arguments)
+        skipped = await self._review_gate(request, context, cancellation)
+        if skipped is not None:
+            return skipped
         if request.is_follow_up:
             result = await self._continue(request, context, cancellation)
         else:
@@ -370,6 +385,16 @@ class DelegateTaskTool:
                 parent_session_id=context.session_id,
                 budget=confined.budget,
             )
+        if self.system1 is not None and result.role is SubagentRole.VERIFIER:
+            report = result.verifier_report()
+            await self.system1.review_completed(
+                session_id=context.session_id,
+                passed=False
+                if not result.succeeded
+                else None
+                if report.unstructured
+                else report.passed,
+            )
         return ToolResult(
             {
                 "role": result.role.value,
@@ -379,6 +404,72 @@ class DelegateTaskTool:
                 "commands_run": list(result.commands_run),
                 "delegate_session_id": result.session_id,
                 "follow_ups_left": self._follow_ups_left(result.session_id),
+            },
+            metadata={"review_required": result.review_required},
+        )
+
+    async def _review_gate(
+        self,
+        request: DelegationRequest,
+        context: ToolContext,
+        cancellation: CancellationToken,
+    ) -> ToolResult | None:
+        if self.system1 is None or not self.system1.config.reviewer_gate:
+            return None
+        if request.role is not SubagentRole.VERIFIER or request.is_follow_up:
+            return None
+        evidence = context.metadata.get("system1_review")
+        evidence = evidence if isinstance(evidence, dict) else {}
+        state = evidence.get("state")
+        state = state if isinstance(state, dict) else {}
+        mandatory = evidence.get("mandatory_review") is not False or not evidence.get("output")
+        mandatory = mandatory or not request.acceptance_criteria
+        mandatory = mandatory or explicit_review(str(evidence.get("objective") or ""))
+        verification = None
+        if not mandatory and self.verification is not None:
+            try:
+                verification = await self.verification.verify(
+                    SessionState(
+                        context.session_id,
+                        context.workspace.workspace_id,
+                        attributes={
+                            "files_modified": state.get("files_modified", []),
+                            "commands_run": state.get("commands_run", []),
+                            "final_response": evidence.get("output"),
+                            "finish_reason": "stop",
+                        },
+                    ),
+                    context.workspace,
+                    cancellation,
+                )
+            except (CancellationError, ProcessCancelledError):
+                raise
+            except AthenaRuntimeError:
+                verification = None
+        skipped = await self.system1.skip_reviewer(
+            {
+                **evidence,
+                "review_objective": request.goal,
+                "review_criteria": list(request.acceptance_criteria),
+                "checks": None if verification is None else verification_input(verification),
+            },
+            cancellation,
+            session_id=context.session_id,
+            verification=verification,
+            mandatory=mandatory,
+        )
+        if not skipped:
+            return None
+        return ToolResult(
+            {
+                "role": "verifier",
+                "status": "completed",
+                "summary": "Segunda revisión semántica omitida tras comprobaciones "
+                "y juicio System-1.",
+                "files_changed": [],
+                "commands_run": [],
+                "delegate_session_id": "",
+                "follow_ups_left": 0,
             }
         )
 

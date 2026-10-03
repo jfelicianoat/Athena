@@ -31,6 +31,7 @@ from athena.models import (
     ModelRole,
     ModelToolCall,
 )
+from athena.system1 import explicit_review
 from athena.tool_projection import model_view_of
 from athena.tool_search import TOOL_SEARCH_NAME
 from athena.tools import Tool, ToolResult
@@ -103,6 +104,23 @@ class EjecucionMixin(SesionMixin):
                             session_id=data.session.session_id,
                             workspace=workspace,
                             cancellation=cancellation,
+                            context_metadata={
+                                "system1_review": {
+                                    "objective": data.goal.current.text,
+                                    "acceptance_criteria": list(self.config.acceptance_criteria),
+                                    "state": data.working.to_json(),
+                                    "output": data.latest_output,
+                                    "mandatory_review": self.config.mandatory_review
+                                    or data.review_required
+                                    or explicit_review(data.goal.current.text)
+                                    or bool(data.working.errors or data.working.remaining_work)
+                                    or data.goal.pending is not None,
+                                }
+                            }
+                            if self.system1 is not None
+                            and self.system1.config.reviewer_gate
+                            and call.name == "delegate_task"
+                            else None,
                         )
                         for _, call, _ in wave
                     ),
@@ -221,6 +239,23 @@ class EjecucionMixin(SesionMixin):
             # still showed up in files_modified would make the working state lie to
             # verification, to recovery and to whoever reads the session later.
             data.working = self._record_tool_use(data.working, call)
+            data.review_required = (
+                data.review_required or outcome.metadata.get("review_required") is True
+            )
+            output_text = str(outcome.output)
+            data.review_required = data.review_required or len(output_text) > 2_000
+            data.latest_output = output_text[:2_000]
+            if call.name == "delegate_task" and isinstance(outcome.output, dict):
+                files = outcome.output.get("files_changed")
+                commands = outcome.output.get("commands_run")
+                if isinstance(files, list):
+                    data.working = data.working.modifying(
+                        files_modified=tuple(path for path in files if isinstance(path, str))
+                    )
+                if isinstance(commands, list):
+                    for command in commands:
+                        if isinstance(command, str):
+                            data.working = data.working.ran(command)
             if outcome.reference is not None:
                 data.references.append(outcome.reference)
             if call.name == TOOL_SEARCH_NAME:

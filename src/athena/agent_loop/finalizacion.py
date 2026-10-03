@@ -47,6 +47,7 @@ from athena.recovery import RecoveryAction
 from athena.state import (
     AgentStatus,
 )
+from athena.system1 import deterministic_ready, explicit_review, verification_input
 from athena.types import JSONObject
 from athena.verification import (
     VerificationResult,
@@ -273,6 +274,11 @@ class FinalizacionMixin(EjecucionMixin):
             return None
         verification, razon = await self._run_verification(response, data, workspace, cancellation)
         if verification.permits_completion:
+            verdict = await self._system1_goal(response, verification, data, cancellation)
+            if data.goal.pending is not None:
+                return None
+            if verdict is False:
+                return await self._semantic_repair(data)
             return await self._complete_run(response, data, workspace, budget, verification)
         if verification.status is VerificationStatus.INCONCLUSIVE:
             # Un run cuyos checks no pudieron ejecutarse no ha fallado la verificacion: ha
@@ -331,7 +337,116 @@ class FinalizacionMixin(EjecucionMixin):
             return None
         if not verification.permits_completion:
             return None
+        verdict = await self._system1_goal(aviso, verification, data, cancellation)
+        if verdict is False or data.goal.pending is not None:
+            return None
         return await self._complete_run(aviso, data, workspace, budget, verification)
+
+    async def _system1_goal(
+        self,
+        response: ModelResponse,
+        verification: VerificationResult,
+        data: _RunData,
+        cancellation: CancellationToken,
+    ) -> bool | None:
+        if self.system1 is None or not self.system1.config.goal_completion:
+            return None
+        # A failed required check can never be overridden, even if attributed to baseline.
+        if any(item.metadata.get("passed") is False for item in verification.evidence):
+            return None
+        verdict = await self.system1.completed(
+            {
+                "objective": data.goal.current.text,
+                "acceptance_criteria": list(self.config.acceptance_criteria),
+                "state": data.working.to_json(),
+                "output": response.content,
+                "checks": verification_input(verification),
+                "pending": list(data.working.remaining_work),
+            },
+            cancellation,
+            session_id=data.session.session_id,
+        )
+        # Evidence collected for an earlier objective cannot complete a revised one.
+        return None if data.goal.pending is not None else verdict
+
+    async def _semantic_repair(self, data: _RunData) -> None:
+        if data.repair_cycles >= self.config.max_repair_cycles:
+            raise VerificationFailure("System-1 found an unmet objective or acceptance criterion")
+        data.repair_cycles += 1
+        data.history.append(
+            ModelMessage(
+                ModelRole.USER,
+                "The project checks passed, but the semantic completion checkpoint found that "
+                "the objective or an acceptance criterion is still incomplete. Compare EVERY "
+                "part of the objective against the actual artifacts, including any requested "
+                "regression test. Complete the missing work and provide evidence.",
+            )
+        )
+        await self.event_bus.publish(
+            RecoveryEvent(
+                EventName.RECOVERY_STARTED,
+                data.session.session_id,
+                {"reason": "system1_incomplete", "repair_cycle": data.repair_cycles},
+            )
+        )
+
+    async def _system1_checkpoint(
+        self,
+        response: ModelResponse,
+        payloads: tuple[JSONObject | None, ...],
+        data: _RunData,
+        workspace: Workspace,
+        cancellation: CancellationToken,
+        budget: RuntimeBudget,
+    ) -> AgentRunResult | None:
+        if self.system1 is None or not self.system1.config.goal_completion:
+            return None
+        # A block with changed files and a successful check command has evidence worth
+        # examining. Reads and micro-actions never trigger another verification suite.
+        if not data.working.files_modified or data.goal.pending is not None:
+            return None
+        if (
+            self.config.mandatory_review
+            or data.review_required
+            or explicit_review(data.goal.current.text)
+        ):
+            return None
+        if not any(call.name == "bash" for call in response.tool_calls):
+            return None
+        if any(payload is None or payload.get("ok") is not True for payload in payloads):
+            return None
+        checkpoint = ModelResponse(
+            "Athena comprobó los artefactos y el objetivo tras el bloque de trabajo.",
+            "athena",
+            "stop",
+        )
+        old_session, old_working = data.session, data.working
+        try:
+            verification, _ = await self._run_verification(
+                checkpoint, data, workspace, cancellation
+            )
+        except (CancellationError, ProcessCancelledError):
+            raise
+        except AthenaRuntimeError:
+            data.session, data.working = old_session, old_working
+            return None
+        verdict = (
+            await self._system1_goal(checkpoint, verification, data, cancellation)
+            if deterministic_ready(verification)
+            else None
+        )
+        if verdict is True and not data.working.remaining_work and data.goal.pending is None:
+            await self.event_bus.publish(
+                AgentEvent(
+                    EventName.SYSTEM1_COMPLETION,
+                    data.session.session_id,
+                    {"source": "checkpoint", "auto_completed": True},
+                )
+            )
+            return await self._complete_run(checkpoint, data, workspace, budget, verification)
+        # An observation must not manufacture a terminal model response in a live run.
+        data.session, data.working = old_session, old_working
+        return None
 
     async def _run_verification(
         self,

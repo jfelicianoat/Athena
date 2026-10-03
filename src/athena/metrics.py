@@ -17,6 +17,7 @@ an infrastructure project.
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
@@ -84,6 +85,7 @@ class RunMetrics:
     provider_failures: int = 0
     cancellations: int = 0
     context_compactions: int = 0
+    system1: JSONObject = field(default_factory=dict)
 
     @property
     def duration_ms(self) -> int:
@@ -226,6 +228,41 @@ class MetricsCollector:
             if isinstance(cost, (int, float)) and not isinstance(cost, bool):
                 metrics.estimated_cost += float(cost)
 
+        if event.name in {
+            EventName.SYSTEM1_JUDGED,
+            EventName.SYSTEM1_CONTEXT,
+            EventName.SYSTEM1_REVIEW,
+            EventName.SYSTEM1_COMPLETION,
+            EventName.SYSTEM1_COMPARISON,
+        }:
+            counters = metrics.system1
+
+            def increment(key: str, amount: int = 1) -> None:
+                counters[key] = _count(counters, key) + amount
+
+            if event.name is EventName.SYSTEM1_JUDGED:
+                increment("judgments")
+                if event.payload.get("fallback") is True:
+                    increment("fallbacks")
+            elif event.name is EventName.SYSTEM1_CONTEXT:
+                increment("context_candidates", _count(event.payload, "candidates"))
+                increment("context_excluded", _count(event.payload, "excluded"))
+                increment(
+                    "estimated_tokens_before", _count(event.payload, "estimated_tokens_before")
+                )
+                increment("estimated_tokens_after", _count(event.payload, "estimated_tokens_after"))
+            elif event.name is EventName.SYSTEM1_REVIEW:
+                increment("reviewable_outputs")
+                skipped = event.payload.get("reviewer_skipped") is True
+                increment("reviewers_skipped" if skipped else "reviewers_required")
+            elif event.payload.get("auto_completed") is True:
+                increment("auto_completions")
+            elif event.name is EventName.SYSTEM1_COMPARISON:
+                if event.payload.get("comparable") is True:
+                    increment("shadow_comparisons")
+                if event.payload.get("disagreement") is True:
+                    increment("shadow_disagreements")
+
         terminal = _TERMINAL.get(event.name)
         if terminal is not None:
             # A graph event never downgrades a run that already reported: the outer result
@@ -320,6 +357,10 @@ CREATE TABLE IF NOT EXISTS run_metrics (
 );
 
 CREATE INDEX IF NOT EXISTS idx_metrics_shape ON run_metrics(hierarchical, status);
+CREATE TABLE IF NOT EXISTS run_system1_metrics (
+    run_id TEXT PRIMARY KEY,
+    counters TEXT NOT NULL
+);
 """
 
 _COLUMNS = (
@@ -406,6 +447,11 @@ class SqliteMetricsStore:
                 f"ON CONFLICT(run_id) DO UPDATE SET {assignments}",
                 values,
             )
+            connection.execute(
+                "INSERT INTO run_system1_metrics VALUES (?, ?) "
+                "ON CONFLICT(run_id) DO UPDATE SET counters = excluded.counters",
+                (metrics.run_id, json.dumps(metrics.system1)),
+            )
 
     async def load(self, *, hierarchical: bool | None = None) -> tuple[RunMetrics, ...]:
         """Every run, or only the ones of one shape. The comparison the report wants."""
@@ -422,7 +468,11 @@ class SqliteMetricsStore:
                     "SELECT * FROM run_metrics WHERE hierarchical = ? ORDER BY started_at",
                     (int(hierarchical),),
                 ).fetchall()
-        return tuple(_metrics_from(row) for row in rows)
+            saved = dict(connection.execute("SELECT run_id, counters FROM run_system1_metrics"))
+        metrics = tuple(_metrics_from(row) for row in rows)
+        for item in metrics:
+            item.system1 = json.loads(saved.get(item.run_id, "{}"))
+        return metrics
 
     async def compare(self) -> JSONObject:
         """Monoagent against hierarchical, side by side.

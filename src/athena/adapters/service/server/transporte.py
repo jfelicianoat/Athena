@@ -32,6 +32,7 @@ from athena.adapters.service.server.http import (
     ServiceConfig,
     _logger,
 )
+from athena.cancellation import CancellationSource
 from athena.errors import (
     AthenaRuntimeError,
     GoalConflict,
@@ -101,6 +102,8 @@ class TransporteMixin:
     async def start(self) -> tuple[str, int]:
         """Open the port. Interrupted runs are marked before anyone can observe them."""
         await self.registry.mark_interrupted()
+        if self.registry.system1 is not None:
+            await self.registry.system1.initialize(CancellationSource().token)
         self._server = await asyncio.start_server(self._handle, self.config.host, self.config.port)
         socket_name = self._server.sockets[0].getsockname()
         return str(socket_name[0]), int(socket_name[1])

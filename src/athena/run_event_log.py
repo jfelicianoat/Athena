@@ -51,6 +51,11 @@ from athena.types import JSONObject
 #: explicar el run mañana.
 DURABLE: frozenset[EventName] = frozenset(
     {
+        EventName.SYSTEM1_JUDGED,
+        EventName.SYSTEM1_CONTEXT,
+        EventName.SYSTEM1_REVIEW,
+        EventName.SYSTEM1_COMPLETION,
+        EventName.SYSTEM1_COMPARISON,
         EventName.AGENT_STARTED,
         EventName.AGENT_COMPLETED,
         EventName.AGENT_FAILED,

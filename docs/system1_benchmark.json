@@ -1,0 +1,74 @@
+{
+  "method": "scripted judgments; actual AgentLoop, context, graph and tool execution",
+  "tokens": "ceil(chars/4) across all messages sent to the main model; not billed tokens",
+  "rows": [
+    {
+      "scenario": "goal_completion",
+      "before": {
+        "iterations": 5,
+        "context_tokens_estimate": 1683,
+        "reviewer_calls": 0,
+        "fallbacks": 0,
+        "errors": 0
+      },
+      "after": {
+        "iterations": 4,
+        "context_tokens_estimate": 1259,
+        "reviewer_calls": 0,
+        "fallbacks": 0,
+        "errors": 0
+      }
+    },
+    {
+      "scenario": "optional_context",
+      "before": {
+        "iterations": 1,
+        "context_tokens_estimate": 816,
+        "reviewer_calls": 0,
+        "fallbacks": 0,
+        "errors": 0
+      },
+      "after": {
+        "iterations": 1,
+        "context_tokens_estimate": 286,
+        "reviewer_calls": 0,
+        "fallbacks": 0,
+        "errors": 0
+      }
+    },
+    {
+      "scenario": "reviewer_gate",
+      "before": {
+        "iterations": 0,
+        "context_tokens_estimate": 0,
+        "reviewer_calls": 1,
+        "fallbacks": 0,
+        "errors": 0
+      },
+      "after": {
+        "iterations": 0,
+        "context_tokens_estimate": 0,
+        "reviewer_calls": 0,
+        "fallbacks": 0,
+        "errors": 0
+      }
+    },
+    {
+      "scenario": "broker_unavailable",
+      "before": {
+        "iterations": 1,
+        "context_tokens_estimate": 817,
+        "reviewer_calls": 0,
+        "fallbacks": 0,
+        "errors": 0
+      },
+      "after": {
+        "iterations": 1,
+        "context_tokens_estimate": 817,
+        "reviewer_calls": 0,
+        "fallbacks": 1,
+        "errors": 0
+      }
+    }
+  ]
+}

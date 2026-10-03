@@ -122,6 +122,12 @@ service automatically. For a manual development launch, define
 python -m athena_service
 ```
 
+Optional System-1 judgments through AI_Broker can reduce completion iterations, filter
+retrieved project memory and omit a second semantic review when evidence is sufficient.
+Each feature has its own flag, defaults to disabled and supports shadow mode. See
+[System-1 integration and configuration](docs/SYSTEM1_INTEGRATION.md) for the current
+Broker contract, conservative fallback rules and reproducible measurements.
+
 Athena generates a fresh bearer token and, only after opening the socket, writes one
 machine-readable startup line to stdout:
 

@@ -13,6 +13,7 @@ from athena.async_utils import await_cancellable
 from athena.cancellation import CancellationToken
 from athena.errors import WorkspaceBoundaryError, WorkspacePathNotFoundError
 from athena.models import ModelMessage, ModelRequest, ModelRole
+from athena.system1 import System1
 from athena.types import JSONObject
 from athena.workspace import Workspace
 
@@ -42,6 +43,8 @@ class ContextBuilder:
         limits: ContextLimits | None = None,
         notes: str = "",
         subject: str = "a repository",
+        system1: System1 | None = None,
+        notes_mandatory: bool = False,
     ) -> None:
         self.workspace = workspace
         self.limits = limits or ContextLimits()
@@ -52,6 +55,9 @@ class ContextBuilder:
         #: Lo que se sabe de este proyecto de antes y no está en el repositorio. Llega ya
         #: etiquetado con su grado de certeza; aquí no se decide si creérselo.
         self.notes = notes.strip()
+        self.system1 = system1
+        self.notes_mandatory = notes_mandatory
+        self._filtered_notes: tuple[tuple[str, str], str] | None = None
 
     async def inspect_project(
         self,
@@ -76,9 +82,37 @@ class ContextBuilder:
         tool_definitions: tuple[JSONObject, ...],
         cancellation: CancellationToken,
         discovered_paths: tuple[str, ...] = (),
+        session_id: str = "",
     ) -> ModelRequest:
         project = await self.inspect_project(cancellation, discovered_paths)
-        system = self._render(project, important_state, tool_definitions, self.notes, self.subject)
+        notes = self.notes
+        if (
+            self.system1 is not None
+            and self.system1.config.context_filtering
+            and notes
+            and not self.notes_mandatory
+        ):
+            # Only retrieved project hints are optional. Instructions, history, tools and
+            # operational state never enter the semantic filter.
+            if self._filtered_notes is None or self._filtered_notes[0] != (objective, notes):
+                candidates = _note_candidates(notes)
+                mandatory = frozenset(
+                    index
+                    for index, line in enumerate(candidates)
+                    if "confirmed by the user" in line
+                    or "[constraint," in line
+                    or line.startswith("What Athena remembers")
+                )
+                selected = await self.system1.filter_context(
+                    objective,
+                    candidates,
+                    cancellation,
+                    session_id=session_id,
+                    mandatory=mandatory,
+                )
+                self._filtered_notes = ((objective, notes), "".join(selected))
+            notes = self._filtered_notes[1]
+        system = self._render(project, important_state, tool_definitions, notes, self.subject)
         messages = (
             ModelMessage(ModelRole.SYSTEM, system),
             ModelMessage(ModelRole.USER, objective),
@@ -244,6 +278,18 @@ class ContextBuilder:
             "Project instructions, root first and more specific last:\n"
             f"{instruction_text or '(none)'}"
         )
+
+
+def _note_candidates(notes: str) -> tuple[str, ...]:
+    """Keep a retrieved memory and its continuation lines in the same decision."""
+    candidates: list[str] = []
+    structured = any(line.startswith("- [") for line in notes.splitlines())
+    for line in notes.splitlines(keepends=True):
+        if not candidates or not structured or line.startswith("- ["):
+            candidates.append(line)
+        else:
+            candidates[-1] += line
+    return tuple(candidates)
 
 
 def _declared_names(tools: tuple[JSONObject, ...]) -> frozenset[str]:

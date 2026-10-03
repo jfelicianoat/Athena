@@ -15,6 +15,11 @@ from athena.types import JSONObject
 
 
 class EventName(StrEnum):
+    SYSTEM1_JUDGED = "system1.judged"
+    SYSTEM1_CONTEXT = "system1.context"
+    SYSTEM1_REVIEW = "system1.review"
+    SYSTEM1_COMPLETION = "system1.completion"
+    SYSTEM1_COMPARISON = "system1.comparison"
     AGENT_STARTED = "agent.started"
     AGENT_COMPLETED = "agent.completed"
     AGENT_FAILED = "agent.failed"

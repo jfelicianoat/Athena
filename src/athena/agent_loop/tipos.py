@@ -47,6 +47,8 @@ class AgentLoopConfig:
     #: no valida el nombre: quien despliega decide cuales existen (`ModelCatalog`), y el
     #: bucle solo transmite la eleccion ya tomada.
     model: str = ""
+    acceptance_criteria: tuple[str, ...] = ()
+    mandatory_review: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,3 +79,5 @@ class _RunData:
     skills: tuple[SkillSelection, ...] = ()
     goal: GoalBoard = field(default_factory=lambda: GoalBoard("(sin objetivo)"))
     progress: NoProgressDetector = field(default_factory=NoProgressDetector)
+    review_required: bool = False
+    latest_output: str = ""

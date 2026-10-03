@@ -64,6 +64,7 @@ from athena.subagent_provider import (
     SubagentService,
 )
 from athena.subagents import DEFAULT_PROFILES, SubagentRunner
+from athena.system1 import System1
 from athena.tool_executor import ToolExecutor
 from athena.tools import Tool
 from athena.types import JSONObject
@@ -103,6 +104,7 @@ class ConstruccionMixin:
         event_log: RunEventLog | None = None,
         profiles: ProfileRegistry | None = None,
         models: ModelCatalog | None = None,
+        system1: System1 | None = None,
     ) -> None:
         #: Los perfiles que este despliegue ofrece. Uno solo por defecto seria decir que
         #: Athena sirve para una cosa, que es justo lo que la fase venia a desmentir.
@@ -111,6 +113,7 @@ class ConstruccionMixin:
         #: ofrece eleccion y corre siempre con lo que tenga configurado el proveedor, que
         #: es la conducta anterior y sigue siendo valida.
         self.models = models
+        self.system1 = system1
         self.provider = provider
         self.event_bus = event_bus
         self.session_store = session_store
@@ -119,7 +122,7 @@ class ConstruccionMixin:
         self.delivery_timeout_seconds = delivery_timeout_seconds
         self.approval_timeout_seconds = approval_timeout_seconds
         self.orchestrator = Orchestrator(
-            provider, event_bus, session_store, result_store, orchestration
+            provider, event_bus, session_store, result_store, orchestration, system1=system1
         )
         #: Cuenta lo que ocurre en cada run. Se suscribe al bus como cualquier otro
         #: observador y no puede alterar nada: una medición capaz de tumbar el run que
@@ -385,7 +388,12 @@ class ConstruccionMixin:
             allow_local_execution=options.execution is CapabilityMode.ALLOW,
         )
 
-    def _delegation_tool(self, options: RunOptions) -> DelegateTaskTool:
+    def _delegation_tool(
+        self,
+        options: RunOptions,
+        *,
+        verification: VerificationPolicy | None = None,
+    ) -> DelegateTaskTool:
         """La herramienta con la que un run monoagente puede pedir un especialista.
 
         Se arma con la autoridad del propio run, así que el delegado nunca puede más que
@@ -398,7 +406,12 @@ class ConstruccionMixin:
         # por su cuenta abriría una segunda vía de aprobación para el mismo run, y el
         # cliente vería preguntas sin saber de quién son.
         runner = SubagentRunner(
-            self.provider_for(options), catalog, self.event_bus, self.result_store, prompt=None
+            self.provider_for(options),
+            catalog,
+            self.event_bus,
+            self.result_store,
+            prompt=None,
+            system1=self.system1,
         )
         service = SubagentService(SubagentProviderRegistry((NativeAthenaSubagentProvider(runner),)))
         # El reloj del despliegue, igual que en el camino jerárquico. Sin esto un
@@ -409,7 +422,14 @@ class ConstruccionMixin:
         # no decía nada del trabajo pedido.
         reloj = self.orchestrator.settings.task_timeout_seconds
         profiles = {role: budgeted(profile, reloj) for role, profile in DEFAULT_PROFILES.items()}
-        return DelegateTaskTool(service, catalog, self.policy_for(options), profiles=profiles)
+        return DelegateTaskTool(
+            service,
+            catalog,
+            self.policy_for(options),
+            profiles=profiles,
+            system1=self.system1,
+            verification=verification,
+        )
 
     def provider_for(self, options: RunOptions) -> ModelProvider:
         """El proveedor de este run, con su modelo fijado en toda llamada.
@@ -438,8 +458,12 @@ class ConstruccionMixin:
     def _build(
         self, run_id: str, workspace: Workspace, options: RunOptions, notes: str = ""
     ) -> AgentLoop:
+        verification = self.verification_for(run_id, options, workspace)
         registry = ToolRegistry(
-            (*self.tools_for(options, self.event_bus), self._delegation_tool(options))
+            (
+                *self.tools_for(options, self.event_bus),
+                self._delegation_tool(options, verification=verification),
+            )
         )
         prompt = self._ask(run_id)
         executor = ToolExecutor(
@@ -455,10 +479,14 @@ class ConstruccionMixin:
             registry,
             executor,
             ContextBuilder(
-                workspace, notes=notes, subject=self.profiles.get(options.profile).subject
+                workspace,
+                notes=notes,
+                subject=self.profiles.get(options.profile).subject,
+                system1=self.system1,
             ),
             self.event_bus,
-            verification=self.verification_for(run_id, options, workspace),
+            verification=verification,
+            system1=self.system1,
             session_store=self.session_store,
             config=AgentLoopConfig(
                 max_iterations=options.max_iterations,
@@ -468,6 +496,8 @@ class ConstruccionMixin:
                 # Quien encarga un cambio lo dice, y un run asi no termina con solo texto
                 # (A04). Antes solo el escritorio lo decidia, con una lista de palabras.
                 require_workspace_change=options.require_change,
+                acceptance_criteria=options.acceptance_criteria,
+                mandatory_review=options.mandatory_review,
             ),
         )
 

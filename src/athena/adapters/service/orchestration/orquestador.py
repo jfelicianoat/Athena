@@ -52,6 +52,7 @@ from athena.subagents import (
     DEFAULT_PROFILES,
     SubagentRunner,
 )
+from athena.system1 import System1, explicit_review
 from athena.tasks import TaskManager
 from athena.tools import Tool
 from athena.types import JSONObject
@@ -70,12 +71,15 @@ class Orchestrator:
         session_store: SessionStore,
         result_store: ToolResultStore,
         settings: OrchestrationSettings | None = None,
+        *,
+        system1: System1 | None = None,
     ) -> None:
         self.provider = provider
         self.event_bus = event_bus
         self.session_store = session_store
         self.result_store = result_store
         self.settings = settings or OrchestrationSettings()
+        self.system1 = system1
         self.scout = RepositoryScout()
         self._ledgers: dict[str, RollbackLedger] = {}
 
@@ -278,6 +282,8 @@ class Orchestrator:
         prompt: PermissionPrompt | None = None,
         cancellation: CancellationToken,
         provider: ModelProvider | None = None,
+        mandatory_review: bool = False,
+        acceptance_criteria: tuple[str, ...] = (),
     ) -> GraphResult | None:
         """Plan the work, execute the plan, and leave a session behind either way.
 
@@ -387,6 +393,8 @@ class Orchestrator:
             prompt=prompt,
             cancellation=cancellation,
             provider=inferring,
+            mandatory_review=mandatory_review,
+            acceptance_criteria=acceptance_criteria,
         )
 
     async def stored_plan(self, run_id: str) -> StoredPlan | None:
@@ -416,6 +424,8 @@ class Orchestrator:
         prompt: PermissionPrompt | None = None,
         cancellation: CancellationToken,
         provider: ModelProvider | None = None,
+        mandatory_review: bool = False,
+        acceptance_criteria: tuple[str, ...] = (),
     ) -> GraphResult:
         """Seguir un plan donde se quedó, sin volver a planificar.
 
@@ -438,6 +448,8 @@ class Orchestrator:
             prompt=prompt,
             cancellation=cancellation,
             provider=provider,
+            mandatory_review=mandatory_review,
+            acceptance_criteria=acceptance_criteria,
         )
 
     async def _drive(
@@ -453,6 +465,8 @@ class Orchestrator:
         prompt: PermissionPrompt | None,
         cancellation: CancellationToken,
         provider: ModelProvider | None = None,
+        mandatory_review: bool = False,
+        acceptance_criteria: tuple[str, ...] = (),
     ) -> GraphResult:
         """Ejecuta un grafo, venga de planificar o de recuperarlo.
 
@@ -479,6 +493,7 @@ class Orchestrator:
             self.event_bus,
             self.result_store,
             profiles=profiles,
+            system1=self.system1,
             prompt=prompt,
             # Los ganchos bajan al hijo: en un run jerarquico las escrituras pasan ahi, y
             # unos ganchos que se quedasen arriba no verian ni una sola escritura del run.
@@ -492,6 +507,10 @@ class Orchestrator:
             board=self.settings.board,
             store=self.settings.graphs,
             rollback=libro,
+            system1=self.system1,
+            mandatory_review=mandatory_review or explicit_review(objective),
+            objective=objective,
+            acceptance_criteria=acceptance_criteria,
         )
         # A scope of its own so cancelling the run stops the plan, while a subgraph giving
         # up does not read as the user having cancelled the whole thing.

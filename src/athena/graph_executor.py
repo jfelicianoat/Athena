@@ -39,7 +39,7 @@ from datetime import UTC, datetime
 
 from athena.cancellation import CancellationScope, CancellationToken, chained_source
 from athena.diagnosis import diagnose_result, inconclusive_reason
-from athena.errors import AthenaRuntimeError
+from athena.errors import AthenaRuntimeError, CancellationError, ProcessCancelledError
 from athena.events import EventBus, EventName, RuntimeEvent
 from athena.graph_store import SqliteGraphStore
 from athena.planning import PlanBoard, PlanStatus, TaskGraph, TaskNode
@@ -47,8 +47,9 @@ from athena.rollback import RollbackLedger
 from athena.state import ExecutionOutcome, SessionState, classify_outcome
 from athena.subagent_provider import Delegator
 from athena.subagents import SubagentBrief, SubagentResult, SubagentRole
+from athena.system1 import System1, explicit_review, verification_input
 from athena.tasks import TaskBudget, TaskManager
-from athena.types import JSONObject
+from athena.types import JSONObject, JSONValue
 from athena.verification import VerificationPolicy, VerificationResult
 from athena.workspace import Workspace
 from athena.workspace_access import WORKSPACE_ACCESS
@@ -81,6 +82,7 @@ class TaskEvidence:
     unresolved: tuple[str, ...] = ()
     verification: VerificationResult | None = None
     error_code: str | None = None
+    review_required: bool = False
 
     @property
     def succeeded(self) -> bool:
@@ -156,10 +158,18 @@ class GraphExecutor:
         store: SqliteGraphStore | None = None,
         rollback: RollbackLedger | None = None,
         max_parallel_reads: int = 4,
+        system1: System1 | None = None,
+        mandatory_review: bool = False,
+        objective: str = "",
+        acceptance_criteria: tuple[str, ...] = (),
     ) -> None:
         #: El material para poder deshacer, si el despliegue lo quiere. No deshace nada:
         #: copia antes de escribir y anota lo escrito, para que alguien pueda pedirlo.
         self.rollback = rollback
+        self.system1 = system1
+        self.mandatory_review = mandatory_review
+        self.objective = objective
+        self.acceptance_criteria = acceptance_criteria
         self.runner = runner
         self.manager = manager
         self.event_bus = event_bus
@@ -384,7 +394,9 @@ class GraphExecutor:
         run_id: str,
     ) -> TaskEvidence:
         """Hand one task to a subagent, through the task manager that bounds it."""
-        del run_id
+        skipped = await self._review_gate(node, graph, workspace, cancellation, run_id)
+        if skipped is not None:
+            return skipped
         brief = self._brief_for(node, graph)
         scoped = chained_source(cancellation, CancellationScope.TASK)
 
@@ -407,11 +419,23 @@ class GraphExecutor:
         try:
             outcome = await self.manager.wait(task_id)
         except AthenaRuntimeError as error:
+            if self.system1 is not None and node.suggested_role is SubagentRole.VERIFIER:
+                await self.system1.review_completed(session_id=run_id or node.id, passed=None)
             return self._failure_evidence(node, error, graph, transition=False)
 
         if not isinstance(outcome, SubagentResult):  # pragma: no cover - body returns one
             raise AthenaRuntimeError("A delegated task returned something unexpected")
         evidence = _evidence_from(node, outcome)
+        if self.system1 is not None and node.suggested_role is SubagentRole.VERIFIER:
+            report = outcome.verifier_report()
+            await self.system1.review_completed(
+                session_id=run_id or node.id,
+                passed=False
+                if not outcome.succeeded
+                else None
+                if report.unstructured
+                else report.passed,
+            )
         if evidence.succeeded and self.task_verification is not None and evidence.files_changed:
             evidence = replace(
                 evidence,
@@ -420,6 +444,98 @@ class GraphExecutor:
             if evidence.verification is not None and not evidence.verification.permits_completion:
                 evidence = replace(evidence, outcome=ExecutionOutcome.FAILED)
         return evidence
+
+    async def _review_gate(
+        self,
+        node: TaskNode,
+        graph: TaskGraph,
+        workspace: Workspace,
+        cancellation: CancellationToken,
+        run_id: str,
+    ) -> TaskEvidence | None:
+        if self.system1 is None or not self.system1.config.reviewer_gate:
+            return None
+        if node.suggested_role is not SubagentRole.VERIFIER:
+            return None
+        upstream = [graph.get(identifier).verification or {} for identifier in node.dependencies]
+        mandatory = (
+            self.mandatory_review
+            or explicit_review(self.objective)
+            or any(explicit_review(root.goal) for root in graph.roots())
+            or not upstream
+            or not node.acceptance_criteria
+            or any(
+                item.get("review_required") is True
+                or item.get("risks")
+                or item.get("unresolved")
+                or not item.get("summary")
+                or len(str(item.get("summary") or "")) >= 2_000
+                for item in upstream
+            )
+        )
+        verification = None
+        if not mandatory and self.goal_verification is not None:
+            # This is the same authorized deterministic policy used at the end of the
+            # graph, evaluated while the workspace is held for reading.
+            files = tuple(
+                dict.fromkeys(
+                    path
+                    for item in upstream
+                    for path in _evidence_strings(item.get("files_changed"))
+                )
+            )
+            commands = tuple(
+                dict.fromkeys(
+                    command
+                    for item in upstream
+                    for command in _evidence_strings(item.get("commands_run"))
+                )
+            )
+            try:
+                verification = await self.goal_verification.verify(
+                    SessionState(
+                        session_id=run_id or node.id,
+                        workspace_id=workspace.workspace_id,
+                        attributes={"files_modified": list(files), "commands_run": list(commands)},
+                    ),
+                    workspace,
+                    cancellation,
+                )
+            except (CancellationError, ProcessCancelledError):
+                raise
+            except AthenaRuntimeError:
+                verification = None
+        skipped = await self.system1.skip_reviewer(
+            {
+                "objective": self.objective or "\n".join(root.goal for root in graph.roots()),
+                "review_objective": node.goal,
+                "acceptance_criteria": list(
+                    dict.fromkeys((*self.acceptance_criteria, *node.acceptance_criteria))
+                ),
+                "executor_criteria": [
+                    {
+                        "objective": graph.get(identifier).goal,
+                        "acceptance_criteria": list(graph.get(identifier).acceptance_criteria),
+                    }
+                    for identifier in node.dependencies
+                ],
+                "executor_outputs": upstream,
+                "checks": None if verification is None else verification_input(verification),
+            },
+            cancellation,
+            session_id=run_id or node.id,
+            verification=verification,
+            mandatory=mandatory,
+        )
+        if not skipped:
+            return None
+        return TaskEvidence(
+            task_id=node.id,
+            role=node.suggested_role,
+            outcome=ExecutionOutcome.COMPLETED,
+            summary="Segunda revisión semántica omitida tras comprobaciones y juicio System-1.",
+            verification=verification,
+        )
 
     def _brief_for(self, node: TaskNode, graph: TaskGraph) -> SubagentBrief:
         """What the delegate is told, which is its task and its dependencies' findings.
@@ -571,6 +687,12 @@ def _session_for(
     )
 
 
+def _evidence_strings(value: JSONValue) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, str))
+
+
 def _evidence_from(node: TaskNode, result: SubagentResult) -> TaskEvidence:
     """Compose what goes upward. Everything else the child produced stays with the child."""
     outcome = ExecutionOutcome.COMPLETED if result.succeeded else ExecutionOutcome.FAILED
@@ -588,6 +710,11 @@ def _evidence_from(node: TaskNode, result: SubagentResult) -> TaskEvidence:
         verifier = result.verifier_report()
         risks = verifier.failures
         facts = verifier.evidence
+    if result.review_required:
+        risks = (
+            *risks,
+            "Mandatory review: a sensitive operation or contract inconsistency occurred.",
+        )
     return TaskEvidence(
         task_id=node.id,
         role=result.role,
@@ -599,6 +726,7 @@ def _evidence_from(node: TaskNode, result: SubagentResult) -> TaskEvidence:
         risks=risks,
         unresolved=unresolved,
         error_code=None if result.error is None else result.error.code,
+        review_required=result.review_required,
     )
 
 

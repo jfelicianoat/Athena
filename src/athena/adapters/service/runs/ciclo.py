@@ -189,6 +189,8 @@ class CicloMixin(ConstruccionMixin):
                     prompt=prompt,
                     cancellation=limited,
                     provider=self.provider_for(options),
+                    mandatory_review=options.mandatory_review,
+                    acceptance_criteria=options.acceptance_criteria,
                 )
             if result is not None:
                 return _from_graph(run_id, workspace, result)
@@ -391,6 +393,8 @@ class CicloMixin(ConstruccionMixin):
                 prompt=self._ask(run_id),
                 cancellation=limited,
                 provider=self.provider_for(options),
+                mandatory_review=options.mandatory_review,
+                acceptance_criteria=options.acceptance_criteria,
             )
         return _from_graph(run_id, workspace, result)
 

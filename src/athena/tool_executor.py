@@ -42,7 +42,7 @@ from athena.tools import (
     ToolResultSizePolicy,
     ToolSpec,
 )
-from athena.types import JSONValue
+from athena.types import JSONObject, JSONValue
 from athena.workspace import Workspace
 from athena.workspace_access import WORKSPACE_ACCESS
 
@@ -76,8 +76,9 @@ class ToolExecutor:
         session_id: str,
         workspace: Workspace,
         cancellation: CancellationToken,
+        context_metadata: JSONObject | None = None,
     ) -> ToolResult:
-        context = ToolContext(session_id, workspace, call.call_id)
+        context = ToolContext(session_id, workspace, call.call_id, context_metadata or {})
         try:
             if not call.call_id.strip():
                 raise ToolValidationError("Tool call ID must be non-empty")
@@ -178,7 +179,9 @@ class ToolExecutor:
             # despues, lo que hay es el recibo del almacen y no lo que la tool prometio, y
             # comprobar el recibo contra el esquema del resultado daria por incumplido
             # cualquier resultado grande.
-            await self._check_contract(tool.spec, correlated, session_id, call.call_id)
+            contract_valid = await self._check_contract(
+                tool.spec, correlated, session_id, call.call_id
+            )
             final = await self._apply_result_policy(tool.spec, correlated, cancellation)
             projection = project(tool, tool.spec, final)
             if editing:
@@ -200,6 +203,18 @@ class ToolExecutor:
                     "externalized": final.reference is not None,
                 },
             )
+            review_required = (
+                request.is_destructive
+                or request.risk.value in {"high", "critical"}
+                or request.tier
+                in (
+                    RiskTier.R3_EXTERNAL_OR_IRREVERSIBLE,
+                    RiskTier.R4_FORBIDDEN,
+                )
+                or final.metadata.get("review_required") is True
+                or not contract_valid
+                or final.reference is not None
+            )
             await self.event_bus.publish(
                 ToolEvent(
                     EventName.TOOL_COMPLETED,
@@ -207,6 +222,7 @@ class ToolExecutor:
                     {
                         "tool_name": call.name,
                         "externalized": final.reference is not None,
+                        "review_required": review_required,
                         "size_chars": final.reference.size_chars if final.reference else None,
                         # Lo que una interfaz necesita para dibujar esto, ya derivado. Sin
                         # ello cada cliente vuelve a deducir la presentacion leyendo un
@@ -216,6 +232,8 @@ class ToolExecutor:
                     call.call_id,
                 )
             )
+            if review_required:
+                final = replace(final, metadata={**final.metadata, "review_required": True})
             return _with_projection(final, projection)
         except AthenaRuntimeError as exc:
             await self.event_bus.publish(
@@ -240,11 +258,11 @@ class ToolExecutor:
 
     async def _check_contract(
         self, spec: ToolSpec, result: ToolResult, session_id: str, call_id: str | None
-    ) -> None:
+    ) -> bool:
         """Comprobar que la tool devolvio lo que dijo que devolveria."""
         desviaciones = violations(spec.output_schema, result.output, where=spec.name)
         if not desviaciones:
-            return
+            return True
         if spec.output_contract is OutputContract.ENFORCED:
             raise ToolContractError(
                 f"{spec.name} devolvio algo que no cumple su contrato: {desviaciones[0]}",
@@ -258,6 +276,7 @@ class ToolExecutor:
                 call_id,
             )
         )
+        return False
 
     async def _hook(self, event: HookEvent, session_id: str, payload: JSONValue) -> HookReport:
         """Run an extension point. A BLOCK stops the action; nothing can unblock one."""
