@@ -31,7 +31,7 @@ from athena.models import (
     ModelRole,
     ModelToolCall,
 )
-from athena.system1 import explicit_review
+from athena.system1 import review_requested
 from athena.tool_projection import model_view_of
 from athena.tool_search import TOOL_SEARCH_NAME
 from athena.tools import Tool, ToolResult
@@ -110,12 +110,16 @@ class EjecucionMixin(SesionMixin):
                                     "acceptance_criteria": list(self.config.acceptance_criteria),
                                     "state": data.working.to_json(),
                                     "output": data.latest_output,
-                                    "mandatory_review": self.config.mandatory_review
+                                    "mandatory_review": review_requested(
+                                        data.goal.current.text, self.config.mandatory_review
+                                    )
                                     or data.review_required
-                                    or explicit_review(data.goal.current.text)
+                                    or data.latest_output_truncated
                                     or bool(data.working.errors or data.working.remaining_work)
                                     or data.goal.pending is not None,
-                                }
+                                },
+                                # Outside the evidence, which is sent to the broker.
+                                "system1_review_declared": self.config.mandatory_review,
                             }
                             if self.system1 is not None
                             and self.system1.config.reviewer_gate
@@ -243,7 +247,10 @@ class EjecucionMixin(SesionMixin):
                 data.review_required or outcome.metadata.get("review_required") is True
             )
             output_text = str(outcome.output)
-            data.review_required = data.review_required or len(output_text) > 2_000
+            # Truncated evidence blocks only a gate judging this output; it no longer marks
+            # the whole run as sensitive, which disabled the goal checkpoint for any run
+            # that had read a large file or run a verbose test suite.
+            data.latest_output_truncated = len(output_text) > 2_000 or outcome.reference is not None
             data.latest_output = output_text[:2_000]
             if call.name == "delegate_task" and isinstance(outcome.output, dict):
                 files = outcome.output.get("files_changed")

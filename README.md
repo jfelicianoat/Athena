@@ -126,7 +126,15 @@ Optional System-1 judgments through AI_Broker can reduce completion iterations, 
 retrieved project memory and omit a second semantic review when evidence is sufficient.
 Each feature has its own flag, defaults to disabled and supports shadow mode. See
 [System-1 integration and configuration](docs/SYSTEM1_INTEGRATION.md) for the current
-Broker contract, conservative fallback rules and reproducible measurements.
+Broker contract, conservative fallback rules and reproducible measurements. Context
+filtering stays off in practice: measured against the current Broker judge (Nimble), it
+does not tell relevant notes from unrelated ones, so it would save nothing.
+
+`POST /v1/runs` accepts two optional top-level keys for these judgments, next to
+`objective` and `workspace`: `acceptance_criteria` (a list of strings) and
+`mandatory_review` (`true`, `false` or absent). `true`/`false` declare whether the user asked
+for a review; when absent, Athena looks for words such as "review" or "revisa" in the
+objective. A client that builds objectives from templates should declare it explicitly.
 
 Athena generates a fresh bearer token and, only after opening the socket, writes one
 machine-readable startup line to stdout:

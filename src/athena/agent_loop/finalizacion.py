@@ -47,7 +47,7 @@ from athena.recovery import RecoveryAction
 from athena.state import (
     AgentStatus,
 )
-from athena.system1 import deterministic_ready, explicit_review, verification_input
+from athena.system1 import deterministic_ready, review_requested, verification_input
 from athena.types import JSONObject
 from athena.verification import (
     VerificationResult,
@@ -278,7 +278,8 @@ class FinalizacionMixin(EjecucionMixin):
             if data.goal.pending is not None:
                 return None
             if verdict is False:
-                return await self._semantic_repair(data)
+                await self._semantic_repair(data)
+                return None
             return await self._complete_run(response, data, workspace, budget, verification)
         if verification.status is VerificationStatus.INCONCLUSIVE:
             # Un run cuyos checks no pudieron ejecutarse no ha fallado la verificacion: ha
@@ -406,9 +407,8 @@ class FinalizacionMixin(EjecucionMixin):
         if not data.working.files_modified or data.goal.pending is not None:
             return None
         if (
-            self.config.mandatory_review
+            review_requested(data.goal.current.text, self.config.mandatory_review)
             or data.review_required
-            or explicit_review(data.goal.current.text)
         ):
             return None
         if not any(call.name == "bash" for call in response.tool_calls):

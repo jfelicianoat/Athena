@@ -16,6 +16,8 @@ import pytest
 from athena.cancellation import CancellationSource, CancellationToken
 from athena.errors import (
     CancellationError,
+    ModelAuthenticationBackendError,
+    ModelAuthenticationError,
     ModelPermanentError,
     ModelStreamingUnsupportedError,
     ModelTransientError,
@@ -93,6 +95,21 @@ def _router(primary: ModelProvider, *fallbacks: ModelProvider) -> ProviderRouter
 
 
 REQUEST = ModelRequest(messages=())
+
+
+@pytest.mark.parametrize("error_type", [ModelAuthenticationError, ModelAuthenticationBackendError])
+def test_authentication_requires_operator_action_without_retry_or_provider_fallback(
+    error_type: type[ModelAuthenticationError],
+) -> None:
+    error = error_type("Restore authentication")
+    primary = _Provider(fails_with=error)
+    fallback = _Provider()
+    router = _router(primary, fallback)
+    with pytest.raises(error_type):
+        asyncio.run(router.complete(REQUEST, CancellationSource().token))
+    assert primary.calls == 1 and fallback.calls == 0
+    directive = RecoveryPolicy(provider_fallback=True).decide(error)
+    assert directive.action is RecoveryAction.NO_RETRY and not directive.retries
 
 
 # --------------------------------------------------------------------- the directive lives

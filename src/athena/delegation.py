@@ -39,7 +39,7 @@ from athena.subagents import (
     SubagentResult,
     SubagentRole,
 )
-from athena.system1 import System1, explicit_review, verification_input
+from athena.system1 import System1, review_requested, verification_input
 from athena.tool_projection import DisplayView, ModelView, ResultKind, ToolProjection
 from athena.tools import Tool, ToolContext, ToolLoadPolicy, ToolResult, ToolSpec
 from athena.types import JSONObject, JSONSchema
@@ -424,7 +424,11 @@ class DelegateTaskTool:
         state = state if isinstance(state, dict) else {}
         mandatory = evidence.get("mandatory_review") is not False or not evidence.get("output")
         mandatory = mandatory or not request.acceptance_criteria
-        mandatory = mandatory or explicit_review(str(evidence.get("objective") or ""))
+        declared = context.metadata.get("system1_review_declared")
+        mandatory = mandatory or review_requested(
+            str(evidence.get("objective") or ""),
+            declared if isinstance(declared, bool) else None,
+        )
         verification = None
         if not mandatory and self.verification is not None:
             try:

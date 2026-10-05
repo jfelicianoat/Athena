@@ -88,6 +88,18 @@ class ModelPermanentError(AthenaRuntimeError):
     code = "model_permanent_error"
 
 
+class ModelAuthenticationError(AthenaRuntimeError):
+    """Access must be restored before inference can continue; do not retry or reroute."""
+
+    code = "model_authentication_required"
+
+
+class ModelAuthenticationBackendError(ModelAuthenticationError):
+    """The provider's credential store is unavailable; changing the token cannot help."""
+
+    code = "model_authentication_backend_unavailable"
+
+
 class ModelStreamingUnsupportedError(ModelPermanentError):
     code = "model_streaming_unsupported"
 

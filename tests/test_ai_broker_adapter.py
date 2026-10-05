@@ -11,8 +11,13 @@ from athena.adapters.ai_broker import AiBrokerModelProvider
 from athena.agent_loop import AgentLoop, AgentLoopConfig, AgentRunStatus
 from athena.cancellation import CancellationSource, CancellationToken
 from athena.context import ContextBuilder
-from athena.errors import ModelPermanentError, ModelTransientError
-from athena.events import InMemoryEventBus
+from athena.errors import (
+    ModelAuthenticationBackendError,
+    ModelAuthenticationError,
+    ModelPermanentError,
+    ModelTransientError,
+)
+from athena.events import EventName, InMemoryEventBus, RuntimeEvent
 from athena.models import ModelMessage, ModelRequest, ModelRole, ModelToolCall
 from athena.mutation_tools import workspace_mutation_tools
 from athena.permissions import PermissionPolicy, PolicyPermissionEngine
@@ -22,6 +27,7 @@ from athena.tool_executor import ToolExecutor
 from athena.types import JSONObject, JSONValue
 from athena.verification import LoopCompletionVerificationPolicy
 from athena.workspace import Workspace
+from athena_desktop.presentacion import present_result
 
 
 class _StubBroker(AiBrokerModelProvider):
@@ -87,6 +93,219 @@ def test_ai_broker_advertises_tool_calls() -> None:
     provider = _StubBroker({"assistant_content": "unused"})
 
     assert provider.capabilities().tool_calls is True
+
+
+class _CredentialBroker(AiBrokerModelProvider):
+    def __init__(self, *responses: tuple[int, JSONObject] | ModelTransientError) -> None:
+        super().__init__("http://broker.local:8765", "secret")
+        self.responses = list(responses)
+        self.paths: list[str] = []
+
+    async def _call(
+        self,
+        method: str,
+        path: str,
+        body: Mapping[str, JSONValue] | None,
+        cancellation: CancellationToken | None,
+    ) -> tuple[int, JSONObject]:
+        assert method == "GET" and body is None
+        assert cancellation is not None
+        cancellation.raise_if_cancelled()
+        self.paths.append(path)
+        response = self.responses.pop(0)
+        if isinstance(response, ModelTransientError):
+            raise response
+        return response
+
+
+@pytest.mark.parametrize(
+    "status,payload,accepted,message",
+    [
+        (200, {"authenticated": True, "auth_required": True}, True, "acepta el token"),
+        (200, {"authenticated": True, "auth_required": False}, True, "no exige credenciales"),
+        (200, {"authenticated": False, "auth_required": True}, False, "incompatible"),
+        (200, {"authenticated": True}, False, "incompatible"),
+        (200, {"authenticated": True, "auth_required": "false"}, False, "incompatible"),
+        (401, {}, False, "rechaza el token"),
+        (403, {}, False, "rechaza el token"),
+        (503, {"code": "ADMIN_AUTH_BACKEND_UNAVAILABLE"}, False, "autenticación"),
+        (503, {"detail": "ADMIN_AUTH_BACKEND_UNAVAILABLE"}, False, "almacén"),
+        (403, {"detail": "ADMIN_AUTH_REQUIRED"}, False, "rechaza el token"),
+        (500, {}, False, "HTTP 500"),
+    ],
+)
+def test_credentials_use_auth_check_and_distinguish_disabled_authentication(
+    status: int, payload: JSONObject, accepted: bool, message: str
+) -> None:
+    provider = _CredentialBroker((status, payload))
+    result, detail = asyncio.run(provider.verify_credentials(CancellationSource().token))
+    assert result is accepted
+    assert message in detail
+    if status == 200 and payload.get("auth_required") is False:
+        assert "no se ha validado" in detail
+    assert provider.paths == ["/api/v1/auth/check"]
+
+
+@pytest.mark.parametrize("status,accepted", [(200, True), (403, False), (503, False)])
+def test_credentials_keep_protected_fallback_only_for_old_brokers(
+    status: int, accepted: bool
+) -> None:
+    provider = _CredentialBroker((404, {}), (status, {}))
+    result, _ = asyncio.run(provider.verify_credentials(CancellationSource().token))
+    assert result is accepted
+    assert provider.paths == ["/api/v1/auth/check", "/api/v1/dashboard/tasks?limit=1"]
+
+
+def test_credentials_report_transport_failure() -> None:
+    provider = _CredentialBroker(ModelTransientError("offline"))
+    accepted, message = asyncio.run(provider.verify_credentials(CancellationSource().token))
+    assert not accepted and "No se pudo contactar" in message
+    assert provider.paths == ["/api/v1/auth/check"]
+
+
+class _AuthenticationTaskBroker(AiBrokerModelProvider):
+    def __init__(self, status: int, payload: JSONObject, *, during_submit: bool = False) -> None:
+        super().__init__("http://broker.local:8765", "secret", max_wait_seconds=0.2)
+        self.status = status
+        self.payload = payload
+        self.during_submit = during_submit
+        self.calls: list[tuple[str, str]] = []
+
+    async def _call(
+        self,
+        method: str,
+        path: str,
+        body: Mapping[str, JSONValue] | None,
+        cancellation: CancellationToken | None,
+    ) -> tuple[int, JSONObject]:
+        self.calls.append((method, path))
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
+        if method == "POST" and not self.during_submit:
+            return 202, {"task_id": "retained-task"}
+        return self.status, self.payload
+
+
+@pytest.mark.parametrize("during_submit", [False, True])
+@pytest.mark.parametrize(
+    "status,payload,error_type,action",
+    [
+        (401, {}, ModelAuthenticationError, "renew_token"),
+        (403, {"error": {"code": "ADMIN_AUTH_REQUIRED"}}, ModelAuthenticationError, "renew_token"),
+        (
+            503,
+            {"error": {"code": "ADMIN_AUTH_BACKEND_UNAVAILABLE"}},
+            ModelAuthenticationBackendError,
+            "restore_auth_backend",
+        ),
+        (
+            503,
+            {"detail": {"code": "ADMIN_AUTH_BACKEND_UNAVAILABLE"}},
+            ModelAuthenticationBackendError,
+            "restore_auth_backend",
+        ),
+        (
+            503,
+            {"code": "ADMIN_AUTH_BACKEND_UNAVAILABLE"},
+            ModelAuthenticationBackendError,
+            "restore_auth_backend",
+        ),
+        # The shape the live broker uses: FastAPI's `detail` as a bare code string.
+        (403, {"detail": "ADMIN_AUTH_REQUIRED"}, ModelAuthenticationError, "renew_token"),
+        (
+            503,
+            {"detail": "ADMIN_AUTH_BACKEND_UNAVAILABLE"},
+            ModelAuthenticationBackendError,
+            "restore_auth_backend",
+        ),
+    ],
+)
+def test_authentication_problems_preserve_broker_work_and_do_not_wait_for_timeout(
+    during_submit: bool,
+    status: int,
+    payload: JSONObject,
+    error_type: type[ModelAuthenticationError],
+    action: str,
+) -> None:
+    provider = _AuthenticationTaskBroker(status, payload, during_submit=during_submit)
+    with pytest.raises(error_type) as caught:
+        asyncio.run(
+            provider.complete(
+                ModelRequest(messages=(ModelMessage(ModelRole.USER, "explain"),)),
+                CancellationSource().token,
+            )
+        )
+    error = caught.value
+    assert error.details["http_status"] == status
+    assert error.details["action"] == action
+    assert "secret" not in str(error.details) + error.message
+    assert provider.calls == [("POST", "/api/v1/tasks")] + (
+        [] if during_submit else [("GET", "/api/v1/tasks/retained-task")]
+    )
+    if during_submit:
+        assert "task_preserved" not in error.details
+    else:
+        assert error.details["task"] == "retained-task"
+        assert error.details["task_preserved"] is True
+
+
+def test_other_503_errors_keep_existing_transport_recovery() -> None:
+    provider = _AuthenticationTaskBroker(503, {"error": {"code": "PROVIDER_UNAVAILABLE"}})
+    with pytest.raises(ModelTransientError):
+        asyncio.run(provider.complete(ModelRequest(messages=()), CancellationSource().token))
+    assert provider.calls[-1] == ("DELETE", "/api/v1/tasks/retained-task")
+
+
+@pytest.mark.parametrize(
+    "status,code,expected_error,expected_step",
+    [
+        (403, "ADMIN_AUTH_REQUIRED", ModelAuthenticationError, "Renueva el token"),
+        (
+            503,
+            "ADMIN_AUTH_BACKEND_UNAVAILABLE",
+            ModelAuthenticationBackendError,
+            "Restablece el almacén",
+        ),
+    ],
+)
+def test_authentication_problem_reaches_the_desktop_without_retrying_the_task(
+    tmp_path: Path,
+    status: int,
+    code: str,
+    expected_error: type[ModelAuthenticationError],
+    expected_step: str,
+) -> None:
+    async def scenario() -> None:
+        provider = _AuthenticationTaskBroker(status, {"error": {"code": code}})
+        workspace = Workspace.from_path(tmp_path)
+        event_bus = InMemoryEventBus()
+        events: list[RuntimeEvent] = []
+        event_bus.subscribe(events.append)
+        registry = ToolRegistry(())
+        loop = AgentLoop(
+            provider,
+            registry,
+            ToolExecutor(
+                registry,
+                PolicyPermissionEngine(PermissionPolicy()),
+                InMemoryToolResultStore(),
+                event_bus,
+            ),
+            ContextBuilder(workspace),
+            event_bus,
+        )
+        result = await loop.run("Describe the project", workspace, CancellationSource().token)
+        assert isinstance(result.error, expected_error)
+        assert len(provider.calls) == 2
+        failure = next(event for event in events if event.name is EventName.MODEL_FAILED)
+        assert failure.payload["retrying"] is False
+        view = present_result(result, task_kind="question")
+        assert view.tone == "warn"
+        assert "se ha conservado" in view.explanation
+        assert expected_step in view.next_steps[0]
+        assert "broker_task=retained-task" in view.technical
+
+    asyncio.run(scenario())
 
 
 def test_ai_broker_turns_structured_decisions_into_tool_calls() -> None:

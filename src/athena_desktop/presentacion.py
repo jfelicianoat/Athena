@@ -67,6 +67,11 @@ _ERRORS = {
     "verification_inconclusive": "No se pudo comprobar el trabajo.",
     "model_transient_error": "El proveedor del modelo no respondió.",
     "model_permanent_error": "El proveedor del modelo rechazó la petición.",
+    "model_authentication_required": "AI_Broker necesita una credencial válida para continuar.",
+    "model_authentication_backend_unavailable": (
+        "El almacén de credenciales de AI_Broker no está disponible. "
+        "Cambiar el token no lo resuelve."
+    ),
     "approval_abandoned": "Nadie contestó a las peticiones de permiso.",
     "cancelled": "Detenido.",
 }
@@ -278,6 +283,26 @@ def present_result(result: AgentRunResult, *, task_kind: str) -> ResultView:
             files,
             checks,
             tuple(steps),
+            technical,
+        )
+    if code in {"model_authentication_required", "model_authentication_backend_unavailable"}:
+        renewal = (
+            "Renueva el token de AI_Broker y pulsa «Probar conexión»."
+            if code == "model_authentication_required"
+            else "Restablece el almacén de credenciales del broker y pulsa «Probar conexión»."
+        )
+        explanation = _ERRORS[code]
+        if result.error is not None and result.error.details.get("task_preserved") is True:
+            explanation += " La tarea enviada al broker se ha conservado."
+            technical += f"\nbroker_task={result.error.details.get('task', '')}"
+        return ResultView(
+            "⚠ Interrumpido por la conexión con AI_Broker",
+            "warn",
+            (result.answer or "").strip(),
+            explanation,
+            files,
+            checks,
+            (renewal,),
             technical,
         )
     message = _ERRORS.get(code, "")

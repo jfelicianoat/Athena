@@ -35,6 +35,8 @@ from uuid import uuid4
 from athena.adapters.lectura import read_bounded
 from athena.cancellation import CancellationToken
 from athena.errors import (
+    ModelAuthenticationBackendError,
+    ModelAuthenticationError,
     ModelPermanentError,
     ModelStreamingUnsupportedError,
     ModelTransientError,
@@ -118,6 +120,10 @@ class AiBrokerModelProvider(ModelProvider):
         task_id = await self._submit(request, prepared, cancellation)
         try:
             return await self._await_result(task_id, prepared, cancellation)
+        except ModelAuthenticationError:
+            # Losing access does not invalidate or cancel durable broker work.
+            # Keep its id in the error so restoring access can recover that task.
+            raise
         except BaseException:
             # A task nobody is waiting for is a task the broker will still dispatch, and
             # pay for. Cancelling on the way out is the difference between abandoning a
@@ -153,21 +159,34 @@ class AiBrokerModelProvider(ModelProvider):
         return ModelHealth(ModelHealthStatus.DEGRADED, str(reported))
 
     async def verify_credentials(self, cancellation: CancellationToken) -> tuple[bool, str]:
-        """Si el broker acepta este token, preguntado a un endpoint que lo exige.
-
-        `/health` y los demas GET publicos contestan 200 a cualquiera: comprobar el token
-        contra ellos da un «conectado» falso que se descubre en la primera tarea.
-        """
+        """Distingue una credencial validada de un broker sin autenticacion."""
         try:
-            status, _ = await self._call(
-                "GET", "/api/v1/dashboard/tasks?limit=1", None, cancellation
-            )
+            status, payload = await self._call("GET", "/api/v1/auth/check", None, cancellation)
+            if status == 404:
+                # Older brokers lack auth/check. This protected route still checks
+                # access; health and capabilities cannot validate a credential.
+                status, _ = await self._call(
+                    "GET", "/api/v1/dashboard/tasks?limit=1", None, cancellation
+                )
+                if status == 200:
+                    return True, "El broker permite la conexión con la credencial enviada."
         except ModelTransientError as error:
             return False, f"No se pudo contactar con el broker: {error.message}"
         if status == 200:
+            if payload.get("authenticated") is not True or not isinstance(
+                payload.get("auth_required"), bool
+            ):
+                return False, "El broker devolvió una comprobación de credenciales incompatible."
+            if payload["auth_required"] is False:
+                return True, "El broker no exige credenciales; el token no se ha validado."
             return True, "El broker acepta el token."
         if status in (401, 403):
             return False, f"El broker rechaza el token (HTTP {status})."
+        if status == 503:
+            problem = _authentication_error(status, payload)
+            if problem is not None:
+                return False, problem.message
+            return False, "El servicio de autenticación del broker no está disponible (HTTP 503)."
         return False, f"El broker respondió HTTP {status}."
 
     # -- the bridge --------------------------------------------------------
@@ -204,6 +223,9 @@ class AiBrokerModelProvider(ModelProvider):
                 "fallback_allowed": not chosen,
             }
         status, payload = await self._call("POST", "/api/v1/tasks", body, cancellation)
+        problem = _authentication_error(status, payload)
+        if problem is not None:
+            raise problem
         if status >= 500 or status in (408, 429):
             raise ModelTransientError(f"AI_Broker refused the task with HTTP {status}")
         if status >= 400:
@@ -237,6 +259,9 @@ class AiBrokerModelProvider(ModelProvider):
             status, payload = await self._call(
                 "GET", f"/api/v1/tasks/{task_id}", None, cancellation
             )
+            problem = _authentication_error(status, payload, task_id=task_id)
+            if problem is not None:
+                raise problem
             if status == 404:
                 raise ModelPermanentError("AI_Broker lost the task", details={"task": task_id})
             if status >= 500:
@@ -642,6 +667,46 @@ def _count(usage: Mapping[str, JSONValue], *keys: str) -> int:
         if isinstance(value, int) and not isinstance(value, bool):
             return max(0, value)
     return 0
+
+
+def _authentication_error(
+    status: int,
+    payload: JSONObject,
+    *,
+    task_id: str | None = None,
+) -> ModelAuthenticationError | None:
+    code = payload.get("code")
+    for key in ("error", "detail"):
+        value = payload.get(key)
+        if isinstance(value, Mapping) and isinstance(value.get("code"), str):
+            code = value["code"]
+            break
+        # The live broker answers auth failures as `{"detail": "ADMIN_AUTH_REQUIRED"}`:
+        # a bare code, not an object. Without this a 503 of that shape read as transient.
+        if isinstance(value, str) and value == "ADMIN_AUTH_BACKEND_UNAVAILABLE":
+            code = value
+            break
+    if status in (401, 403):
+        error_type = ModelAuthenticationError
+        code = "ADMIN_AUTH_REQUIRED"
+        message = (
+            "AI_Broker requiere una credencial válida. Renueva el token y comprueba la conexión."
+        )
+        action = "renew_token"
+    elif status == 503 and code == "ADMIN_AUTH_BACKEND_UNAVAILABLE":
+        error_type = ModelAuthenticationBackendError
+        message = (
+            "Falla la autenticación de AI_Broker porque su almacén de credenciales no está "
+            "disponible. Cambiar el token no lo resuelve."
+        )
+        action = "restore_auth_backend"
+    else:
+        return None
+    details: dict[str, JSONValue] = {"http_status": status, "broker_code": code, "action": action}
+    if task_id is not None:
+        details["task"] = task_id
+        details["task_preserved"] = True
+    return error_type(message, details=details)
 
 
 def _detail(payload: JSONObject) -> str:

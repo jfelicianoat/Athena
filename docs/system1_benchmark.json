@@ -6,14 +6,31 @@
       "scenario": "goal_completion",
       "before": {
         "iterations": 5,
-        "context_tokens_estimate": 1683,
+        "context_tokens_estimate": 1685,
         "reviewer_calls": 0,
         "fallbacks": 0,
         "errors": 0
       },
       "after": {
         "iterations": 4,
-        "context_tokens_estimate": 1259,
+        "context_tokens_estimate": 1260,
+        "reviewer_calls": 0,
+        "fallbacks": 0,
+        "errors": 0
+      }
+    },
+    {
+      "scenario": "goal_completion_verbose_checks",
+      "before": {
+        "iterations": 5,
+        "context_tokens_estimate": 1709,
+        "reviewer_calls": 0,
+        "fallbacks": 0,
+        "errors": 0
+      },
+      "after": {
+        "iterations": 4,
+        "context_tokens_estimate": 1274,
         "reviewer_calls": 0,
         "fallbacks": 0,
         "errors": 0

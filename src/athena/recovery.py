@@ -16,6 +16,7 @@ from athena.errors import (
     BudgetExceededError,
     ContextOverflowError,
     FatalRuntimeError,
+    ModelAuthenticationError,
     ModelPermanentError,
     ModelTransientError,
     NoProgressError,
@@ -156,6 +157,8 @@ class RecoveryPolicy:
                 "The context is too large; compact it and retry.",
                 max_attempts=self.limits.context_compactions,
             )
+        if isinstance(error, ModelAuthenticationError):
+            return RecoveryDirective(RecoveryAction.NO_RETRY, error.message)
         if isinstance(error, ModelTransientError):
             return RecoveryDirective(
                 RecoveryAction.RETRY_BACKOFF,

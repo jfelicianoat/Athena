@@ -215,7 +215,12 @@ def test_optional_context_and_implicit_reference_under_budget() -> None:
         )
         assert selected == (candidates[0], candidates[1], candidates[3])
         event = next(event for event in events if event.name is EventName.SYSTEM1_CONTEXT)
-        assert event.payload["estimated_tokens_after"] < event.payload["estimated_tokens_before"]
+        after, before = (
+            event.payload["estimated_tokens_after"],
+            event.payload["estimated_tokens_before"],
+        )
+        assert isinstance(after, int) and isinstance(before, int)
+        assert after < before
         assert event.payload["excluded"] == 1
 
     asyncio.run(scenario())
@@ -642,12 +647,39 @@ def test_contract_uses_operator_profiles_and_supports_custom_default_requests() 
             {"goal": "all parts"}, token, session_id="r", verification=proof()
         )
         await system.filter_context("goal", ("context",), token, session_id="r")
-        assert [request.use_case for request in client.requests] == [
-            "goal_completion",
-            "agora_review_gate",
-            "ranking",
+        # Athena's own use cases, each with the operator's profile for that decision: its
+        # metrics stay apart from Agora's without lowering any threshold.
+        assert [
+            (request.use_case, request.to_json().get("threshold_profile"))
+            for request in client.requests
+        ] == [
+            ("athena_goal_completion", "goal_completion"),
+            ("athena_reviewer_gate", "agora_review_gate"),
+            ("athena_context_ranking", "ranking"),
         ]
         custom = JudgmentRequest("custom_case", {"goal": "x"}, "Done?", threshold_profile="default")
         assert custom.to_json()["threshold_profile"] == "default"
 
     asyncio.run(scenario())
+
+
+def test_threshold_profiles_come_from_the_environment_and_never_default_for_the_gate() -> None:
+    config = System1Config.from_environment(
+        {
+            "ATHENA_SYSTEM1_REVIEWER_USE_CASE": "athena_gate",
+            "ATHENA_SYSTEM1_REVIEWER_THRESHOLD_PROFILE": "athena_gate_profile",
+            "ATHENA_SYSTEM1_GOAL_USE_CASE": "goal_completion",
+            "ATHENA_SYSTEM1_GOAL_THRESHOLD_PROFILE": "",
+        }
+    )
+    assert config.reviewer_threshold_profile == "athena_gate_profile"
+    # Empty sends no profile: the use case has one of its own at the operator.
+    assert config.goal_threshold_profile is None
+    assert config.context_threshold_profile == "ranking"
+    request = JudgmentRequest(config.goal_use_case, {"goal": "x"}, "Done?")
+    assert "threshold_profile" not in request.to_json()
+    # The live injection probe scores 0.90: the default threshold (0.85) would pass it.
+    with pytest.raises(ValueError):
+        System1Config.from_environment({"ATHENA_SYSTEM1_REVIEWER_THRESHOLD_PROFILE": "default"})
+    with pytest.raises(ValueError):
+        System1Config(goal_threshold_profile="not valid")

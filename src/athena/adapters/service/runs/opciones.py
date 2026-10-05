@@ -36,9 +36,6 @@ class CapabilityMode(StrEnum):
     ALLOW = "allow"
 
 
-#: Las que cambian el workspace, y las que ejecutan algo. Por nombre, porque es lo que el
-#: perfil declara: deducirlo de `is_read_only()` mezclaria dos preguntas —que hace una
-#: tool y quien puede usarla— que el resto del sistema mantiene separadas a proposito.
 def _paths(raw: object, name: str = "deliverables") -> tuple[str, ...]:
     """Rutas relativas pedidas por el cliente, saneadas aqui y comprobadas mas tarde.
 
@@ -53,6 +50,17 @@ def _paths(raw: object, name: str = "deliverables") -> tuple[str, ...]:
     return tuple(item.strip() for item in raw if isinstance(item, str) and item.strip())
 
 
+def _optional_bool(raw: object, name: str) -> bool | None:
+    """A declared yes/no, or `None` when the client said nothing. Anything else is refused:
+    reading `"false"` as true, or as absent, would quietly change who decides the review."""
+    if raw is None or isinstance(raw, bool):
+        return raw
+    raise ToolValidationError(f"{name} must be a boolean")
+
+
+#: Las que cambian el workspace, y las que ejecutan algo. Por nombre, porque es lo que el
+#: perfil declara: deducirlo de `is_read_only()` mezclaria dos preguntas —que hace una
+#: tool y quien puede usarla— que el resto del sistema mantiene separadas a proposito.
 _MUTATING = frozenset({"write_file", "edit_file", "git_commit"})
 _EXECUTING = frozenset({"bash"})
 
@@ -88,7 +96,9 @@ class RunOptions:
     #: una respuesta: tiene que haber al menos un fichero escrito con exito (A04).
     require_change: bool = False
     acceptance_criteria: tuple[str, ...] = ()
-    mandatory_review: bool = False
+    #: `True`/`False` declare whether the user asked for a review; absent (`None`) lets
+    #: Athena read the objective. See `system1.review_requested`.
+    mandatory_review: bool | None = None
 
     def to_json(self) -> JSONObject:
         """Las mismas claves que acepta `from_json`, para poder guardarlas y releerlas."""
@@ -152,5 +162,5 @@ class RunOptions:
             model=str(payload.get("model") or "").strip(),
             require_change=payload.get("require_change") is True,
             acceptance_criteria=_paths(payload.get("acceptance_criteria"), "acceptance_criteria"),
-            mandatory_review=payload.get("mandatory_review") is True,
+            mandatory_review=_optional_bool(payload.get("mandatory_review"), "mandatory_review"),
         )

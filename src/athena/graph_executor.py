@@ -47,7 +47,7 @@ from athena.rollback import RollbackLedger
 from athena.state import ExecutionOutcome, SessionState, classify_outcome
 from athena.subagent_provider import Delegator
 from athena.subagents import SubagentBrief, SubagentResult, SubagentRole
-from athena.system1 import System1, explicit_review, verification_input
+from athena.system1 import System1, explicit_review, review_requested, verification_input
 from athena.tasks import TaskBudget, TaskManager
 from athena.types import JSONObject, JSONValue
 from athena.verification import VerificationPolicy, VerificationResult
@@ -159,7 +159,7 @@ class GraphExecutor:
         rollback: RollbackLedger | None = None,
         max_parallel_reads: int = 4,
         system1: System1 | None = None,
-        mandatory_review: bool = False,
+        mandatory_review: bool | None = None,
         objective: str = "",
         acceptance_criteria: tuple[str, ...] = (),
     ) -> None:
@@ -459,9 +459,13 @@ class GraphExecutor:
             return None
         upstream = [graph.get(identifier).verification or {} for identifier in node.dependencies]
         mandatory = (
-            self.mandatory_review
-            or explicit_review(self.objective)
-            or any(explicit_review(root.goal) for root in graph.roots())
+            review_requested(self.objective, self.mandatory_review)
+            # Root goals are the planner's rewording of the same request: a client that
+            # declared its intent is not second-guessed through them either.
+            or (
+                self.mandatory_review is None
+                and any(explicit_review(root.goal) for root in graph.roots())
+            )
             or not upstream
             or not node.acceptance_criteria
             or any(

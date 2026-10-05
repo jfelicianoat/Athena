@@ -56,7 +56,7 @@ def _summary(
     }
 
 
-async def _goal(root: Path, *, enabled: bool) -> JSONObject:
+async def _goal(root: Path, *, enabled: bool, verbose: bool = False) -> JSONObject:
     class EvidenceJudge(FakeJudge):
         async def judge(
             self,
@@ -110,7 +110,11 @@ async def _goal(root: Path, *, enabled: bool) -> JSONObject:
                     {
                         "path": "test_regression.py",
                         "content": "from bug import answer\n"
-                        "def test_fixed(): assert answer() == 42\n",
+                        "def test_fixed():\n"
+                        # A verbose suite: its output passes the 2,000-character cut that
+                        # used to mark the whole run for review and disable the checkpoint.
+                        + ("    print('x' * 2500)\n" if verbose else "")
+                        + "    assert answer() == 42\n",
                     },
                 ),
             ),
@@ -123,7 +127,7 @@ async def _goal(root: Path, *, enabled: bool) -> JSONObject:
                 ModelToolCall(
                     "check2",
                     "bash",
-                    {"command": "python -m pytest -q"},
+                    {"command": "python -m pytest -q -s" if verbose else "python -m pytest -q"},
                 ),
             ),
         ),
@@ -255,7 +259,7 @@ async def _reviewer(root: Path, *, enabled: bool) -> JSONObject:
     )
     await manager.shutdown()
     assert result.outcome is ExecutionOutcome.COMPLETED
-    summary = _summary(FakeModelProvider(()), collector, "reviewer")
+    summary = dict(_summary(FakeModelProvider(()), collector, "reviewer"))
     summary["reviewer_calls"] = runner.roles.count(SubagentRole.VERIFIER)
     return summary
 
@@ -266,6 +270,11 @@ async def measure(root: Path) -> JSONObject:
             "scenario": "goal_completion",
             "before": await _goal(root / "before", enabled=False),
             "after": await _goal(root / "after", enabled=True),
+        },
+        {
+            "scenario": "goal_completion_verbose_checks",
+            "before": await _goal(root / "verbose_before", enabled=False, verbose=True),
+            "after": await _goal(root / "verbose_after", enabled=True, verbose=True),
         },
         {
             "scenario": "optional_context",
@@ -294,8 +303,12 @@ def test_benchmark_demonstrates_savings_and_safe_fallback(tmp_path: Path) -> Non
     report = asyncio.run(measure(tmp_path))
     rows = report["rows"]
     assert isinstance(rows, list)
-    goal, context, reviewer, fallback = rows
+    goal, verbose, context, reviewer, fallback = rows
     assert isinstance(goal, dict) and isinstance(context, dict)
+    # Realistic check output (over 2,000 characters) keeps the saving.
+    assert isinstance(verbose, dict)
+    assert isinstance(verbose["before"], dict) and isinstance(verbose["after"], dict)
+    assert verbose["before"]["iterations"] == 5 and verbose["after"]["iterations"] == 4
     assert isinstance(reviewer, dict) and isinstance(fallback, dict)
     assert isinstance(goal["before"], dict) and isinstance(goal["after"], dict)
     assert goal["before"]["iterations"] == 5 and goal["after"]["iterations"] == 4

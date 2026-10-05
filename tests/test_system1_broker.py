@@ -13,7 +13,7 @@ from athena.adapters.system1_broker import AiBrokerSystem1Client
 from athena.cancellation import CancellationSource
 from athena.events import EventName, InMemoryEventBus, RuntimeEvent
 from athena.system1 import JudgmentRequest, System1, System1Config
-from athena.types import JSONObject
+from athena.types import JSONObject, JSONValue
 from athena.verification import VerificationEvidence, VerificationResult, VerificationStatus
 
 
@@ -30,7 +30,10 @@ def broker(
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             calls.append((self.path, self.headers.get("X-Admin-Token", ""), None))
-            capabilities: JSONObject = {"presets": {"single": ["fast"]}, "future_field": {}}
+            capabilities: dict[str, JSONValue] = {
+                "presets": {"single": ["fast"]},
+                "future_field": {},
+            }
             if enabled is not None:
                 capabilities["system1_judgments"] = enabled
             if evaluation is not None:
@@ -180,6 +183,40 @@ def test_http_errors_fall_back_without_task_polling(status: int) -> None:
 
 
 @pytest.mark.parametrize(
+    "status,code,shape",
+    [
+        (403, "ADMIN_AUTH_REQUIRED", "error"),
+        (503, "ADMIN_AUTH_BACKEND_UNAVAILABLE", "error"),
+        (403, "ADMIN_AUTH_REQUIRED", "detail"),
+        (503, "ADMIN_AUTH_BACKEND_UNAVAILABLE", "detail"),
+    ],
+)
+def test_system1_preserves_authentication_reason_in_fallback_events(
+    status: int, code: str, shape: str
+) -> None:
+    body: JSONObject = {"error": {"code": code}} if shape == "error" else {"detail": code}
+    with broker(body, status=status) as (url, calls):
+        events: list[RuntimeEvent] = []
+        event_bus = InMemoryEventBus()
+        event_bus.subscribe(events.append)
+        system = System1(
+            AiBrokerSystem1Client(url, "token"),
+            System1Config(goal_completion=True, shadow_mode=False),
+            event_bus,
+        )
+        assert (
+            asyncio.run(
+                system.completed({"goal": "fix"}, CancellationSource().token, session_id="r")
+            )
+            is None
+        )
+        event = next(item for item in events if item.name is EventName.SYSTEM1_JUDGED)
+        assert event.payload["fallback"] is True
+        assert event.payload["reason_code"] == code
+        assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
     "decision,expected", [(0.0, True), (2.0, True), (0.5, False), (3, False), (True, False)]
 )
 def test_score_is_zero_based_ordinal_not_probability(
@@ -263,7 +300,12 @@ def test_raw_attempt_scores_cannot_replace_an_accepted_top_level_decision(
                     "confidence": 1.0,
                     "score_source": score_source,
                     "reason_code": reason,
-                    "alternatives": [{"value": False, "confidence": 0.01}],
+                    "alternatives": [
+                        {"value": 1, "confidence": 0.0},
+                        {"value": 2, "confidence": 0.0},
+                    ]
+                    if use_case == "ranking"
+                    else [{"value": False, "confidence": 0.0}],
                 }
             ],
         }
@@ -284,8 +326,7 @@ def test_raw_attempt_scores_cannot_replace_an_accepted_top_level_decision(
         cancellation = CancellationSource().token
         if use_case == "goal_completion":
             assert (
-                asyncio.run(system.completed({"goal": "fix"}, cancellation, session_id="r"))
-                is None
+                asyncio.run(system.completed({"goal": "fix"}, cancellation, session_id="r")) is None
             )
         elif use_case == "agora_review_gate":
             assert not asyncio.run(
@@ -303,9 +344,7 @@ def test_raw_attempt_scores_cannot_replace_an_accepted_top_level_decision(
         else:
             candidates = ("context that must remain", "additional notes")
             assert (
-                asyncio.run(
-                    system.filter_context("fix", candidates, cancellation, session_id="r")
-                )
+                asyncio.run(system.filter_context("fix", candidates, cancellation, session_id="r"))
                 == candidates
             )
         judgment_event = next(event for event in events if event.name is EventName.SYSTEM1_JUDGED)
@@ -315,3 +354,43 @@ def test_raw_attempt_scores_cannot_replace_an_accepted_top_level_decision(
         assert len(calls) == 2
         body = calls[-1][2]
         assert body is not None and "target" not in body
+
+
+def test_a_disabled_broker_is_asked_again_after_the_recheck_interval() -> None:
+    now = [0.0]
+    switched_on = [False]
+    accepted_payload: JSONObject = {
+        "use_case": "goal_completion",
+        "accepted": True,
+        "decision": True,
+        "confidence": 0.99,
+    }
+
+    class Client(AiBrokerSystem1Client):
+        async def _call(self, method, path, body, cancellation):  # type: ignore[no-untyped-def]
+            calls.append(path)
+            if path == "/api/v1/capabilities":
+                return 200, {"system1_judgments": switched_on[0]}
+            return 200, accepted_payload
+
+    calls: list[str] = []
+    client = Client("http://broker", "token", clock=lambda: now[0])
+    request = JudgmentRequest("goal_completion", {"goal": "fix"}, "done?")
+    token = CancellationSource().token
+    assert asyncio.run(client.judge(request, token)).reason_code == "SYSTEM1_UNAVAILABLE"
+    now[0] = 30.0
+    switched_on[0] = True
+    # Still within the interval: no new discovery, no judgment.
+    assert asyncio.run(client.judge(request, token)).reason_code == "SYSTEM1_UNAVAILABLE"
+    assert calls == ["/api/v1/capabilities"]
+    now[0] = 61.0
+    assert asyncio.run(client.judge(request, token)).accepted
+    now[0] = 10_000.0
+    # Once on, it stays known: one discovery per transition, not per judgment.
+    assert asyncio.run(client.judge(request, token)).accepted
+    assert calls == [
+        "/api/v1/capabilities",
+        "/api/v1/capabilities",
+        "/api/v1/system1/judge",
+        "/api/v1/system1/judge",
+    ]

@@ -213,7 +213,6 @@ class ToolExecutor:
                 )
                 or final.metadata.get("review_required") is True
                 or not contract_valid
-                or final.reference is not None
             )
             await self.event_bus.publish(
                 ToolEvent(

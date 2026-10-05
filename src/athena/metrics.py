@@ -27,7 +27,7 @@ from pathlib import Path
 from athena.events import EventName, RuntimeEvent
 from athena.sqlite_support import closing_connection, migrate
 from athena.state import ExecutionOutcome
-from athena.types import JSONObject
+from athena.types import JSONObject, JSONValue
 
 
 @dataclass
@@ -85,7 +85,7 @@ class RunMetrics:
     provider_failures: int = 0
     cancellations: int = 0
     context_compactions: int = 0
-    system1: JSONObject = field(default_factory=dict)
+    system1: dict[str, JSONValue] = field(default_factory=dict)
 
     @property
     def duration_ms(self) -> int:

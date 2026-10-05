@@ -4,6 +4,10 @@ Reconciled with the source tree on **2026-09-28**, after the audit in
 `Informes/Athena-2026-09-28/INFORME_ATHENA.md` (27 findings, A01–A27). Every finding and
 what was done about it is listed in [`AUDIT_2026-09-28_RESOLUTION.md`](AUDIT_2026-09-28_RESOLUTION.md).
 
+**0.3.0 (2026-10-03)** adds optional System-1 judgments through AI_Broker (goal completion,
+context filtering, reviewer gate) and the Client_API §3 authentication errors. Design,
+configuration, live measurements and validation: [`SYSTEM1_INTEGRATION.md`](SYSTEM1_INTEGRATION.md).
+
 This file is the current-state index. Accepted ADRs define architectural decisions;
 acceptance reports and integration reports are dated evidence, not rolling status pages.
 

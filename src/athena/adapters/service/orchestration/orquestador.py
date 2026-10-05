@@ -52,7 +52,7 @@ from athena.subagents import (
     DEFAULT_PROFILES,
     SubagentRunner,
 )
-from athena.system1 import System1, explicit_review
+from athena.system1 import System1
 from athena.tasks import TaskManager
 from athena.tools import Tool
 from athena.types import JSONObject
@@ -282,7 +282,7 @@ class Orchestrator:
         prompt: PermissionPrompt | None = None,
         cancellation: CancellationToken,
         provider: ModelProvider | None = None,
-        mandatory_review: bool = False,
+        mandatory_review: bool | None = None,
         acceptance_criteria: tuple[str, ...] = (),
     ) -> GraphResult | None:
         """Plan the work, execute the plan, and leave a session behind either way.
@@ -424,7 +424,7 @@ class Orchestrator:
         prompt: PermissionPrompt | None = None,
         cancellation: CancellationToken,
         provider: ModelProvider | None = None,
-        mandatory_review: bool = False,
+        mandatory_review: bool | None = None,
         acceptance_criteria: tuple[str, ...] = (),
     ) -> GraphResult:
         """Seguir un plan donde se quedó, sin volver a planificar.
@@ -465,7 +465,7 @@ class Orchestrator:
         prompt: PermissionPrompt | None,
         cancellation: CancellationToken,
         provider: ModelProvider | None = None,
-        mandatory_review: bool = False,
+        mandatory_review: bool | None = None,
         acceptance_criteria: tuple[str, ...] = (),
     ) -> GraphResult:
         """Ejecuta un grafo, venga de planificar o de recuperarlo.
@@ -508,7 +508,7 @@ class Orchestrator:
             store=self.settings.graphs,
             rollback=libro,
             system1=self.system1,
-            mandatory_review=mandatory_review or explicit_review(objective),
+            mandatory_review=mandatory_review,
             objective=objective,
             acceptance_criteria=acceptance_criteria,
         )

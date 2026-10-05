@@ -10,11 +10,18 @@ from athena.adapters.service.runs.suscripcion import LiveRun
 from athena.agent_loop import AgentRunStatus
 from athena.cancellation import CancellationSource, CancellationToken
 from athena.delegation import DelegateTaskTool
-from athena.errors import PermissionDeniedError
+from athena.errors import PermissionDeniedError, ToolValidationError
 from athena.events import EventName, InMemoryEventBus, RuntimeEvent
 from athena.graph_executor import GraphExecutor
 from athena.models import ModelToolCall
-from athena.permissions import PermissionPolicy, PolicyPermissionEngine, ReadOnlyPermissionEngine
+from athena.permissions import (
+    PermissionPolicy,
+    PermissionRequest,
+    PolicyPermissionEngine,
+    ReadOnlyPermissionEngine,
+    RiskLevel,
+    RiskTier,
+)
 from athena.planning import TaskGraph, TaskNode
 from athena.process_tools import BashTool
 from athena.registry import ToolRegistry
@@ -24,6 +31,8 @@ from athena.subagents import SubagentBrief, SubagentBudget, SubagentResult, Suba
 from athena.system1 import System1, System1Config
 from athena.tasks import TaskManager
 from athena.tool_executor import ToolExecutor
+from athena.tools import ToolContext, ToolResult, ToolSpec
+from athena.types import JSONObject
 from athena.workspace import Workspace
 from athena_service import ServiceSettings, build_service
 from test_system1 import FakeJudge, StaticVerification, accepted, proof
@@ -367,3 +376,139 @@ def test_service_discovers_capabilities_only_when_a_feature_is_enabled(
 
         asyncio.run(scenario())
         assert [call[0] for call in calls] == (["/api/v1/capabilities"] if enabled else [])
+
+
+@pytest.mark.parametrize(
+    "declared,judged",
+    [
+        # Agora-style objective: the word comes from a template, and the client says so.
+        (False, True),
+        # Nobody declared anything: the wording still counts as a request for review.
+        (None, False),
+        (True, False),
+    ],
+)
+def test_a_declared_review_intent_overrides_the_objective_wording(
+    tmp_path: Path, declared: bool | None, judged: bool
+) -> None:
+    async def scenario() -> None:
+        bus = InMemoryEventBus()
+        client = FakeJudge(accepted())
+        system = System1(client, System1Config(reviewer_gate=True, shadow_mode=False), bus)
+        delegator = RecordingDelegator()
+        policy = PermissionPolicy(allow_local_execution=True)
+        tool = DelegateTaskTool(
+            delegator,
+            {"bash": BashTool()},
+            policy,
+            system1=system,
+            verification=StaticVerification(proof()),
+        )
+        executor = ToolExecutor(
+            ToolRegistry((tool,)), PolicyPermissionEngine(policy), InMemoryToolResultStore(), bus
+        )
+        await executor.execute(
+            ModelToolCall(
+                "review",
+                "delegate_task",
+                {
+                    "goal": "Check the executor output",
+                    "role": "verifier",
+                    "acceptance_criteria": ["regression test exists"],
+                },
+            ),
+            session_id="r",
+            workspace=Workspace.from_path(tmp_path),
+            cancellation=CancellationSource().token,
+            context_metadata={
+                "system1_review": {
+                    "objective": "# PROFILE\nReview your own output before finishing.\n"
+                    "# CARD\nFix the bug",
+                    "output": "Fixed code and added regression test",
+                    "state": {},
+                    "mandatory_review": bool(declared),
+                },
+                "system1_review_declared": declared,
+            },
+        )
+        assert bool(client.requests) is judged
+        assert (SubagentRole.VERIFIER in delegator.roles) is not judged
+
+    asyncio.run(scenario())
+
+
+def test_run_options_keep_review_declaration_three_valued() -> None:
+    assert RunOptions.from_json({}).mandatory_review is None
+    for value in (True, False):
+        options = RunOptions.from_json({"mandatory_review": value})
+        assert options.mandatory_review is value
+        assert RunOptions.from_json(options.to_json()).mandatory_review is value
+    assert RunOptions.from_json(RunOptions().to_json()).mandatory_review is None
+    with pytest.raises(ToolValidationError):
+        RunOptions.from_json({"mandatory_review": "false"})
+
+
+class _LargeReadTool:
+    spec = ToolSpec(
+        name="large_read",
+        description="Returns more text than the inline limit.",
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        output_schema={"type": "string"},
+        risk=RiskLevel.LOW,
+        max_result_size_chars=1_000,
+    )
+
+    def validate(self, arguments: JSONObject) -> JSONObject:
+        return arguments
+
+    def permission(self, context: ToolContext, arguments: JSONObject) -> PermissionRequest:
+        return PermissionRequest(
+            self.spec.name,
+            self.spec.name,
+            context.workspace,
+            RiskLevel.LOW,
+            RiskTier.R0_READ_ONLY,
+            True,
+            False,
+            arguments=arguments,
+        )
+
+    async def execute(
+        self, context: ToolContext, arguments: JSONObject, cancellation: CancellationToken
+    ) -> ToolResult:
+        return ToolResult("x" * 5_000)
+
+    def is_read_only(self, arguments: JSONObject) -> bool:
+        return True
+
+    def is_destructive(self, arguments: JSONObject) -> bool:
+        return False
+
+    def is_concurrency_safe(self, arguments: JSONObject) -> bool:
+        return True
+
+
+def test_an_externalized_read_is_not_a_sensitive_operation(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        events: list[RuntimeEvent] = []
+        bus = InMemoryEventBus()
+        bus.subscribe(events.append)
+        executor = ToolExecutor(
+            ToolRegistry((_LargeReadTool(),)),
+            PolicyPermissionEngine(),
+            InMemoryToolResultStore(),
+            bus,
+        )
+        result = await executor.execute(
+            ModelToolCall("read", "large_read", {}),
+            session_id="r",
+            workspace=Workspace.from_path(tmp_path),
+            cancellation=CancellationSource().token,
+        )
+        assert result.reference is not None
+        assert result.metadata.get("review_required") is not True
+        completed = [event for event in events if event.name is EventName.TOOL_COMPLETED]
+        assert completed[-1].payload["externalized"] is True
+        assert completed[-1].payload["review_required"] is False
+
+    asyncio.run(scenario())

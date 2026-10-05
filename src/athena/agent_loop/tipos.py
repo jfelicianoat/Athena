@@ -48,7 +48,9 @@ class AgentLoopConfig:
     #: bucle solo transmite la eleccion ya tomada.
     model: str = ""
     acceptance_criteria: tuple[str, ...] = ()
-    mandatory_review: bool = False
+    #: The client's declaration that a review was or was not requested. `None` means it
+    #: said nothing, and the objective's wording decides (`system1.review_requested`).
+    mandatory_review: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,3 +83,7 @@ class _RunData:
     progress: NoProgressDetector = field(default_factory=NoProgressDetector)
     review_required: bool = False
     latest_output: str = ""
+    #: Only `latest_output` was cut short. It matters to the reviewer gate, which judges
+    #: that text, and is recomputed on every call: a large file read earlier in the run
+    #: says nothing about whether the latest result can be judged in full.
+    latest_output_truncated: bool = False

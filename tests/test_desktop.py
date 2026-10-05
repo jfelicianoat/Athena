@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
 from athena.adapters.ai_broker import AiBrokerModelProvider
 from athena.adapters.openai_compatible import OpenAICompatibleModelProvider
+from athena.cancellation import CancellationToken
 from athena.events import InMemoryEventBus
+from athena.types import JSONObject, JSONValue
 from athena_desktop.config import (
     DesktopSettings,
     ProviderKind,
@@ -20,6 +24,7 @@ from athena_desktop.runtime import (
     RunConfiguration,
     build_provider,
     build_registry,
+    check_connection,
     requires_workspace_change,
     run_options,
 )
@@ -112,6 +117,52 @@ def test_provider_selection_builds_the_requested_adapter(tmp_path: Path) -> None
 
     assert isinstance(broker, AiBrokerModelProvider)
     assert isinstance(compatible, OpenAICompatibleModelProvider)
+
+
+@pytest.mark.parametrize(
+    "status,payload,expected,message",
+    [
+        (200, {"authenticated": True, "auth_required": True}, True, "acepta el token"),
+        (200, {"authenticated": True, "auth_required": False}, True, "no exige credenciales"),
+        (403, {}, False, "rechaza el token"),
+        (503, {}, False, "autenticación"),
+    ],
+)
+def test_connection_reports_broker_authentication_without_submitting_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+    payload: JSONObject,
+    expected: bool,
+    message: str,
+) -> None:
+    paths: list[str] = []
+
+    class ConnectionBroker(AiBrokerModelProvider):
+        async def _call(
+            self,
+            method: str,
+            path: str,
+            body: Mapping[str, JSONValue] | None,
+            cancellation: CancellationToken | None,
+        ) -> tuple[int, JSONObject]:
+            assert method == "GET" and body is None
+            assert cancellation is not None
+            cancellation.raise_if_cancelled()
+            paths.append(path)
+            if path == "/health":
+                return 200, {"status": "healthy"}
+            assert path == "/api/v1/auth/check"
+            return status, payload
+
+    def provider(configuration: RunConfiguration) -> AiBrokerModelProvider:
+        return ConnectionBroker(configuration.base_url, configuration.token)
+
+    monkeypatch.setattr("athena_desktop.runtime.build_provider", provider)
+    result = asyncio.run(check_connection(_configuration(tmp_path)))
+    assert result.ok is expected
+    assert message in result.message
+    assert paths == ["/health", "/api/v1/auth/check"]
 
 
 def test_broker_requires_a_token_before_starting(tmp_path: Path) -> None:
