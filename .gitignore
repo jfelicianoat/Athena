@@ -12,3 +12,4 @@
 /dist/
 /build/
 /graphify-out/
+/%TEMP%*

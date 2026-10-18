@@ -310,6 +310,15 @@ POST /v1/runs/{id}/approvals/{request_id}          {decision: allow|deny}
 GET  /v1/results/{key}                             410 Gone once retention expires
 ```
 
+Status codes fixed by the audit of 9-oct-2026: unknown run → 404 on every run route
+(`cancel`, `goal`, `resume`, `GET rollback` included); cancelling a finished run → 409
+`run_finished`; a known route with another method → 405 plus `Allow`. An approval whose
+`ack` or decision answers 404 is no longer open; the client keeps listening. The stream
+rewrites a `permission.requested` whose approval is no longer pending to
+`awaiting_decision: false, stale: true` — in the `Last-Event-ID` replay and for events that
+waited in the queue while the request was resolved — so a client never answers a dead
+question and gives the run up for lost.
+
 Two things the build changed about the design:
 
 - **`AgentLoop.run` now accepts an optional `session_id`.** The loop used to mint its own,

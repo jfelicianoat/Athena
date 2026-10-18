@@ -42,8 +42,10 @@ from athena_desktop.presentacion import (
     describe_event,
     present_approval,
     present_result,
+    queue_line,
     status_label,
     technical_line,
+    turn_budget_warning,
 )
 from athena_desktop.runtime import (
     ConnectionReport,
@@ -51,12 +53,14 @@ from athena_desktop.runtime import (
     RunHandle,
     RunSummary,
     TaskKind,
+    broker_queue,
     check_connection,
     default_state_dir,
     list_runs,
     requires_workspace_change,
     roll_back_run,
     run_athena,
+    verification_warning,
 )
 from athena_desktop.service import (
     ManagedAthenaService,
@@ -314,6 +318,7 @@ class AthenaDesktopApp:
         self.p_elapsed = tk.StringVar(value="—")
         self.p_last = tk.StringVar(value="—")
         self.p_permission = tk.StringVar(value="Ninguno")
+        self.p_queue = tk.StringVar(value="—")
         self.p_config = tk.StringVar(value="—")
 
         self._configure_window()
@@ -420,8 +425,11 @@ class AthenaDesktopApp:
         url.pack(fill=tk.X, pady=(0, 6))
         url.bind("<FocusOut>", lambda _: self._switch_credential())
         ttk.Label(body, text="Modelo o preferencia").pack(anchor=tk.W)
-        model = ttk.Entry(body, textvariable=self.model)
+        # Editable: se puede escribir cualquier preferencia, y «Probar conexión» rellena la
+        # lista con los modelos del broker que sirven para trabajar con Athena (I-06).
+        model = ttk.Combobox(body, textvariable=self.model, values=())
         model.pack(fill=tk.X, pady=(0, 6))
+        self.model_box = model
         ttk.Label(body, text="Token de este proveedor").pack(anchor=tk.W)
         token = ttk.Entry(body, textvariable=self.token, show="●")
         token.pack(fill=tk.X, pady=(0, 4))
@@ -472,7 +480,10 @@ class AthenaDesktopApp:
         timeout.pack(side=tk.RIGHT)
         ttk.Label(
             body,
-            text="Un modelo local puede tardar varios minutos por turno.",
+            text=(
+                "Es el tiempo del trabajo completo, no de cada turno. Un modelo local puede "
+                "tardar varios minutos por turno y un cambio suele necesitar de 5 a 10 turnos."
+            ),
             wraplength=320,
             style="Hint.TLabel",
         ).pack(fill=tk.X, pady=(4, 0))
@@ -568,6 +579,7 @@ class AthenaDesktopApp:
             (
                 ("Objetivo", self.p_objective),
                 ("Último paso", self.p_last),
+                ("Cola del modelo", self.p_queue),
                 ("Configuración", self.p_config),
             ),
             start=2,
@@ -967,6 +979,8 @@ class AthenaDesktopApp:
         self.test_button.configure(state=tk.NORMAL if not self._running() else tk.DISABLED)
         self.connection_result.set(("✔ " if report.ok else "✖ ") + report.message)
         self.connection_label.configure(style="Ok.TLabel" if report.ok else "Bad.TLabel")
+        if report.models:
+            self.model_box.configure(values=report.models)
 
     # ------------------------------------------------------------------ ejecutar
 
@@ -993,6 +1007,13 @@ class AthenaDesktopApp:
             self.store.save(self.settings)
         except (ValueError, OSError) as exc:
             messagebox.showerror("No se puede iniciar", str(exc), parent=self.root)
+            return
+        warning = verification_warning(configuration) if resume_run_id is None else None
+        if warning is not None and not messagebox.askokcancel(
+            "El trabajo no se podrá comprobar",
+            warning + "\n\n¿Empezar igualmente?",
+            parent=self.root,
+        ):
             return
         self._begin(configuration, resume_run_id)
 
@@ -1034,6 +1055,7 @@ class AthenaDesktopApp:
         self.p_calls.set("0")
         self.p_last.set("—")
         self.p_permission.set("Ninguno")
+        self.p_queue.set("—")
         self.p_config.set(
             f"{Path(configuration.workspace).name} · {self.provider.get()} "
             f"{configuration.model or '(modelo por defecto)'} · archivos: {self.writes.get()} "
@@ -1091,7 +1113,20 @@ class AthenaDesktopApp:
         self.p_elapsed.set(
             f"{elapsed // 60}:{elapsed % 60:02d} de un máximo de {limit // 60}:{limit % 60:02d}"
         )
+        if elapsed % 15 == 1:
+            self._check_queue(self.active)
         self.root.after(1000, self._tick)
+
+    def _check_queue(self, configuration: RunConfiguration) -> None:
+        """Cada 15 s, en otro hilo: cuanta gente espera al broker (mejora 6)."""
+
+        def work() -> None:
+            with contextlib.suppress(Exception):
+                load = asyncio.run(broker_queue(configuration))
+                if load is not None:
+                    self.messages.put(("queue", queue_line(*load)))
+
+        threading.Thread(target=work, name="athena-desktop-queue", daemon=True).start()
 
     def _set_config_enabled(self, enabled: bool) -> None:
         for widget in self._config_widgets:
@@ -1177,6 +1212,7 @@ class AthenaDesktopApp:
             "error": self._on_error,
             "handle": self._on_handle,
             "connection": self._on_connection,
+            "queue": lambda value: self.p_queue.set(str(value)),
             "goal": self._on_goal,
             "goal_error": lambda value: self._complain("No se pudo cambiar el objetivo", value),
             "history": self._on_history,
@@ -1226,6 +1262,12 @@ class AthenaDesktopApp:
         if event.name is EventName.MODEL_STARTED:
             self.model_calls += 1
             self.p_calls.set(str(self.model_calls))
+        if event.name is EventName.MODEL_COMPLETED and self.model_calls == 1 and self.active:
+            warning = turn_budget_warning(
+                time.monotonic() - self.started_at, self.active.timeout_seconds
+            )
+            if warning is not None:
+                self._append_activity(warning)
         if event.name is EventName.GOAL_REVISED:
             text = event.payload.get("text") or event.payload.get("objective")
             if isinstance(text, str) and text:

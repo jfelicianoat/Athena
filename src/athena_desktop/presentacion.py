@@ -93,6 +93,29 @@ class ActivityLine:
     tone: str = "info"
 
 
+def queue_line(pending: int, active: int) -> str:
+    """La carga del broker en palabras (mejora 6): ocupado no es colgado."""
+    if pending == 0 and active <= 1:
+        return "Libre: el turno de Athena no espera a nadie."
+    return (
+        f"{pending} trabajo(s) esperando y {active} en curso: el broker está ocupado y los "
+        "turnos pueden tardar más."
+    )
+
+
+def turn_budget_warning(first_turn_seconds: float, limit_seconds: float) -> ActivityLine | None:
+    """Aviso si, al ritmo del primer turno, el tiempo maximo no da ni para tres (I-07)."""
+    if first_turn_seconds <= 0 or first_turn_seconds * 3 <= limit_seconds:
+        return None
+    return ActivityLine(
+        f"El primer turno del modelo tardó {first_turn_seconds / 60:.1f} min y el tiempo "
+        f"máximo es {limit_seconds / 60:.1f} min para todo el trabajo: a este ritmo "
+        "probablemente no termine. Puedes detenerlo y subir «Tiempo máximo (s)» o elegir "
+        "un modelo más rápido.",
+        "warn",
+    )
+
+
 def describe_event(event: RuntimeEvent) -> ActivityLine | None:
     """Una linea legible por evento, o None si no aporta nada a una persona."""
     name = event.name
@@ -578,8 +601,10 @@ __all__ = [
     "describe_event",
     "present_approval",
     "present_result",
+    "queue_line",
     "status_label",
     "status_word",
     "technical_line",
     "tool_label",
+    "turn_budget_warning",
 ]

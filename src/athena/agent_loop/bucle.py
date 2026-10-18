@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import replace
 from uuid import uuid4
 
-from athena.agent_loop.finalizacion import FinalizacionMixin
+from athena.agent_loop.finalizacion import _MODELO_ROTO, FinalizacionMixin
 from athena.agent_loop.tipos import AgentRunResult, AgentRunStatus, _RunData
 from athena.budget import BudgetLimits, RuntimeBudget
 from athena.cancellation import CancellationToken
@@ -15,6 +15,8 @@ from athena.errors import (
     BudgetExceededError,
     CancellationError,
     FatalRuntimeError,
+    ModelPermanentError,
+    ModelTransientError,
     ProcessCancelledError,
     ProcessTimeoutError,
 )
@@ -308,7 +310,18 @@ class AgentLoop(FinalizacionMixin):
                     request,
                     options={**dict(request.options), "tool_choice": "required"},
                 )
-            response = await self._complete(request, cancellation, data, budget)
+            try:
+                response = await self._complete(request, cancellation, data, budget)
+            except (ModelPermanentError, ModelTransientError):
+                # El modelo se rompe (p. ej. el broker corta con PROMPT_ECHOED) despues de
+                # haber dejado el trabajo escrito: la misma lectura unica que en el
+                # estancamiento antes de dar por fallido algo que puede estar hecho.
+                rescatado = await self._salvage(
+                    data, workspace, cancellation, budget, motivo=_MODELO_ROTO
+                )
+                if rescatado is not None:
+                    return rescatado
+                raise
             data.history.append(
                 ModelMessage(
                     ModelRole.ASSISTANT,

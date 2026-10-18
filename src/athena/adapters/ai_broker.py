@@ -189,6 +189,43 @@ class AiBrokerModelProvider(ModelProvider):
             return False, "El servicio de autenticación del broker no está disponible (HTTP 503)."
         return False, f"El broker respondió HTTP {status}."
 
+    async def model_capabilities(
+        self, cancellation: CancellationToken
+    ) -> dict[str, tuple[str, ...]]:
+        """Each available model of the broker's catalogue with the capabilities it declares.
+
+        Athena needs `completion`: the broker refuses a run on a model without it
+        (`MODEL_CAPABILITY_MISMATCH`), so a client can rule such a model out up front.
+        """
+        status, payload = await self._call("GET", "/api/v1/models", None, cancellation)
+        if status != 200:
+            raise ModelTransientError(f"AI_Broker model catalogue answered HTTP {status}")
+        listed = payload.get("models")
+        found: dict[str, tuple[str, ...]] = {}
+        for item in listed if isinstance(listed, list) else ():
+            if not isinstance(item, dict) or item.get("status", "available") != "available":
+                continue
+            name, capabilities = item.get("name"), item.get("capabilities")
+            if isinstance(name, str) and name:
+                found[name] = tuple(
+                    str(c) for c in (capabilities if isinstance(capabilities, list) else ())
+                )
+        return found
+
+    async def queue_load(self, cancellation: CancellationToken) -> tuple[int, int]:
+        """How many broker tasks are waiting and how many are running right now.
+
+        For interfaces only: it lets a person tell «the broker is busy» from «Athena hung».
+        """
+        status, payload = await self._call("GET", "/api/v1/queue", None, cancellation)
+        if status != 200:
+            raise ModelTransientError(f"AI_Broker queue answered HTTP {status}")
+        pending, active = payload.get("pending"), payload.get("active")
+        return (
+            len(pending) if isinstance(pending, list) else 0,
+            len(active) if isinstance(active, list) else 0,
+        )
+
     # -- the bridge --------------------------------------------------------
 
     async def _submit(

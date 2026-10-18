@@ -8,6 +8,12 @@ what was done about it is listed in [`AUDIT_2026-09-28_RESOLUTION.md`](AUDIT_202
 context filtering, reviewer gate) and the Client_API §3 authentication errors. Design,
 configuration, live measurements and validation: [`SYSTEM1_INTEGRATION.md`](SYSTEM1_INTEGRATION.md).
 
+**0.3.1 (2026-10-17)** resolves the audit of 9/10-oct-2026 (I-01…I-09): coherent 404/405/409
+from the service, stale approvals marked in the event stream, models without `completion`
+refused in the desktop, a warning before a change that cannot be verified, the broker queue
+shown while a run waits, a cap on System-1 judgment input and resume after a crash. Resolution and
+evidence: [`AUDIT_2026-10-09_RESOLUTION.md`](AUDIT_2026-10-09_RESOLUTION.md).
+
 This file is the current-state index. Accepted ADRs define architectural decisions;
 acceptance reports and integration reports are dated evidence, not rolling status pages.
 

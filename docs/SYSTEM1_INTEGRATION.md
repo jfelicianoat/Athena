@@ -69,6 +69,7 @@ El servicio y los procesos gestionados heredan estas variables del entorno. Hay 
 | `ATHENA_SYSTEM1_CAPABILITIES_TIMEOUT_SECONDS` | `3` |
 | `ATHENA_SYSTEM1_MAX_CANDIDATES` | `8` |
 | `ATHENA_SYSTEM1_CONTEXT_BUDGET_CHARS` | `60000` |
+| `ATHENA_SYSTEM1_MAX_INPUT_CHARS` | `32000` |
 | `ATHENA_SYSTEM1_REQUIRE_CALIBRATED_REVIEW` | `false` |
 | `ATHENA_SYSTEM1_GOAL_USE_CASE` | `athena_goal_completion` |
 | `ATHENA_SYSTEM1_CONTEXT_USE_CASE` | `athena_context_ranking` |
@@ -78,6 +79,17 @@ El servicio y los procesos gestionados heredan estas variables del entorno. Hay 
 | `ATHENA_SYSTEM1_REVIEWER_THRESHOLD_PROFILE` | `agora_review_gate` (no admite `default`) |
 
 Un `..._THRESHOLD_PROFILE` vacío no envía perfil: el `use_case` debe tenerlo configurado en el broker.
+
+`MAX_INPUT_CHARS` acota la entrada de **todo** juicio (goal completion, ranking y gate). El broker
+no juzga sobre un recorte y responde `INPUT_TOO_LARGE` hacia los 40 000 caracteres (medido por
+ChatyGPT), así que una entrada mayor no se envía: se registra `system1.judged` con
+`reason_code: INPUT_TOO_LARGE` y `fallback: true` y se sigue por el camino conservador, sin
+recortar evidencia ni gastar la llamada. Cada `system1.judged` lleva `input_chars`.
+
+Caso B, «errores por contexto insuficiente»: cada `verification.failed` de un run al que el filtro
+ya había quitado candidatos suma `verification_failures_after_context_filtering` en los
+contadores System-1 del run (`run_system1_metrics`). Es una sospecha medible, no una causa
+demostrada: el fallo puede tener otro origen.
 
 Los umbrales locales pueden endurecer los del Broker; no rebajan los umbrales del operador. El timeout HTTP de 75 segundos cubre los dos intentos secuenciales de 30 segundos del contrato actual. Si el operador cambia esos plazos, hay que ajustar la variable correspondiente.
 

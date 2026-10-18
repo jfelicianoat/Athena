@@ -41,6 +41,7 @@ from athena.run_event_log import RunEventLog
 from athena.session_store import SessionRecord, SqliteSessionStore
 from athena.stores import SqliteToolResultStore
 from athena.types import JSONObject
+from athena.verification import VerificationPlanner
 from athena.workspace import Workspace
 from athena_desktop.config import CapabilityMode, ProviderKind
 
@@ -257,6 +258,7 @@ async def run_athena(
     abierto sin parar el bucle de eventos.
     """
     configuration.validate()
+    await _refuse_unusable_model(configuration)
     stores = DesktopStores(state_dir or default_state_dir())
     registry = build_registry(configuration, stores)
     loop = asyncio.get_running_loop()
@@ -288,6 +290,35 @@ async def run_athena(
         registry.unsubscribe(subscriber)
         await asyncio.gather(pump, return_exceptions=True)
         await registry.shutdown()
+
+
+async def broker_queue(configuration: RunConfiguration) -> tuple[int, int] | None:
+    """Carga de la cola del broker, o None si no es un broker o no contesta."""
+    if configuration.provider is not ProviderKind.AI_BROKER:
+        return None
+    provider = build_provider(configuration)
+    if not isinstance(provider, AiBrokerModelProvider):
+        return None
+    try:
+        return await provider.queue_load(CancellationSource().token)
+    except AthenaRuntimeError:
+        return None
+
+
+async def _refuse_unusable_model(configuration: RunConfiguration) -> None:
+    """Antes de arrancar: un modelo sin `completion` haria morir el run a los segundos (I-06)."""
+    if configuration.provider is not ProviderKind.AI_BROKER or not configuration.model.strip():
+        return
+    provider = build_provider(configuration)
+    if not isinstance(provider, AiBrokerModelProvider):
+        return
+    try:
+        catalogue = await provider.model_capabilities(CancellationSource().token)
+    except AthenaRuntimeError:
+        return  # Sin catalogo no se sabe; decide el broker, como antes.
+    problem = model_problem(configuration.model, catalogue)
+    if problem is not None:
+        raise AthenaRuntimeError(problem)
 
 
 async def _pump(
@@ -349,6 +380,9 @@ async def list_runs(state_dir: Path | None = None, *, limit: int = 200) -> list[
     """Los trabajos que el escritorio recuerda, del mas reciente al mas antiguo."""
     stores = DesktopStores(state_dir or default_state_dir())
     sessions = stores.sessions
+    # Un trabajo cuyo proceso murio (caida, cierre forzado) seguia «En curso» y sin
+    # «Reanudar» hasta lanzar otro run. Solo marca las de un dueno que ya no existe.
+    await sessions.mark_interrupted()
     records = await sessions.list_sessions()
     checkpoints = await asyncio.to_thread(stores.checkpoints.list)
     undoable: dict[str, int] = {}
@@ -403,6 +437,30 @@ async def roll_back_run(run_id: str, state_dir: Path | None = None) -> RollbackR
 class ConnectionReport:
     ok: bool
     message: str
+    #: Modelos del broker que sirven para trabajar con Athena (declaran `completion`).
+    models: tuple[str, ...] = ()
+
+
+#: Lo que el broker exige para aceptar un run sobre un modelo (I-06).
+_REQUIRED_CAPABILITY = "completion"
+
+
+def model_problem(model: str, catalogue: dict[str, tuple[str, ...]]) -> str | None:
+    """Por que ese modelo no servira, o None si sirve o no se puede saber.
+
+    Un modelo que el catalogo no lista no se rechaza: el broker puede enrutar una
+    preferencia, y un catalogo incompleto no es motivo para impedir trabajar.
+    """
+    capabilities = catalogue.get(model.strip())
+    if not model.strip() or capabilities is None or _REQUIRED_CAPABILITY in capabilities:
+        return None
+    declared = ", ".join(capabilities) or "ninguna"
+    return (
+        f"El modelo «{model.strip()}» no sirve para trabajar con Athena: el broker no le "
+        f"declara la capacidad «{_REQUIRED_CAPABILITY}» (declara: {declared}), así que o "
+        "rechaza el trabajo o lo contesta otro modelo en su lugar. Elige otro modelo de la "
+        "lista o pulsa «Probar conexión» para verla."
+    )
 
 
 async def check_connection(configuration: RunConfiguration) -> ConnectionReport:
@@ -422,11 +480,50 @@ async def check_connection(configuration: RunConfiguration) -> ConnectionReport:
         if not accepted:
             return ConnectionReport(False, message)
         estado = "" if health.status is ModelHealthStatus.HEALTHY else " (informa estado degradado)"
-        return ConnectionReport(True, f"Conectado a AI_Broker{estado}. {message}")
+        try:
+            catalogue = await provider.model_capabilities(token)
+        except AthenaRuntimeError:
+            return ConnectionReport(True, f"Conectado a AI_Broker{estado}. {message}")
+        usable = tuple(
+            sorted(name for name, caps in catalogue.items() if _REQUIRED_CAPABILITY in caps)
+        )
+        problem = model_problem(configuration.model, catalogue)
+        if problem is not None:
+            return ConnectionReport(False, problem, usable)
+        return ConnectionReport(
+            True,
+            f"Conectado a AI_Broker{estado}. {message} {len(usable)} modelos aptos en la lista.",
+            usable,
+        )
     health = await provider.health(token)
     if health.status is ModelHealthStatus.HEALTHY:
         return ConnectionReport(True, "El endpoint responde y acepta la credencial.")
     return ConnectionReport(False, f"El endpoint no está disponible: {health.detail}")
+
+
+def verification_warning(configuration: RunConfiguration) -> str | None:
+    """Por que un cambio acabara «sin comprobar» aunque se haga, dicho antes de empezar.
+
+    Un cambio solo se da por terminado con evidencia: los checks del propio proyecto. Sin
+    checks, o sin permiso para ejecutarlos, el run gasta su trabajo y acaba inconcluso; la
+    persona tiene que saberlo antes, no al final (mejora 3 de la auditoria del 9-oct).
+    """
+    if configuration.task_kind != "change":
+        return None
+    plan = VerificationPlanner(Workspace.from_path(configuration.workspace)).plan()
+    if not plan.checks:
+        return (
+            "Este proyecto no define comprobaciones que Athena pueda ejecutar (tests en "
+            "AGENTS.md, pyproject.toml o package.json). El cambio se puede hacer, pero el "
+            "trabajo terminará como «sin comprobar» en vez de «completado»."
+        )
+    if configuration.execution == "off":
+        return (
+            "«Ejecutar código del proyecto» está en «No», así que Athena no podrá pasar las "
+            "comprobaciones del proyecto y el trabajo terminará como «sin comprobar». "
+            "Ponlo en «Preguntar» si quieres que lo verifique."
+        )
+    return None
 
 
 def requires_workspace_change(objective: str) -> bool:
@@ -453,13 +550,16 @@ __all__ = [
     "RunHandle",
     "RunSummary",
     "TaskKind",
+    "broker_queue",
     "build_provider",
     "build_registry",
     "check_connection",
     "default_state_dir",
     "list_runs",
+    "model_problem",
     "requires_workspace_change",
     "roll_back_run",
     "run_athena",
     "run_options",
+    "verification_warning",
 ]

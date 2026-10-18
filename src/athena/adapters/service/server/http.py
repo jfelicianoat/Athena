@@ -81,6 +81,7 @@ class Response:
     payload: JSONObject | None = None
     body: bytes = b""
     content_type: str = "application/json"
+    headers: tuple[tuple[str, str], ...] = ()
 
     def rendered(self) -> tuple[bytes, str]:
         if self.payload is not None:

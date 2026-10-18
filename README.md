@@ -150,7 +150,19 @@ for controlled development, but is no longer required.
 
 The service listens on `127.0.0.1:8770` by default. `ATHENA_SERVICE_PORT` and
 `ATHENA_STATE_DIR` may override the port and durable state directory. Do not publish this
-endpoint on the LAN; authentication is required even though it is bound to loopback.
+endpoint on the LAN; every route requires the bearer token even though it is bound to
+loopback, except `GET /v1/health`, which is public on purpose so a launcher can tell whether
+something is listening. It reveals only `status`, `wire_version` and the number of live runs;
+to check a credential use `GET /v1/auth/check`.
+
+Status codes a client can rely on: an unknown run id answers **404** on every run route
+(including `cancel`, `goal`, `resume` and `GET …/rollback`); cancelling a run that already
+finished answers **409** `run_finished`; a route that exists with another method answers
+**405** with an `Allow` header. An approval answered with **404** means that question is no
+longer open (already decided or expired): keep reading the event stream, a new request may
+follow. Events delivered by the stream carry `awaiting_decision: false` and `stale: true` when
+the approval they announce is no longer pending, so a client should only answer requests
+whose `awaiting_decision` is `true`.
 
 Which model answers is not a detail. Athena drives its loop with a structured JSON decision.
 `ATHENA_ALLOWED_MODELS` is a comma-separated deployment allowlist and

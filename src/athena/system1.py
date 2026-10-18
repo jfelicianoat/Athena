@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
@@ -33,6 +34,10 @@ class System1Config:
     capabilities_timeout_seconds: float = 3.0
     max_candidates: int = 8
     context_budget_chars: int = 60_000
+    #: Tope de la entrada de un juicio. El broker no juzga sobre un recorte: con unos
+    #: 40 000 caracteres responde INPUT_TOO_LARGE (medido por ChatyGPT), asi que pasado
+    #: este tope no se envia y se sigue por el camino conservador sin gastar la llamada.
+    max_input_chars: int = 32_000
     require_calibrated_review: bool = False
     # Athena's own use cases keep its broker metrics apart from Agora's and other apps'.
     # Each borrows the operator's threshold profile for the same kind of decision, so a
@@ -63,7 +68,7 @@ class System1Config:
             or self.capabilities_timeout_seconds <= 0
         ):
             raise ValueError("System-1 capabilities timeout must be positive and finite")
-        if self.max_candidates < 1 or self.context_budget_chars < 1:
+        if self.max_candidates < 1 or self.context_budget_chars < 1 or self.max_input_chars < 1:
             raise ValueError("System-1 context limits must be positive")
         for name in (self.goal_use_case, self.context_use_case, self.reviewer_use_case):
             if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", name) is None:
@@ -119,6 +124,7 @@ class System1Config:
             ),
             max_candidates=int(env.get("ATHENA_SYSTEM1_MAX_CANDIDATES", "8")),
             context_budget_chars=int(env.get("ATHENA_SYSTEM1_CONTEXT_BUDGET_CHARS", "60000")),
+            max_input_chars=int(env.get("ATHENA_SYSTEM1_MAX_INPUT_CHARS", "32000")),
             require_calibrated_review=flag("REQUIRE_CALIBRATED_REVIEW", False),
             goal_use_case=env.get("ATHENA_SYSTEM1_GOAL_USE_CASE", defaults.goal_use_case),
             context_use_case=env.get("ATHENA_SYSTEM1_CONTEXT_USE_CASE", defaults.context_use_case),
@@ -135,6 +141,10 @@ class System1Config:
                 "REVIEWER_THRESHOLD_PROFILE", defaults.reviewer_threshold_profile
             ),
         )
+
+
+class _InputTooLarge(Exception):
+    """La entrada supera `max_input_chars`; no se envia al broker."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,7 +328,11 @@ class System1:
         threshold: float,
     ) -> Judgment:
         cancellation.raise_if_cancelled()
+        size = len(json.dumps(request.input, ensure_ascii=False, default=str))
         try:
+            if size > self.config.max_input_chars:
+                # Rechazo local con el mismo codigo que daria el broker: nunca un recorte.
+                raise _InputTooLarge
             result = await await_cancellable(
                 self.client.judge(request, cancellation),
                 cancellation,
@@ -342,6 +356,8 @@ class System1:
             )
         except (CancellationError, ProcessCancelledError):
             raise
+        except _InputTooLarge:
+            result = Judgment(reason_code="INPUT_TOO_LARGE")
         except Exception as error:
             result = Judgment(reason_code=type(error).__name__)
         usable = result.accepted and (result.confidence or 0) >= threshold
@@ -357,6 +373,7 @@ class System1:
                     "provider": result.provider,
                     "model": result.model,
                     "threshold": threshold,
+                    "input_chars": size,
                     "latency_ms": result.latency_ms,
                     "reason_code": result.reason_code
                     if usable

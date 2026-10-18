@@ -23,6 +23,12 @@ class ToolValidationError(AthenaRuntimeError):
     code = "tool_validation_error"
 
 
+class UnknownRunError(ToolValidationError):
+    """Ningun run vivo con ese id. Un cliente lo distingue de una peticion mal formada."""
+
+    code = "not_found"
+
+
 class PermissionDeniedError(AthenaRuntimeError):
     code = "permission_denied"
 

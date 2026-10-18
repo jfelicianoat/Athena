@@ -57,6 +57,16 @@ from athena.verification import (
 from athena.working_state import RecordedError
 from athena.workspace import Workspace
 
+#: Lo que cuenta el rescate segun por que se iba a abandonar el run.
+_ESTANCADO = (
+    "El modelo se detuvo por repetirse sin avanzar. Lo que dejó escrito en el proyecto sí "
+    "supera la verificación de este trabajo; la evidencia va adjunta."
+)
+_MODELO_ROTO = (
+    "El modelo dejó de responder bien antes de dar el trabajo por terminado. Lo que dejó "
+    "escrito en el proyecto sí supera la verificación de este trabajo; la evidencia va adjunta."
+)
+
 
 class FinalizacionMixin(EjecucionMixin):
     """Cierre del trabajo: progreso, verificacion, reparacion y rescate."""
@@ -297,14 +307,17 @@ class FinalizacionMixin(EjecucionMixin):
         workspace: Workspace,
         cancellation: CancellationToken,
         budget: RuntimeBudget,
+        *,
+        motivo: str = _ESTANCADO,
     ) -> AgentRunResult | None:
         """Un ultimo intento de comprobar si el trabajo ya estaba hecho. Uno, no un ciclo.
 
-        Se llama cuando el run se va a abandonar: por estancamiento o por quedarse sin
-        iteraciones. Las dos son la misma situacion vista de cerca —el bucle se acaba y en
-        el disco puede haber un trabajo terminado que nadie ha mirado—. Corre la misma
-        verificacion que el camino normal —el mismo `_run_verification`, no una version
-        parecida— y solo termina el run si esa evidencia da para terminarlo.
+        Se llama cuando el run se va a abandonar: por estancamiento, por quedarse sin
+        iteraciones o porque el modelo dejo de responder. Las tres son la misma situacion
+        vista de cerca —el bucle se acaba y en el disco puede haber un trabajo terminado
+        que nadie ha mirado—. Corre la misma verificacion que el camino normal —el mismo
+        `_run_verification`, no una version parecida— y solo termina el run si esa
+        evidencia da para terminarlo.
 
         Si no da, devuelve `None` y el run se abandona como estaba previsto: esto no es un
         ciclo de reparacion ni una segunda oportunidad para el modelo, es leer una vez lo
@@ -317,13 +330,7 @@ class FinalizacionMixin(EjecucionMixin):
         # El modelo nunca dio una respuesta final —estaba dando vueltas—, asi que no se
         # inventa una: se dice lo que paso. Poner aqui una frase en su nombre seria
         # atribuirle una conclusion que no llego a sacar.
-        aviso = ModelResponse(
-            "El modelo se detuvo por repetirse sin avanzar. Lo que dejó escrito "
-            "en el proyecto sí supera la verificación de este trabajo; la evidencia va "
-            "adjunta.",
-            "athena",
-            "stop",
-        )
+        aviso = ModelResponse(motivo, "athena", "stop")
         try:
             verification, _ = await self._run_verification(aviso, data, workspace, cancellation)
         except (CancellationError, ProcessCancelledError):

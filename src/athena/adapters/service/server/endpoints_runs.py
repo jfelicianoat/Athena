@@ -30,6 +30,12 @@ from athena.run_event_log import replay
 from athena.types import JSONObject
 from athena.workspace import Workspace
 
+#: Un 404 de aprobacion no es un fallo del run: la pregunta ya se contesto o caduco (I-09).
+_NO_APPROVAL = (
+    "No open approval request with that id: it was already decided or it expired. "
+    "Keep reading the event stream; a new request may follow."
+)
+
 
 class EndpointsRunsMixin(TransporteMixin):
     """Todo lo que cuelga de `/v1/runs`."""
@@ -149,8 +155,11 @@ class EndpointsRunsMixin(TransporteMixin):
             return Response(404, error_to_json("not_found", f"Unknown run: {run_id}"))
         return Response(200, session_to_json(record))
 
-    def _rollback_points(self, run_id: str) -> Response:
+    async def _rollback_points(self, run_id: str) -> Response:
         """Que se podria deshacer de este run, sin deshacer nada."""
+        if await self.registry.snapshot(run_id) is None:
+            # Sin esto, un id equivocado contestaba «nada que deshacer» (I-03).
+            return Response(404, error_to_json("not_found", f"Unknown run: {run_id}"))
         libro = self.registry.orchestrator.ledger_for(run_id)
         if libro is None:
             return Response(
@@ -256,7 +265,7 @@ class EndpointsRunsMixin(TransporteMixin):
         )
         pending = self.approvals.acknowledge(request_id, window)
         if pending is None or pending.run_id != run_id:
-            return Response(404, error_to_json("not_found", "No such approval request"))
+            return Response(404, error_to_json("not_found", _NO_APPROVAL))
         return Response(200, pending.to_json())
 
     def _decide(self, run_id: str, request_id: str, request: Request) -> Response:
@@ -275,7 +284,7 @@ class EndpointsRunsMixin(TransporteMixin):
             )
         existing = self.approvals.get(request_id)
         if existing is None or existing.run_id != run_id:
-            return Response(404, error_to_json("not_found", "No such approval request"))
+            return Response(404, error_to_json("not_found", _NO_APPROVAL))
         if existing.consumed:
             # Single use: a replayed POST must not approve a second action.
             return Response(409, error_to_json("already_resolved", "This request was answered"))

@@ -32,9 +32,11 @@ from athena.errors import (
     AthenaRuntimeError,
     ToolValidationError,
 )
+from athena.events import EventName, RuntimeEvent
 from athena.identity import IdentityDirectory
 from athena.project_memory import SqliteProjectMemory, VerificationState
 from athena.tools import ToolResultReference
+from athena.types import JSONObject
 
 
 class EndpointsVariosMixin(EndpointsRunsMixin):
@@ -256,7 +258,7 @@ class EndpointsVariosMixin(EndpointsRunsMixin):
                     await _send(
                         writer,
                         "event",
-                        event_to_json(missed_event),
+                        self._as_sent(missed_event),
                         event_id=missed_event.event_id,
                     )
             else:
@@ -292,8 +294,25 @@ class EndpointsVariosMixin(EndpointsRunsMixin):
                     # Queued during the replay window. Sending it twice would make a
                     # client that counts things count them twice.
                     continue
-                await _send(writer, "event", event_to_json(event), event_id=event.event_id)
+                await _send(writer, "event", self._as_sent(event), event_id=event.event_id)
         except (ConnectionResetError, BrokenPipeError):
             pass
         finally:
             self.registry.unsubscribe(subscriber)
+
+    def _as_sent(self, event: RuntimeEvent) -> JSONObject:
+        """El evento tal como sale por el stream, con la vigencia de una aprobacion al dia.
+
+        Una peticion de aprobacion puede llegar al cliente ya contestada o caducada: por el
+        replay de `Last-Event-ID`, o porque estuvo en la cola mientras la resolvia otro
+        (I-09). Enviarla como «esperando decision» invita a contestar y recibir un 404 por
+        una pregunta que ya no existe.
+        """
+        body = event_to_json(event)
+        payload = event.payload
+        if event.name is EventName.PERMISSION_REQUESTED and payload.get("awaiting_decision"):
+            request_id = str(payload.get("request_id") or event.correlation_id or "")
+            pending = self.approvals.get(request_id)
+            if pending is None or pending.consumed:
+                return {**body, "payload": {**payload, "awaiting_decision": False, "stale": True}}
+        return body

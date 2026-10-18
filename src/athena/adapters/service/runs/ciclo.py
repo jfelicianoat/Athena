@@ -32,7 +32,7 @@ from athena.cancellation import (
     CancellationToken,
     chained_source,
 )
-from athena.errors import AthenaRuntimeError, ToolValidationError
+from athena.errors import AthenaRuntimeError, ToolValidationError, UnknownRunError
 from athena.events import EventName, RuntimeEvent
 from athena.goals import GoalBoard
 from athena.graph_store import StoredPlan
@@ -282,7 +282,7 @@ class CicloMixin(ConstruccionMixin):
         """
         record = await self.session_store.load(run_id)
         if record is None:
-            raise ToolValidationError(f"Unknown run: {run_id}")
+            raise UnknownRunError(f"Unknown run: {run_id}")
         if not record.resumable:
             raise ToolValidationError(
                 f"Run {run_id} is {record.status.value}, not recovery_pending"
@@ -475,5 +475,5 @@ class CicloMixin(ConstruccionMixin):
     def _require(self, run_id: str) -> LiveRun:
         run = self._runs.get(run_id)
         if run is None:
-            raise ToolValidationError(f"Unknown or finished run: {run_id}")
+            raise UnknownRunError(f"Unknown or finished run: {run_id}")
         return run

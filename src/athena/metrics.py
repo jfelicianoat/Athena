@@ -263,6 +263,15 @@ class MetricsCollector:
                 if event.payload.get("disagreement") is True:
                     increment("shadow_disagreements")
 
+        if event.name is EventName.VERIFICATION_FAILED and _count(
+            metrics.system1, "context_excluded"
+        ):
+            # Caso B: una verificacion que falla despues de haber quitado contexto es la
+            # senal medible de contexto insuficiente. Es sospecha, no causa demostrada.
+            metrics.system1["verification_failures_after_context_filtering"] = (
+                _count(metrics.system1, "verification_failures_after_context_filtering") + 1
+            )
+
         terminal = _TERMINAL.get(event.name)
         if terminal is not None:
             # A graph event never downgrades a run that already reported: the outer result

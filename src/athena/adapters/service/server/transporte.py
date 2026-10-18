@@ -38,6 +38,7 @@ from athena.errors import (
     GoalConflict,
     ToolResultUnavailableError,
     ToolValidationError,
+    UnknownRunError,
     WorkspaceBoundaryError,
     WorkspacePathNotFoundError,
 )
@@ -49,6 +50,46 @@ _BODY_TIMEOUT = 30.0
 #: Conexiones abiertas a la vez. El servicio es loopback, pero sin techo un cliente con
 #: errores puede agotar descriptores y dejar a los demas sin servicio.
 _MAX_CONNECTIONS = 64
+
+#: Rutas y metodos de `_dispatch` (mas el SSE). Solo sirve para contestar 405 con `Allow`
+#: cuando la ruta existe con otro metodo; `test_every_route_in_the_table_is_served` vigila
+#: que no se desfase del enrutado.
+_ROUTES: tuple[tuple[str, str], ...] = (
+    ("/v1/health", "GET"),
+    ("/v1/memory", "GET"),
+    ("/v1/memory/{}/confirm", "POST"),
+    ("/v1/memory/{}", "DELETE"),
+    ("/v1/profiles", "GET"),
+    ("/v1/models", "GET"),
+    ("/v1/metrics", "GET"),
+    ("/v1/auth/check", "GET"),
+    ("/v1/runs", "GET"),
+    ("/v1/runs", "POST"),
+    ("/v1/runs/{}", "GET"),
+    ("/v1/runs/{}/events", "GET"),
+    ("/v1/runs/{}/history", "GET"),
+    ("/v1/runs/{}/goal", "GET"),
+    ("/v1/runs/{}/goal", "POST"),
+    ("/v1/runs/{}/rollback", "GET"),
+    ("/v1/runs/{}/rollback", "POST"),
+    ("/v1/runs/{}/cancel", "POST"),
+    ("/v1/runs/{}/resume", "POST"),
+    ("/v1/runs/{}/approvals/{}/ack", "POST"),
+    ("/v1/runs/{}/approvals/{}", "POST"),
+    ("/v1/results/{}", "GET"),
+    ("/v1/identity/users", "POST"),
+    ("/v1/identity/link-codes", "POST"),
+    ("/v1/identity/users/{}/links", "GET"),
+)
+
+
+def _fits(path: str, template: str) -> bool:
+    holes = template.count("{}")
+    if holes == 0:
+        return path == template
+    if holes == 1:
+        return _match(path, template) is not None
+    return _match2(path, template) is not None
 
 
 class _BadRequest(Exception):
@@ -77,7 +118,7 @@ class TransporteMixin:
         async def _get_run(self, run_id: str) -> Response: ...
         async def _history(self, run_id: str, request: Request) -> Response: ...
         def _revise_goal(self, run_id: str, request: Request) -> Response: ...
-        def _rollback_points(self, run_id: str) -> Response: ...
+        async def _rollback_points(self, run_id: str) -> Response: ...
         async def _rollback(self, run_id: str, request: Request) -> Response: ...
         async def _resume_run(self, run_id: str, request: Request) -> Response: ...
         def _acknowledge(self, run_id: str, request_id: str) -> Response: ...
@@ -267,7 +308,8 @@ class TransporteMixin:
             f"HTTP/1.1 {response.status} {reason}\r\n"
             f"Content-Type: {content_type}\r\n"
             f"Content-Length: {len(body)}\r\n"
-            "Cache-Control: no-store\r\n"
+            + "".join(f"{name}: {value}\r\n" for name, value in response.headers)
+            + "Cache-Control: no-store\r\n"
             "Connection: close\r\n\r\n"
         ).encode("latin-1")
         writer.write(head + body)
@@ -286,6 +328,8 @@ class TransporteMixin:
             return Response(404, error_to_json(exc.code, exc.message))
         except ToolResultUnavailableError as exc:
             return Response(410, error_to_json(exc.code, exc.message))
+        except UnknownRunError as exc:
+            return Response(404, error_to_json(exc.code, exc.message))
         except ToolValidationError as exc:
             return Response(400, error_to_json(exc.code, exc.message))
         except GoalConflict as exc:
@@ -366,10 +410,19 @@ class TransporteMixin:
         if (run_id := _match(path, "/v1/runs/{}/goal")) and method == "POST":
             return self._revise_goal(run_id, request)
         if (run_id := _match(path, "/v1/runs/{}/rollback")) and method == "GET":
-            return self._rollback_points(run_id)
+            return await self._rollback_points(run_id)
         if (run_id := _match(path, "/v1/runs/{}/rollback")) and method == "POST":
             return await self._rollback(run_id, request)
         if (run_id := _match(path, "/v1/runs/{}/cancel")) and method == "POST":
+            if run_id in self.registry.live_ids():
+                finished = self.registry.run(run_id).finished
+            else:
+                finished = await self.registry.snapshot(run_id) is not None
+            if finished:
+                # Existe pero ya acabo: no es «no existe» (404) ni una peticion mala (400).
+                return Response(
+                    409, error_to_json("run_finished", f"The run already finished: {run_id}")
+                )
             await self.registry.cancel(run_id)
             return Response(202, {"run_id": run_id, "cancelling": True})
         if (run_id := _match(path, "/v1/runs/{}/resume")) and method == "POST":
@@ -386,6 +439,17 @@ class TransporteMixin:
             return await self._issue_link_code(request)
         if (user_id := _match(path, "/v1/identity/users/{}/links")) and method == "GET":
             return await self._list_links(user_id)
+        allowed = sorted({verb for template, verb in _ROUTES if _fits(path, template)})
+        if allowed:
+            # La ruta existe con otro metodo: 405 y cuales valen, no «no existe» (I-04).
+            return Response(
+                405,
+                error_to_json(
+                    "method_not_allowed",
+                    f"{method} is not allowed on {path}; use {', '.join(allowed)}",
+                ),
+                headers=(("Allow", ", ".join(allowed)),),
+            )
         return Response(404, error_to_json("not_found", f"No route for {method} {path}"))
 
     # -- handlers ---------------------------------------------------------

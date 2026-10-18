@@ -152,6 +152,9 @@ def test_connection_reports_broker_authentication_without_submitting_work(
             paths.append(path)
             if path == "/health":
                 return 200, {"status": "healthy"}
+            if path == "/api/v1/models":
+                # Solo lectura del catalogo, para avisar de modelos sin `completion` (I-06).
+                return 200, {"models": []}
             assert path == "/api/v1/auth/check"
             return status, payload
 
@@ -162,7 +165,9 @@ def test_connection_reports_broker_authentication_without_submitting_work(
     result = asyncio.run(check_connection(_configuration(tmp_path)))
     assert result.ok is expected
     assert message in result.message
-    assert paths == ["/health", "/api/v1/auth/check"]
+    # Nada que envie trabajo: salud, credencial y, si se acepto, el catalogo.
+    expected_paths = ["/health", "/api/v1/auth/check"] + (["/api/v1/models"] if expected else [])
+    assert paths == expected_paths
 
 
 def test_broker_requires_a_token_before_starting(tmp_path: Path) -> None:
