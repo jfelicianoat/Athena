@@ -10,10 +10,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from athena.adapters.ai_os_core import AiOsCoreGovernor
 from athena.adapters.service.approvals import (
     DEFAULT_APPROVAL_TIMEOUT_SECONDS,
     DEFAULT_DELIVERY_TIMEOUT_SECONDS,
@@ -105,7 +107,14 @@ class ConstruccionMixin:
         profiles: ProfileRegistry | None = None,
         models: ModelCatalog | None = None,
         system1: System1 | None = None,
+        governor: AiOsCoreGovernor | None = None,
     ) -> None:
+        #: AI OS Core, si este despliegue lo tiene: autoriza cada run y recibe su recibo.
+        self.governor = governor
+        #: run -> flow_id con que el monitor de Core sigue la petición (sólo con Core).
+        self._flows: dict[str, str] = {}
+        #: Cuándo empezó cada llamada al modelo en vuelo, para medir su latencia.
+        self._model_started: dict[str, datetime] = {}
         #: Los perfiles que este despliegue ofrece. Uno solo por defecto seria decir que
         #: Athena sirve para una cosa, que es justo lo que la fase venia a desmentir.
         self.profiles = profiles or ProfileRegistry()
@@ -150,6 +159,40 @@ class ConstruccionMixin:
         #: en vivo, para poder contarla mientras pasa.
         self._lineage: dict[str, str] = {}
         event_bus.subscribe(self._fan_out)
+        if governor is not None:
+            event_bus.subscribe(
+                self._model_hops,
+                (EventName.MODEL_STARTED, EventName.MODEL_COMPLETED, EventName.MODEL_FAILED),
+            )
+
+    # -- monitor de AI OS Core --------------------------------------------
+
+    def _model_hops(self, event: RuntimeEvent) -> None:
+        """Cada llamada al modelo es un salto Athena -> Broker para el monitor de Core.
+
+        Se entera por el bus como cualquier observador: el runtime no sabe que Core existe.
+        """
+        governor = self.governor
+        flow = self._flows.get(self._lineage.get(event.session_id, event.session_id))
+        if governor is None or flow is None:
+            return
+        key = event.correlation_id or event.session_id
+        if event.name is EventName.MODEL_STARTED:
+            self._model_started[key] = event.occurred_at
+            work = governor.hop(flow, "request", "llamada al modelo", dict(event.payload))
+        else:
+            began = self._model_started.pop(key, None)
+            details: dict[str, Any] = dict(event.payload)
+            if began is not None:
+                details["latency_ms"] = int((event.occurred_at - began).total_seconds() * 1000)
+            if event.name is EventName.MODEL_COMPLETED:
+                work = governor.hop(flow, "response", "respuesta del modelo", details)
+            else:
+                work = governor.hop(flow, "error", str(details.get("error_code", "")), details)
+        with contextlib.suppress(RuntimeError):  # sin bucle no hay a quien avisar
+            pending = asyncio.ensure_future(work)
+            self._writes.add(pending)
+            pending.add_done_callback(self._writes.discard)
 
     # -- fan-out ----------------------------------------------------------
 

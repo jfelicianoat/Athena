@@ -173,6 +173,28 @@ deployment with no catalogue keeps fixed/routed behaviour and `/v1/models` answe
 `models_fixed`. See
 [ADR-034](docs/adr/034-the-model-is-a-choice-of-the-run-and-the-deployment-bounds-it.md).
 
+## AI OS Core as director (0.3.2)
+
+Optional. Without `ATHENA_CORE_URL` nothing changes. With it (and the per-app token in
+`ATHENA_CORE_TOKEN`), both the service and the desktop app ask AI OS Core before creating or
+resuming a run: `RunRegistry` evaluates the `athena:broker` policy with `operation_type:
+agent_run`, `data_classification: confidential`, the model, profile, writes and exec modes, and
+only goes on with an executable ALLOW. Anything else means no run and no model call: the
+service answers **403** `core_denied`, or **503** `core_unavailable` when Core does not answer
+(fail closed). Each run leaves its receipt in Core (`accepted`, then `succeeded`,
+`failed_terminal` or `cancelled`); a lost receipt never fails the run. The adapter is
+`athena/adapters/ai_os_core.py` (stdlib only); the runtime does not know Core exists.
+Real end-to-end check: `scripts/verify_ai_os_core.py <core> <athena_token> <director_token>
+<broker> <folder>` (9 checks, green on 2026-10-18 against the real Broker with
+`muse-glimmer:latest`).
+
+**0.3.3 — Core monitor.** Runs show up live in `<core>/monitor`. A client that wants its request
+followed end to end sends `X-Flow-Id` on `POST /v1/runs`; otherwise the run id is the flow. The
+flow id goes into the authorization context and the receipts, and every model call becomes an
+Athena → Broker hop (request, then response with model and latency, or error). The hops come from
+the event bus (`MODEL_STARTED/COMPLETED/FAILED`), like any other observer, and are fire and
+forget: a monitor that is down never reaches the run.
+
 ## Verification and self-repair
 
 A run completes only when the project's own checks pass. Athena discovers those commands

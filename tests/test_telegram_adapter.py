@@ -592,8 +592,15 @@ def test_athena_being_unavailable_is_reported_not_crashed(tmp_path: Path) -> Non
     """
 
     class _BrokenRegistry(RunRegistry):
-        async def start(self, objective: str, workspace: Any, options: Any = None) -> str:
-            del objective, workspace, options
+        async def start(
+            self,
+            objective: str,
+            workspace: Any,
+            options: Any = None,
+            *,
+            flow_id: str | None = None,
+        ) -> str:
+            del objective, workspace, options, flow_id
             raise ToolValidationError("Athena is not available right now")
 
     async def scenario() -> None:

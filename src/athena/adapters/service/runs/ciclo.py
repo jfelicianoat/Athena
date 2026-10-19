@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Coroutine, Iterator
 from dataclasses import replace
+from typing import Any
 from uuid import uuid4
 
+from athena.adapters.ai_os_core import valid_flow_id
 from athena.adapters.service.approvals import (
     PendingApproval,
 )
@@ -74,6 +76,9 @@ def run_manifest(objective: str, workspace: Workspace, options: RunOptions) -> J
         "objective": objective,
         "options": options.to_json(),
     }
+
+
+_RECEIPT_STATUS = {"completed": "succeeded", "failed": "failed_terminal", "cancelled": "cancelled"}
 
 
 class CicloMixin(ConstruccionMixin):
@@ -214,7 +219,12 @@ class CicloMixin(ConstruccionMixin):
         return resultado
 
     async def start(
-        self, objective: str, workspace: Workspace, options: RunOptions | None = None
+        self,
+        objective: str,
+        workspace: Workspace,
+        options: RunOptions | None = None,
+        *,
+        flow_id: str | None = None,
     ) -> str:
         """Begin a run and return only once it is genuinely addressable.
 
@@ -231,13 +241,22 @@ class CicloMixin(ConstruccionMixin):
         # Y el modelo por el mismo motivo. Antes de `decide`, que gasta una lectura del
         # repositorio y puede gastar una llamada al modelo: rechazar despues de eso seria
         # cobrar el trabajo de preparar un run que ya se sabia invalido.
-        self.model_for(settings)
+        model = self.model_for(settings)
         # La forma se decide antes de que exista el run. Al revés, una petición rechazada
         # —pedir grafo donde no hay planificación— dejaba un run vivo que nadie iba a
         # ejecutar ni a cerrar, contado en `/v1/health` y ocupando memoria hasta el
         # reinicio.
         shape = self.orchestrator.decide(workspace, objective, mode=settings.execution_mode)
         run_id = str(uuid4())
+        if self.governor is not None:
+            # El flujo de quien pidió el run, o uno propio: así lo sigue el monitor de Core
+            self._flows[run_id] = valid_flow_id(flow_id) or run_id
+        # Lo ultimo antes de que exista el run: sin ALLOW de Core no se crea ni se llama al modelo
+        try:
+            await self._authorize(run_id, settings, model)
+        except BaseException:
+            self._flows.pop(run_id, None)
+            raise
         source = CancellationSource()
         self._runs[run_id] = LiveRun(
             run_id,
@@ -271,6 +290,7 @@ class CicloMixin(ConstruccionMixin):
             raise AthenaRuntimeError("The run did not start in time") from None
         finally:
             unsubscribe()
+        self._report_outcome(run_id)
         return run_id
 
     async def resume(self, run_id: str, workspace: Workspace) -> str:
@@ -288,6 +308,9 @@ class CicloMixin(ConstruccionMixin):
                 f"Run {run_id} is {record.status.value}, not recovery_pending"
             )
         options = await self._resumed_options(run_id, record, workspace)
+        if self.governor is not None:
+            self._flows.setdefault(run_id, run_id)
+        await self._authorize(run_id, options, self.model_for(options))
         source = CancellationSource()
         stored = await self.orchestrator.stored_plan(run_id)
         if stored is not None:
@@ -314,6 +337,7 @@ class CicloMixin(ConstruccionMixin):
             self._runs[run_id].task = asyncio.ensure_future(
                 self._continue(run_id, stored, workspace, options, source)
             )
+            self._report_outcome(run_id)
             return run_id
 
         self._runs[run_id] = LiveRun(
@@ -323,7 +347,51 @@ class CicloMixin(ConstruccionMixin):
         self._runs[run_id].task = asyncio.ensure_future(
             loop.resume(run_id, workspace, source.token)
         )
+        self._report_outcome(run_id)
         return run_id
+
+    async def _authorize(self, run_id: str, options: RunOptions, model: str) -> None:
+        if self.governor is None:
+            return
+        await self.governor.authorize(
+            run_id,
+            {
+                "operation_type": "agent_run",
+                # Un run lee el proyecto de alguien: se trata como confidencial
+                "data_classification": "confidential",
+                "model": model,
+                "profile": options.profile,
+                "writes": options.writes.value,
+                "exec": options.execution.value,
+                "flow_id": self._flows.get(run_id, run_id),
+            },
+        )
+
+    def _report_outcome(self, run_id: str) -> None:
+        """Recibo en Core al empezar y al terminar; nunca bloquea ni tumba el run."""
+        governor, task = self.governor, self._runs[run_id].task
+        if governor is None or task is None:
+            return
+
+        def track(work: Coroutine[Any, Any, None]) -> None:
+            pending = asyncio.ensure_future(work)
+            self._writes.add(pending)
+            pending.add_done_callback(self._writes.discard)
+
+        def done(finished: asyncio.Task[AgentRunResult]) -> None:
+            if finished.cancelled():
+                status = "cancelled"
+            elif finished.exception() is not None:
+                status = "failed_terminal"
+            else:
+                status = _RECEIPT_STATUS.get(finished.result().status.value, "failed_terminal")
+            with contextlib.suppress(RuntimeError):  # el bucle ya se cerro: no hay a quien avisar
+                track(governor.receipt(run_id, status, evidence))
+            self._flows.pop(run_id, None)
+
+        evidence = {"run_id": run_id, "flow_id": self._flows.get(run_id, run_id)}
+        track(governor.receipt(run_id, "accepted", evidence))
+        task.add_done_callback(done)
 
     async def _resumed_options(
         self, run_id: str, record: SessionRecord, workspace: Workspace

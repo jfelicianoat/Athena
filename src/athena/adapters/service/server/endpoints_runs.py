@@ -66,7 +66,9 @@ class EndpointsRunsMixin(TransporteMixin):
         key = request.headers.get("idempotency-key", "").strip()
         if key:
             return await self._idempotent_start(key, request, objective, root, payload)
-        return await self._create_run(objective, root, payload, status=201)
+        return await self._create_run(
+            objective, root, payload, status=201, flow_id=request.headers.get("x-flow-id")
+        )
 
     async def _idempotent_start(
         self,
@@ -86,7 +88,7 @@ class EndpointsRunsMixin(TransporteMixin):
         window that matters is precisely the one where the first call has not finished:
         a check-then-act across `await registry.start(...)` would let both callers miss.
         """
-        del request
+        flow_id = request.headers.get("x-flow-id")
         existing = self._idempotency.get(key)
         if existing is not None:
             try:
@@ -111,7 +113,7 @@ class EndpointsRunsMixin(TransporteMixin):
         pending: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self._idempotency[key] = pending
         try:
-            response = await self._create_run(objective, root, payload, status=201)
+            response = await self._create_run(objective, root, payload, status=201, flow_id=flow_id)
             created = (response.payload or {}).get("run_id")
             if not isinstance(created, str):
                 raise AthenaRuntimeError("A created run has no id to be idempotent about")
@@ -134,11 +136,12 @@ class EndpointsRunsMixin(TransporteMixin):
             self._idempotency.pop(next(iter(self._idempotency)))
 
     async def _create_run(
-        self, objective: str, root: str, payload: JSONObject, *, status: int
+        self, objective: str, root: str, payload: JSONObject, *, status: int, flow_id: str | None
     ) -> Response:
         workspace = build_workspace(root, self.config.authorized_workspace)
         options = RunOptions.from_json(payload)
-        run_id = await self.registry.start(objective, workspace, options)
+        # X-Flow-Id: la petición viene de otra app y el monitor de Core la sigue de punta a punta
+        run_id = await self.registry.start(objective, workspace, options, flow_id=flow_id)
         return Response(
             status,
             {

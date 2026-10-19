@@ -12,6 +12,7 @@ import contextlib
 import hmac
 from typing import TYPE_CHECKING
 
+from athena.adapters.ai_os_core import CoreUnavailableError
 from athena.adapters.service.approvals import ApprovalRegistry
 from athena.adapters.service.projections import (
     WIRE_VERSION,
@@ -36,6 +37,7 @@ from athena.cancellation import CancellationSource
 from athena.errors import (
     AthenaRuntimeError,
     GoalConflict,
+    PermissionDeniedError,
     ToolResultUnavailableError,
     ToolValidationError,
     UnknownRunError,
@@ -322,6 +324,11 @@ class TransporteMixin:
             return await self._dispatch(request)
         except WorkspaceBoundaryError as exc:
             return Response(403, error_to_json("workspace_boundary", exc.message))
+        except CoreUnavailableError as exc:
+            # El director no contesta: no es un «no», es un «ahora no se puede»
+            return Response(503, error_to_json(exc.code, exc.message))
+        except PermissionDeniedError as exc:
+            return Response(403, error_to_json(exc.code, exc.message))
         except WorkspacePathNotFoundError as exc:
             # 404, no 403: la ruta esta dentro y no esta. Devolver «prohibido» por algo que
             # solo falta manda a revisar permisos en vez de el nombre del fichero.

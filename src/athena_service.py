@@ -39,6 +39,7 @@ from athena.adapters.ai_broker import (
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
     AiBrokerModelProvider,
 )
+from athena.adapters.ai_os_core import governor_from_environment
 from athena.adapters.openai_compatible import OpenAICompatibleModelProvider
 from athena.adapters.service import AthenaService, RunRegistry, ServiceConfig
 from athena.adapters.service.launch import ServiceEndpoint, service_ready_line
@@ -298,6 +299,8 @@ def build_service(settings: ServiceSettings) -> AthenaService:
         # Los hechos duran aunque el proceso no: tras un reinicio, el estado dice dónde
         # quedó un run y esto dice cómo llegó.
         event_log=RunEventLog(settings.state_dir / "events.db"),
+        # El director del ecosistema, si se configuró: sin su ALLOW no se crea ningún run.
+        governor=governor_from_environment(),
         # Los modelos que este despliegue admite. `None` cuando no hay ninguno declarado:
         # el servicio corre como siempre y `/v1/models` contesta que aqui no se elige.
         models=settings.model_catalog(),

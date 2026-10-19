@@ -23,6 +23,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from athena.adapters.ai_broker import AiBrokerModelProvider
+from athena.adapters.ai_os_core import governor_from_environment
 from athena.adapters.openai_compatible import OpenAICompatibleModelProvider
 from athena.adapters.service import CapabilityMode as ServiceMode
 from athena.adapters.service import RunOptions, RunRegistry
@@ -211,6 +212,7 @@ def build_registry(
             checkpoints=stores.checkpoints,
         ),
         event_log=stores.events,
+        governor=governor_from_environment(),
     )
 
 
