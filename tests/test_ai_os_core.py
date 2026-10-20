@@ -42,6 +42,8 @@ class _Core:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         #: El monitor de Core caído o roto no debe notarse en el run.
         self.hops_fail = False
+        #: El turno en la cola del Broker que el director fija en el monitor.
+        self.broker_priority: int | None = None
 
 
 @pytest.fixture
@@ -56,7 +58,8 @@ def core() -> Iterator[tuple[_Core, str]]:
             state.calls.append((self.path, body))
             if self.path == "/api/v1/policies/evaluate":
                 allow = state.authorization == "ALLOW"
-                reply = {"authorization": state.authorization, "executable": allow}
+                reply = {"authorization": state.authorization, "executable": allow,
+                         "broker_priority": state.broker_priority}
             else:
                 reply = {}
             data = json.dumps(reply).encode()
@@ -161,6 +164,54 @@ def test_allow_runs_and_leaves_receipts(tmp_path: Path, core: tuple[_Core, str])
     expected = {"completed": "succeeded", "failed": "failed_terminal"}[status.value]
     assert sorted(r["status"] for r in receipts) == sorted(["accepted", expected])
     assert state.calls[0][1]["resource_id"] == run_id
+
+
+def test_the_core_turn_reaches_the_run_and_the_broker_body(
+    tmp_path: Path, core: tuple[_Core, str]
+) -> None:
+    from athena.adapters.ai_broker import QUEUE_PRIORITY, AiBrokerModelProvider, _prepare_request
+    from athena.cancellation import CancellationSource
+    from athena.models import ModelMessage, ModelRequest, ModelRole
+
+    state, url = core
+    state.broker_priority = 10
+    registry, provider = _registry(tmp_path, AiOsCoreGovernor(url, "tok-athena"))
+    seen: list[int | None] = []
+    complete = provider.complete
+
+    async def recording(request: Any, cancellation: Any) -> Any:
+        seen.append(QUEUE_PRIORITY.get())
+        return await complete(request, cancellation)
+
+    provider.complete = recording  # type: ignore[method-assign]
+
+    async def scenario() -> None:
+        run_id = await registry.start("Describe el proyecto", _repo(tmp_path), _READ_ONLY)
+        await registry.wait(run_id)
+        await _receipts(state, 2)
+        await registry.shutdown()
+
+    asyncio.run(scenario())
+    assert seen and set(seen) == {10}, "cada llamada del run lleva el turno de Core"
+
+    broker = AiBrokerModelProvider("http://127.0.0.1:9", "tok")
+    bodies: list[Any] = []
+
+    async def fake_call(method: str, path: str, body: Any, cancellation: Any) -> tuple[int, Any]:
+        bodies.append(body)
+        return 202, {"task_id": "task_1"}
+
+    broker._call = fake_call  # type: ignore[method-assign]
+    request = ModelRequest((ModelMessage(ModelRole.USER, "hola"),))
+
+    async def submit(priority: int | None) -> None:
+        QUEUE_PRIORITY.set(priority)
+        await broker._submit(request, _prepare_request(request), CancellationSource().token)
+
+    asyncio.run(submit(10))
+    asyncio.run(submit(None))
+    assert bodies[0]["priority"] == 10
+    assert "priority" not in bodies[1]  # sin turno fijado, el 100 del Broker
 
 
 async def _receipts(state: _Core, count: int) -> None:

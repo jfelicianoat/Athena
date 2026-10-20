@@ -2,7 +2,7 @@
 
 #: Kept in step with `pyproject.toml`. The desktop window shows it, because the
 #: first question about any bug report is which build produced it.
-__version__ = "0.3.5"
+__version__ = "0.3.6"
 
 from athena.agent_loop import AgentLoop, AgentLoopConfig, AgentRunResult, AgentRunStatus
 from athena.cancellation import (

@@ -23,6 +23,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from athena.adapters.ai_broker import QUEUE_PRIORITY
 from athena.errors import PermissionDeniedError
 
 POLICY_SCOPE = "athena:broker"
@@ -70,6 +71,9 @@ class AiOsCoreGovernor:
             raise CoreUnavailableError(f"{error}. Por seguridad el run no se ha creado.") from None
         if decision.get("authorization") != "ALLOW" or decision.get("executable") is not True:
             raise CoreDeniedError(_denied_text(decision), details={"core_decision": decision})
+        # El turno que el director fijó a Athena en el monitor: lo hereda la tarea del run
+        priority = decision.get("broker_priority")
+        QUEUE_PRIORITY.set(priority if isinstance(priority, int) else None)
 
     async def hop(
         self,

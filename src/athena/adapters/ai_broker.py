@@ -29,6 +29,7 @@ import os
 import ssl
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import partial
 from typing import cast
@@ -57,6 +58,11 @@ from athena.models import (
     ModelUsage,
 )
 from athena.types import JSONObject, JSONValue
+
+#: Turn in the broker queue (Client_API 5.1.1, lower = sooner) for the current run. Whoever
+#: authorizes the run sets it before the run task exists, so the task inherits it; None = the
+#: broker default.
+QUEUE_PRIORITY: ContextVar[int | None] = ContextVar("athena_broker_queue_priority", default=None)
 
 #: How often to ask whether a task is done. Fast enough that a short answer feels
 #: immediate, slow enough that a long one does not cost hundreds of requests.
@@ -256,6 +262,9 @@ class AiBrokerModelProvider(ModelProvider):
             "idempotency_key": str(uuid4()),
             "content": {"prompt": prepared.prompt},
         }
+        priority = QUEUE_PRIORITY.get()
+        if priority is not None:
+            body["priority"] = priority
         if prepared.output_schema is not None:
             body["output"] = {
                 "format": "json",
