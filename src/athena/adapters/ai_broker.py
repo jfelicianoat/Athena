@@ -25,9 +25,12 @@ from __future__ import annotations
 import asyncio
 import http.client
 import json
+import os
+import ssl
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from typing import cast
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -58,6 +61,20 @@ from athena.types import JSONObject, JSONValue
 #: How often to ask whether a task is done. Fast enough that a short answer feels
 #: immediate, slow enough that a long one does not cost hundreds of requests.
 _POLL_INTERVAL_SECONDS = 1.0
+
+#: CA que firma el certificado HTTPS del Broker (la «AI Broker CA»). Solo se usa para el Broker:
+#: un `SSL_CERT_FILE` global rompería el HTTPS de internet.
+ENV_CA_CERT = "AI_BROKER_CA_CERT"
+DEFAULT_CA_CERT = r"C:\Agora\pki-broker\ca.crt"
+
+
+def broker_ssl_context() -> ssl.SSLContext:
+    """Confianza del sistema más la CA del Broker, si está en el equipo."""
+    context = ssl.create_default_context()
+    ca = os.environ.get(ENV_CA_CERT) or DEFAULT_CA_CERT
+    if os.environ.get(ENV_CA_CERT) or os.path.isfile(ca):
+        context.load_verify_locations(cafile=ca)
+    return context
 
 #: How long a single HTTP call may take. Not how long a task may take — that is the
 #: caller's timeout, and conflating them would make a slow model look like a dead broker.
@@ -90,7 +107,7 @@ class AiBrokerModelProvider(ModelProvider):
     def __init__(
         self,
         base_url: str,
-        token: str,
+        token: str | Callable[[bool], str | None],
         *,
         preferred_model: str | None = None,
         poll_interval_seconds: float = _POLL_INTERVAL_SECONDS,
@@ -360,17 +377,33 @@ class AiBrokerModelProvider(ModelProvider):
         body: Mapping[str, JSONValue] | None,
         cancellation: CancellationToken | None,
     ) -> tuple[int, JSONObject]:
-        connection_type = (
-            http.client.HTTPSConnection
+        connection_type: Callable[..., http.client.HTTPConnection] = (
+            partial(http.client.HTTPSConnection, context=broker_ssl_context())
             if self._url.scheme == "https"
             else http.client.HTTPConnection
         )
+        status, payload = self._call_once(connection_type, method, path, body, cancellation, False)
+        if status in (401, 403) and callable(self._token):
+            # El Broker se reinició y rotó su token: se pide el nuevo a AI OS Core y se reintenta una vez
+            status, payload = self._call_once(connection_type, method, path, body, cancellation, True)
+        return status, payload
+
+    def _call_once(
+        self,
+        connection_type: Callable[..., http.client.HTTPConnection],
+        method: str,
+        path: str,
+        body: Mapping[str, JSONValue] | None,
+        cancellation: CancellationToken | None,
+        refresh: bool,
+    ) -> tuple[int, JSONObject]:
+        token = (self._token(refresh) if callable(self._token) else self._token) or ""
         connection = connection_type(self._host, self._url.port, timeout=self._request_timeout)
         unsubscribe = cancellation.register(connection.close) if cancellation is not None else None
         # `x-admin-token`, not `Authorization`. The broker's own clients use it, and a
         # bearer header sails past its health endpoint while every write returns 403 —
         # which reads as a permissions problem rather than as the wrong header.
-        headers = {"Content-Type": "application/json", "x-admin-token": self._token}
+        headers = {"Content-Type": "application/json", "x-admin-token": token}
         encoded = json.dumps(body).encode("utf-8") if body is not None else None
         try:
             connection.request(method, path, body=encoded, headers=headers)

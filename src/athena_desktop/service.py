@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from athena.adapters.ai_os_core import broker_token_source
 from athena.adapters.service.launch import ServiceEndpoint, parse_service_ready
 from athena.process_tree import ProcessTreeHandle
 
@@ -101,8 +102,8 @@ def start_managed_service(
 ) -> ManagedAthenaService:
     if not request.broker_base_url.strip():
         raise ValueError("La URL de AI_Broker es obligatoria")
-    if not request.broker_token.strip():
-        raise ValueError("El token de AI_Broker es obligatorio")
+    if not request.broker_token.strip() and broker_token_source() is None:
+        raise ValueError("El token de AI_Broker es obligatorio (o AI OS Core en marcha, que lo da)")
     if not 0 <= request.port <= 65535:
         raise ValueError("El puerto del servicio de Athena está fuera de rango")
     if request.port:

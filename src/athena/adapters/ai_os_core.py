@@ -17,6 +17,7 @@ import contextlib
 import json
 import os
 import re
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -166,9 +167,75 @@ def valid_flow_id(value: str | None) -> str | None:
     return value if _FLOW_ID.match(value) else None
 
 
-def governor_from_environment() -> AiOsCoreGovernor | None:
-    """`ATHENA_CORE_URL` (y su token `ATHENA_CORE_TOKEN`), o `None`: sin Core todo sigue igual."""
-    url = os.environ.get("ATHENA_CORE_URL", "").strip()
-    if not url:
+def core_connection(principal: str = PRINCIPAL) -> tuple[str, str] | None:
+    """URL y token de esta app en Core, tal como Core los deja en su carpeta de conexión.
+
+    Core genera un token por app y lo escribe en %LOCALAPPDATA%/AIOSCore/conexion: así
+    no hay que pegar ninguno. Sin Core instalado (o sin haber arrancado nunca), None.
+    """
+    local = os.environ.get("LOCALAPPDATA")
+    folder = os.environ.get("AI_OS_CONNECT_DIR") or (str(Path(local, "AIOSCore", "conexion")) if local else "")
+    if not folder:
         return None
-    return AiOsCoreGovernor(url, os.environ.get("ATHENA_CORE_TOKEN", "").strip() or None)
+    try:
+        data = json.loads(Path(folder, f"{principal}.json").read_text(encoding="utf-8"))
+        url, token = str(data["core_url"]), str(data["token"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return (url, token) if url and token else None
+
+
+def core_settings() -> tuple[str, str | None] | None:
+    """`ATHENA_CORE_URL`/`ATHENA_CORE_TOKEN` y, si faltan, los que deja Core al arrancar."""
+    url = os.environ.get("ATHENA_CORE_URL", "").strip()
+    token = os.environ.get("ATHENA_CORE_TOKEN", "").strip() or None
+    found = core_connection()
+    if found and (not url or url.rstrip("/") == found[0].rstrip("/")):
+        url, token = url or found[0], token or found[1]
+    return (url, token) if url else None
+
+
+class CoreBrokerToken:
+    """El token del AI Broker, pedido a Core: el Broker lo rota en cada arranque.
+
+    Se llama en cada petición; `refresh=True` (tras un 401/403 del Broker) lo vuelve a
+    pedir. Si Core no lo tiene, se usa `fallback` (el token del entorno, si lo hay).
+    """
+
+    def __init__(self, core_url: str, core_token: str, fallback: str | None = None, timeout: float = 5.0) -> None:
+        self._url = core_url.rstrip("/") + "/api/v1/credentials/broker"
+        self._core_token = core_token
+        self._fallback = fallback
+        self._timeout = timeout
+        self._token: str | None = None
+
+    def __call__(self, refresh: bool = False) -> str | None:
+        if refresh or self._token is None:
+            self._token = self._fetch() or self._token
+        return self._token or self._fallback
+
+    def _fetch(self) -> str | None:
+        request = Request(self._url, headers={
+            "Authorization": f"Bearer {self._core_token}", "Accept": "application/json"})
+        try:
+            with urlopen(request, timeout=self._timeout) as response:  # noqa: S310 - URL de Core
+                token = json.load(response).get("token")
+        except (OSError, ValueError, AttributeError):
+            return None
+        return token if isinstance(token, str) and token else None
+
+
+def broker_token_source(fallback: str | None = None) -> CoreBrokerToken | None:
+    """Con Core, el token del Broker lo da Core (nadie lo pega); `fallback` queda de reserva."""
+    core = core_settings()
+    if core is None or not core[1]:
+        return None
+    return CoreBrokerToken(core[0], core[1], fallback or None)
+
+
+def governor_from_environment() -> AiOsCoreGovernor | None:
+    """Core del entorno o de su carpeta de conexión, o `None`: sin Core todo sigue igual."""
+    core = core_settings()
+    if core is None:
+        return None
+    return AiOsCoreGovernor(core[0], core[1])

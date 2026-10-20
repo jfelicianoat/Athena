@@ -26,3 +26,11 @@ def _no_attach_grace() -> Iterator[None]:
         yield
     finally:
         approvals.DEFAULT_ATTACH_GRACE_SECONDS = original
+
+
+@pytest.fixture(autouse=True)
+def _sin_conexion_real_con_core(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core deja URL y token de cada app en %LOCALAPPDATA%/AIOSCore/conexion: los tests no la ven."""
+    monkeypatch.setenv("AI_OS_CONNECT_DIR", str(tmp_path_factory.mktemp("conexion_vacia")))

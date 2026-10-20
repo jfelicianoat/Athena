@@ -868,8 +868,8 @@ class AthenaDesktopApp:
             self._switch_credential()
         if provider is ProviderKind.AI_BROKER:
             self.provider_hint.set(
-                "Token del broker (x-admin-token). También puedes definir ATHENA_BROKER_TOKEN. "
-                "Se guarda solo en memoria y solo para esta URL."
+                "Con AI OS Core no hace falta: Core da el token del broker y lo renueva solo. "
+                "Si lo escribes, queda de reserva (solo en memoria y para esta URL)."
             )
         else:
             self.provider_hint.set(

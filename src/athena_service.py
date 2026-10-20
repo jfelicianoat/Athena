@@ -39,7 +39,7 @@ from athena.adapters.ai_broker import (
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
     AiBrokerModelProvider,
 )
-from athena.adapters.ai_os_core import governor_from_environment
+from athena.adapters.ai_os_core import broker_token_source, governor_from_environment
 from athena.adapters.openai_compatible import OpenAICompatibleModelProvider
 from athena.adapters.service import AthenaService, RunRegistry, ServiceConfig
 from athena.adapters.service.launch import ServiceEndpoint, service_ready_line
@@ -153,8 +153,8 @@ class ServiceSettings:
         service_token = os.environ.get("ATHENA_SERVICE_TOKEN", "").strip()
         if not broker_url:
             raise ValueError("ATHENA_BROKER_BASE_URL no está configurada")
-        if not broker_token:
-            raise ValueError("ATHENA_BROKER_TOKEN no está configurado")
+        if not broker_token and broker_token_source() is None:
+            raise ValueError("ATHENA_BROKER_TOKEN no está configurado (ni hay AI OS Core que lo dé)")
         if not service_token:
             # Ausente significa «genérala tú», no «arranca sin credencial». Es el camino
             # normal de un proceso gestionado: quien lo lanza recoge la credencial del
@@ -235,7 +235,7 @@ def build_provider(settings: ServiceSettings) -> ModelProvider:
     """
     broker = AiBrokerModelProvider(
         settings.broker_base_url,
-        settings.broker_token,
+        broker_token_source(settings.broker_token) or settings.broker_token,
         preferred_model=settings.preferred_model,
         request_timeout_seconds=settings.request_timeout_seconds,
         max_wait_seconds=settings.model_wait_seconds,

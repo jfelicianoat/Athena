@@ -23,7 +23,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from athena.adapters.ai_broker import AiBrokerModelProvider
-from athena.adapters.ai_os_core import governor_from_environment
+from athena.adapters.ai_os_core import broker_token_source, governor_from_environment
 from athena.adapters.openai_compatible import OpenAICompatibleModelProvider
 from athena.adapters.service import CapabilityMode as ServiceMode
 from athena.adapters.service import RunOptions, RunRegistry
@@ -117,8 +117,8 @@ class RunConfiguration:
         parsed = urlsplit(self.base_url.rstrip("/"))
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
             raise ValueError("La URL del proveedor debe comenzar por http:// o https://")
-        if self.provider is ProviderKind.AI_BROKER and not self.token.strip():
-            raise ValueError("AI_Broker necesita un token")
+        if self.provider is ProviderKind.AI_BROKER and not self.token.strip() and broker_token_source() is None:
+            raise ValueError("AI_Broker necesita un token (o AI OS Core en marcha, que lo da)")
         if self.provider is ProviderKind.OPENAI_COMPATIBLE and not self.model.strip():
             raise ValueError("El proveedor OpenAI-compatible necesita un modelo")
         if self.max_iterations <= 0 or self.timeout_seconds <= 0:
@@ -146,7 +146,7 @@ def build_provider(configuration: RunConfiguration) -> ModelProvider:
     if configuration.provider is ProviderKind.AI_BROKER:
         return AiBrokerModelProvider(
             configuration.base_url,
-            configuration.token,
+            broker_token_source(configuration.token) or configuration.token,
             preferred_model=configuration.model.strip() or None,
             request_timeout_seconds=max(30.0, configuration.timeout_seconds),
             max_wait_seconds=max(30.0, configuration.timeout_seconds),
