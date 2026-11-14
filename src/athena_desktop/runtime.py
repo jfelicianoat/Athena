@@ -117,7 +117,8 @@ class RunConfiguration:
         parsed = urlsplit(self.base_url.rstrip("/"))
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
             raise ValueError("La URL del proveedor debe comenzar por http:// o https://")
-        if self.provider is ProviderKind.AI_BROKER and not self.token.strip() and broker_token_source() is None:
+        sin_token = not self.token.strip() and broker_token_source() is None
+        if self.provider is ProviderKind.AI_BROKER and sin_token:
             raise ValueError("AI_Broker necesita un token (o AI OS Core en marcha, que lo da)")
         if self.provider is ProviderKind.OPENAI_COMPATIBLE and not self.model.strip():
             raise ValueError("El proveedor OpenAI-compatible necesita un modelo")

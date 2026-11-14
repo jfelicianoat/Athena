@@ -1254,6 +1254,18 @@ async def _read_frame(reader: asyncio.StreamReader) -> tuple[str, str, dict[str,
             return event_id, name, payload
 
 
+async def _read_injected(reader: asyncio.StreamReader) -> tuple[str, str, dict[str, Any]]:
+    """The next frame the test injected (`tool.started`).
+
+    The run emits its own events meanwhile — on Linux its permission request for the
+    project checks lands in the middle — so only the injected ones are counted.
+    """
+    while True:
+        frame = await _read_frame(reader)
+        if frame[2].get("name") == EventName.TOOL_STARTED.value:
+            return frame
+
+
 def test_a_reconnecting_client_resumes_from_the_last_event_it_saw(tmp_path: Path) -> None:
     """The point of putting ids on the wire.
 
@@ -1273,7 +1285,7 @@ def test_a_reconnecting_client_resumes_from_the_last_event_it_saw(tmp_path: Path
             await _read_frame(reader)  # the state frame
 
             registry._fan_out(RuntimeEvent(EventName.TOOL_STARTED, run_id, {"i": 1}))
-            first_id, _, _ = await _read_frame(reader)
+            first_id, _, _ = await _read_injected(reader)
             writer.close()
 
             # Missed while away.
@@ -1286,7 +1298,7 @@ def test_a_reconnecting_client_resumes_from_the_last_event_it_saw(tmp_path: Path
             assert state["resumed"] is True
             assert state["snapshot"] is None, "a resume does not need a resynchronisation"
 
-            seen = [(await _read_frame(reader))[2]["payload"]["i"] for _ in range(2)]
+            seen = [(await _read_injected(reader))[2]["payload"]["i"] for _ in range(2)]
             writer.close()
 
             assert seen == [2, 3], "in order, and only what was missed"
@@ -1336,17 +1348,16 @@ def test_events_arriving_during_a_replay_are_not_sent_twice(tmp_path: Path) -> N
             reader, writer = await _open_stream(host, port, run_id)
             await _read_frame(reader)
             registry._fan_out(RuntimeEvent(EventName.TOOL_STARTED, run_id, {"i": 1}))
-            first_id, _, _ = await _read_frame(reader)
+            first_id, _, _ = await _read_injected(reader)
             writer.close()
 
             registry._fan_out(RuntimeEvent(EventName.TOOL_STARTED, run_id, {"i": 2}))
             reader, writer = await _open_stream(host, port, run_id, last_event_id=first_id)
-            await _read_frame(reader)
-            replayed_id, _, payload = await _read_frame(reader)
+            replayed_id, _, payload = await _read_injected(reader)
             assert payload["payload"]["i"] == 2
 
             registry._fan_out(RuntimeEvent(EventName.TOOL_STARTED, run_id, {"i": 3}))
-            next_id, _, following = await _read_frame(reader)
+            next_id, _, following = await _read_injected(reader)
             writer.close()
 
             assert next_id != replayed_id

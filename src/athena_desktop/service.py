@@ -133,7 +133,9 @@ def start_managed_service(
     else:
         environment.pop("ATHENA_PREFERRED_MODEL", None)
 
-    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    creationflags = 0
+    if sys.platform == "win32":  # mypy sólo estrecha la plataforma en un `if`
+        creationflags = subprocess.CREATE_NO_WINDOW
     process = subprocess.Popen(
         [sys.executable, "-m", "athena_service"],
         stdout=subprocess.PIPE,

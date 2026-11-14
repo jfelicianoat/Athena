@@ -1,7 +1,10 @@
 """El Broker en HTTPS: su certificado lo firma la CA de Agora, que se confía solo para él."""
+
 from __future__ import annotations
 
 import ssl
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -23,17 +26,22 @@ MEMhAQrGg5fgyp6JtN7dqmTNgWMmYEpHD05AhR7gMC0CMHklfjnJ9GJhdq/iXhtK
 """
 
 
-def test_confia_en_la_ca_indicada_sin_dejar_de_verificar(tmp_path, monkeypatch) -> None:
+def test_confia_en_la_ca_indicada_sin_dejar_de_verificar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     ca = tmp_path / "ca.crt"
     ca.write_text(AGORA_CA, encoding="ascii")
     monkeypatch.setenv("AI_BROKER_CA_CERT", str(ca))
     context = broker_ssl_context()
     assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
-    nombres = [dict(par[0] for par in c["subject"]).get("commonName", "") for c in context.get_ca_certs()]
+    certificados: list[dict[str, Any]] = context.get_ca_certs()
+    nombres = [dict(par[0] for par in c["subject"]).get("commonName", "") for c in certificados]
     assert any(n.startswith("Agora CA") for n in nombres)
 
 
-def test_una_ca_indicada_que_no_existe_es_un_error(tmp_path, monkeypatch) -> None:
+def test_una_ca_indicada_que_no_existe_es_un_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("AI_BROKER_CA_CERT", str(tmp_path / "no-existe.crt"))
     with pytest.raises(FileNotFoundError):
         broker_ssl_context()

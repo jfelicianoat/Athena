@@ -58,8 +58,11 @@ def core() -> Iterator[tuple[_Core, str]]:
             state.calls.append((self.path, body))
             if self.path == "/api/v1/policies/evaluate":
                 allow = state.authorization == "ALLOW"
-                reply = {"authorization": state.authorization, "executable": allow,
-                         "broker_priority": state.broker_priority}
+                reply = {
+                    "authorization": state.authorization,
+                    "executable": allow,
+                    "broker_priority": state.broker_priority,
+                }
             else:
                 reply = {}
             data = json.dumps(reply).encode()

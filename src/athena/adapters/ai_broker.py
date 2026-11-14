@@ -82,6 +82,7 @@ def broker_ssl_context() -> ssl.SSLContext:
         context.load_verify_locations(cafile=ca)
     return context
 
+
 #: How long a single HTTP call may take. Not how long a task may take — that is the
 #: caller's timeout, and conflating them would make a slow model look like a dead broker.
 #:
@@ -393,8 +394,11 @@ class AiBrokerModelProvider(ModelProvider):
         )
         status, payload = self._call_once(connection_type, method, path, body, cancellation, False)
         if status in (401, 403) and callable(self._token):
-            # El Broker se reinició y rotó su token: se pide el nuevo a AI OS Core y se reintenta una vez
-            status, payload = self._call_once(connection_type, method, path, body, cancellation, True)
+            # El Broker se reinició y rotó su token: se pide el nuevo a AI OS Core
+            # y se reintenta una vez
+            status, payload = self._call_once(
+                connection_type, method, path, body, cancellation, True
+            )
         return status, payload
 
     def _call_once(

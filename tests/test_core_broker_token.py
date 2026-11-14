@@ -1,4 +1,7 @@
-"""Sin pegar tokens: Core da su conexión a Athena y el token del Broker, que se renueva tras un 403."""
+"""Sin pegar tokens: Core da su conexión a Athena y el token del Broker.
+
+El token del Broker se renueva tras un 403.
+"""
 
 from __future__ import annotations
 
@@ -27,7 +30,7 @@ def test_core_da_conexion_y_token_del_broker_que_se_renueva(
     vistos: list[str | None] = []
 
     class Core(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             ok = self.headers.get("Authorization") == "Bearer tok-ath"
             self.send_response(200 if ok else 401)
             self.end_headers()
@@ -37,12 +40,13 @@ def test_core_da_conexion_y_token_del_broker_que_se_renueva(
             pass
 
     class Broker(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             vistos.append(self.headers.get("x-admin-token"))
             ok = self.headers.get("x-admin-token") == vigente[0]
             self.send_response(200 if ok else 403)
             self.end_headers()
-            self.wfile.write(json.dumps({"ok": True} if ok else {"detail": "ADMIN_AUTH_REQUIRED"}).encode())
+            cuerpo: dict[str, object] = {"ok": True} if ok else {"detail": "ADMIN_AUTH_REQUIRED"}
+            self.wfile.write(json.dumps(cuerpo).encode())
 
         def log_message(self, *_: object) -> None:
             pass
@@ -54,16 +58,39 @@ def test_core_da_conexion_y_token_del_broker_que_se_renueva(
         monkeypatch.delenv("ATHENA_CORE_URL", raising=False)
         monkeypatch.delenv("ATHENA_CORE_TOKEN", raising=False)
         assert broker_token_source() is None and governor_from_environment() is None
-        (tmp_path / "athena.json").write_text(json.dumps({"core_url": core_url, "token": "tok-ath"}))
+        conexion = {"core_url": core_url, "token": "tok-ath"}
+        (tmp_path / "athena.json").write_text(json.dumps(conexion))
         assert governor_from_environment() is not None
 
         source = broker_token_source("pegado-caducado")
         assert source is not None
         provider = AiBrokerModelProvider(f"http://127.0.0.1:{broker.server_port}", source)
-        assert asyncio.run(asyncio.to_thread(provider._blocking_call, "GET", "/x", None, None))[0] == 200
+
+        def llamar() -> int:
+            return asyncio.run(asyncio.to_thread(provider._blocking_call, "GET", "/x", None, None))[
+                0
+            ]
+
+        assert llamar() == 200
         vigente[0] = "broker-2"  # el Broker se reinicia; el runner publica el nuevo en Core
-        assert asyncio.run(asyncio.to_thread(provider._blocking_call, "GET", "/x", None, None))[0] == 200
+        assert llamar() == 200
         assert vistos == ["broker-1", "broker-1", "broker-2"]
     finally:
         core.shutdown()
         broker.shutdown()
+
+
+def test_sin_localappdata_busca_la_conexion_donde_la_deja_core(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AT-02: fuera de Windows Core escribe en ~/.ai_os_core; Athena tiene que mirar ahí."""
+    from athena.adapters.ai_os_core import core_connection
+
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.delenv("AI_OS_CONNECT_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    carpeta = tmp_path / ".ai_os_core" / "AIOSCore" / "conexion"
+    carpeta.mkdir(parents=True)
+    conexion = {"core_url": "http://127.0.0.1:8720", "token": "tok-linux"}
+    (carpeta / "athena.json").write_text(json.dumps(conexion), encoding="utf-8")
+    assert core_connection() == ("http://127.0.0.1:8720", "tok-linux")

@@ -17,8 +17,8 @@ jobs:
         python: ["3.11", "3.14"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
       - name: Install
@@ -29,10 +29,14 @@ jobs:
           git config --global user.name "CI"
           git config --global init.defaultBranch main
       - name: Tests
+        if: ${{ !cancelled() }}
         run: python -m pytest -q
       - name: Lint
+        if: ${{ !cancelled() }}
         run: python -m ruff check .
       - name: Format
+        if: ${{ !cancelled() }}
         run: python -m ruff format --check .
       - name: Types
+        if: ${{ !cancelled() }}
         run: python -m mypy src tests

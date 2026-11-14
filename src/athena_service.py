@@ -154,7 +154,9 @@ class ServiceSettings:
         if not broker_url:
             raise ValueError("ATHENA_BROKER_BASE_URL no está configurada")
         if not broker_token and broker_token_source() is None:
-            raise ValueError("ATHENA_BROKER_TOKEN no está configurado (ni hay AI OS Core que lo dé)")
+            raise ValueError(
+                "ATHENA_BROKER_TOKEN no está configurado (ni hay AI OS Core que lo dé)"
+            )
         if not service_token:
             # Ausente significa «genérala tú», no «arranca sin credencial». Es el camino
             # normal de un proceso gestionado: quien lo lanza recoge la credencial del

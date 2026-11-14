@@ -177,12 +177,15 @@ def core_connection(principal: str = PRINCIPAL) -> tuple[str, str] | None:
     Core genera un token por app y lo escribe en %LOCALAPPDATA%/AIOSCore/conexion: así
     no hay que pegar ninguno. Sin Core instalado (o sin haber arrancado nunca), None.
     """
-    local = os.environ.get("LOCALAPPDATA")
-    folder = os.environ.get("AI_OS_CONNECT_DIR") or (str(Path(local, "AIOSCore", "conexion")) if local else "")
-    if not folder:
-        return None
+    custom = os.environ.get("AI_OS_CONNECT_DIR", "").strip()
+    if custom:
+        folder = Path(custom)
+    else:
+        # Misma regla que `ai_os_core.conexion.connect_dir`: las dos deben cambiar a la vez.
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / ".ai_os_core")
+        folder = Path(base) / "AIOSCore" / "conexion"
     try:
-        data = json.loads(Path(folder, f"{principal}.json").read_text(encoding="utf-8"))
+        data = json.loads((folder / f"{principal}.json").read_text(encoding="utf-8"))
         url, token = str(data["core_url"]), str(data["token"])
     except (OSError, ValueError, KeyError, TypeError):
         return None
@@ -206,7 +209,9 @@ class CoreBrokerToken:
     pedir. Si Core no lo tiene, se usa `fallback` (el token del entorno, si lo hay).
     """
 
-    def __init__(self, core_url: str, core_token: str, fallback: str | None = None, timeout: float = 5.0) -> None:
+    def __init__(
+        self, core_url: str, core_token: str, fallback: str | None = None, timeout: float = 5.0
+    ) -> None:
         self._url = core_url.rstrip("/") + "/api/v1/credentials/broker"
         self._core_token = core_token
         self._fallback = fallback
@@ -219,10 +224,12 @@ class CoreBrokerToken:
         return self._token or self._fallback
 
     def _fetch(self) -> str | None:
-        request = Request(self._url, headers={
-            "Authorization": f"Bearer {self._core_token}", "Accept": "application/json"})
+        request = Request(
+            self._url,
+            headers={"Authorization": f"Bearer {self._core_token}", "Accept": "application/json"},
+        )
         try:
-            with urlopen(request, timeout=self._timeout) as response:  # noqa: S310 - URL de Core
+            with urlopen(request, timeout=self._timeout) as response:
                 token = json.load(response).get("token")
         except (OSError, ValueError, AttributeError):
             return None
