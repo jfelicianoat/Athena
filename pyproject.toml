@@ -25,7 +25,7 @@ athena-desktop = "athena_desktop.app:main"
 # rango deja que la misma instalacion de resultados distintos segun el dia.
 dev = [
   "mypy==1.18.2",
-  "pytest==8.4.2",
+  "pytest==9.2.0",
   "ruff==0.16.4",
 ]
 
