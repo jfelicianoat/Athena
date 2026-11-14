@@ -24,7 +24,7 @@ athena-desktop = "athena_desktop.app:main"
 # Fijadas: son las versiones con las que se comprueban las cuatro puertas (A24). Un
 # rango deja que la misma instalacion de resultados distintos segun el dia.
 dev = [
-  "mypy==1.18.2",
+  "mypy==2.4.1",
   "pytest==8.4.2",
   "ruff==0.16.4",
 ]
