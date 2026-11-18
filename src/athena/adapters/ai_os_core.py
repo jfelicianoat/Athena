@@ -182,7 +182,10 @@ def core_connection(principal: str = PRINCIPAL) -> tuple[str, str] | None:
         folder = Path(custom)
     else:
         # Misma regla que `ai_os_core.conexion.connect_dir`: las dos deben cambiar a la vez.
-        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / ".ai_os_core")
+        try:
+            base = os.environ.get("LOCALAPPDATA") or str(Path.home() / ".ai_os_core")
+        except RuntimeError:  # entorno sin perfil de usuario: no hay carpeta de conexión
+            return None
         folder = Path(base) / "AIOSCore" / "conexion"
     try:
         data = json.loads((folder / f"{principal}.json").read_text(encoding="utf-8"))
