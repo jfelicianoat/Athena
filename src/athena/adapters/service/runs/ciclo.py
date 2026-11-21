@@ -310,7 +310,13 @@ class CicloMixin(ConstruccionMixin):
         options = await self._resumed_options(run_id, record, workspace)
         if self.governor is not None:
             self._flows.setdefault(run_id, run_id)
-        await self._authorize(run_id, options, self.model_for(options))
+        try:
+            await self._authorize(run_id, options, self.model_for(options))
+        except BaseException:
+            # Como en `start`: un run que Core no deja reanudar no deja su flujo colgado.
+            if run_id not in self._runs:
+                self._flows.pop(run_id, None)
+            raise
         source = CancellationSource()
         stored = await self.orchestrator.stored_plan(run_id)
         if stored is not None:

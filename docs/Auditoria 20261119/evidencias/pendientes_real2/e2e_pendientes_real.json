@@ -1,0 +1,45 @@
+[
+  {
+    "id": "P3",
+    "objetivo": "delegación pedida en el objetivo (delegate_task, explorer)",
+    "esperado": "si el modelo delega: subagent.started/completed y run completed (depende del modelo)",
+    "observado": {
+      "http": 201,
+      "final": "failed",
+      "subagente": [],
+      "respuesta": []
+    },
+    "estado": "OBSERVADO",
+    "nota": "OBSERVADO si el modelo no delega: no es un fallo de Athena"
+  },
+  {
+    "id": "P2",
+    "objetivo": "System-1 en sombra (goal completion + reviewer gate) con el Broker real",
+    "esperado": "el run termina igual que sin System-1 y deja eventos system1.* (juicio o fallback)",
+    "observado": {
+      "http": 201,
+      "final": "failed",
+      "system1": []
+    },
+    "estado": "FALLA",
+    "nota": ""
+  },
+  {
+    "id": "P4",
+    "objetivo": "reanudar un plan con una tarea interrumpida",
+    "esperado": "README/CURRENT_STATE: se niega y nombra las tareas de resultado desconocido",
+    "observado": {
+      "tarea_empezada": true,
+      "listado": "failed",
+      "resume_http": 400,
+      "resume": {
+        "error": {
+          "code": "tool_validation_error",
+          "message": "Run 64e37190-15c4-47c5-a68b-7c1ef3798478 is failed, not recovery_pending"
+        }
+      }
+    },
+    "estado": "FALLA",
+    "nota": ""
+  }
+]

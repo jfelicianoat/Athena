@@ -13,6 +13,7 @@ from athena.errors import (
     ModelPermanentError,
     ModelTransientError,
     ProcessCancelledError,
+    ProcessTimeoutError,
 )
 from athena.events import EventName, InMemoryEventBus, ModelEvent, RuntimeEvent
 from athena.models import (
@@ -442,6 +443,50 @@ class _CancelledProcessTool:
 
     def is_concurrency_safe(self, arguments: JSONObject) -> bool:
         return True
+
+
+class _TimedOutProcessTool(_CancelledProcessTool):
+    """Un comando que agota SU plazo (p. ej. `python` a secas, colgado en Windows)."""
+
+    async def execute(
+        self,
+        context: ToolContext,
+        arguments: JSONObject,
+        cancellation: CancellationToken,
+    ) -> ToolResult:
+        del context, arguments, cancellation
+        raise ProcessTimeoutError("Command exceeded 30.0 seconds and was terminated")
+
+
+def test_a_tool_command_timeout_is_told_to_the_model_and_the_run_goes_on(
+    tmp_path: Path,
+) -> None:
+    """H-09 (auditoría 19-nov): el plazo de UN comando no es el plazo de la sesión.
+
+    Con el Broker real, `qwen3.8:27b` arregló el código, sus tests pasaban, pidió `python` a
+    secas y el run acabó `failed` sin verificar: el `process_timeout` se trataba como si se
+    hubiera agotado la sesión.
+    """
+
+    async def scenario() -> None:
+        provider = FakeModelProvider(
+            [
+                _response_with_call("p-1", "long_process", {}),
+                ModelResponse("Done anyway.", "fake", "stop"),
+            ]
+        )
+        loop, workspace, source, _, _ = _runtime(
+            tmp_path, provider, tools=(_TimedOutProcessTool(),)
+        )
+
+        result = await loop.run("Run it", workspace, source.token)
+
+        assert result.status is AgentRunStatus.COMPLETED
+        assert len(provider.requests) == 2, "the model must hear about the timeout"
+        told = provider.requests[1].messages[-1].content
+        assert "process_timeout" in told and "limited_retry" in told
+
+    asyncio.run(scenario())
 
 
 def test_a_killed_child_process_ends_the_run_as_cancelled(tmp_path: Path) -> None:

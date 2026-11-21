@@ -1,0 +1,37 @@
+{
+  "M1_permitida": {
+    "estado": "completed",
+    "preguntas": [
+      "mcp__tracker__search_issues tier=r3_external_or_irreversible"
+    ],
+    "llamadas_al_servidor": 1,
+    "peticiones_al_modelo": 2,
+    "lo_que_oye_el_modelo": "{\"call_id\": \"m-1\", \"ok\": true, \"output\": \"id=7 title=El total no cuadra\", \"reference_uri\": null, \"truncated\": false}",
+    "error": null
+  },
+  "M2_denegada": {
+    "estado": "completed",
+    "preguntas": [
+      "mcp__tracker__search_issues tier=r3_external_or_irreversible"
+    ],
+    "llamadas_al_servidor": 0,
+    "peticiones_al_modelo": 2,
+    "lo_que_oye_el_modelo": "{\"call_id\": \"m-1\", \"error\": {\"code\": \"permission_denied\", \"details\": {\"call_id\": \"m-1\", \"decision\": \"deny\"}, \"message\": \"Permission deny for tool mcp__tracker__search_issues\"}, \"ok\": false, \"recovery\": \"no_retry\"}",
+    "error": null
+  },
+  "M3_servidor_colgado": {
+    "estado": "completed",
+    "preguntas": [
+      "mcp__tracker__search_issues tier=r3_external_or_irreversible"
+    ],
+    "llamadas_al_servidor": 1,
+    "peticiones_al_modelo": 2,
+    "lo_que_oye_el_modelo": "{\"call_id\": \"m-1\", \"error\": {\"code\": \"process_timeout\", \"details\": {}, \"message\": \"Operation timed out\"}, \"ok\": false, \"recovery\": \"limited_retry\"}",
+    "error": null
+  },
+  "veredicto": {
+    "M1": "PASA",
+    "M2": "PASA",
+    "M3": "PASA"
+  }
+}

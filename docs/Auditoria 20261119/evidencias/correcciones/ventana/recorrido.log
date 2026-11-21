@@ -1,0 +1,37 @@
+- primera ejecución
+- historial vacío
+- captura historial vacío
+- volver a Trabajo
+- probar conexión con la URL por defecto
+- captura conexión por defecto
+- probar conexión: token vacío y Core lo da (H-01)
+- captura H-01
+- probar conexión con token
+- captura conexión ok
+- modelo sin completion
+  [diálogo error] Athena: 'El modelo «modelo-solo-decision» no sirve para trabajar con Athena: el broker no le declara la capacidad «completion» (declara: decision), así que o rechaza el ' -> ok
+- esperar fin
+- restaurar modelo
+- consulta
+- captura consulta
+- consulta con verbo de cambio (Cancelar)
+  [diálogo sí/no/cancelar] ¿Consulta o cambio?: 'Tu encargo parece pedir cambios en archivos, pero el tipo de tarea es «Responder una pregunta», que no cambia nada.\n\n¿Quieres cambiarlo a «Modificar el proyecto' -> None
+- documento con permiso
+- captura diálogo de permiso
+- permitir una vez
+- captura documento
+- deshacer
+  [diálogo sí/no] Deshacer cambios: 'Se devolverán a su estado anterior los archivos que escribió este trabajo:\n\n• nota.txt\n\nSi alguno lo cambiaste tú después, se deja como está y te lo diré. ¿Cont' -> True
+  [diálogo info] Deshacer cambios: 'Restaurados:\n• nota.txt' -> ok
+- comprobar deshacer
+- cambio sin comprobaciones (aviso, Cancelar)
+  [diálogo aceptar/cancelar] El trabajo no se podrá comprobar: 'Este proyecto no define comprobaciones que Athena pueda ejecutar (tests en AGENTS.md, pyproject.toml o package.json). El cambio se puede hacer, pero el trabajo ' -> False
+- historial
+- captura historial
+- trabajo largo
+- captura en marcha
+- esperar 3 s
+  TIEMPO AGOTADO esperando: esperar 3 s
+- cerrar con trabajo en marcha
+  [diálogo sí/no] Cerrar Athena: 'Hay un trabajo en marcha. Si cierras, se detendrá y quedará guardado en «Historial». ¿Cerrar?' -> True
+base temporal: C:\Users\jfeli\AppData\Local\Temp\athena-ui-_dmcpmlt

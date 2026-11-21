@@ -1,0 +1,114 @@
+Athena v0.3.8, modo texto.
+En cada pregunta, Intro acepta lo que va entre corchetes.
+
+Proyecto: (ninguno)
+Broker: https://192.168.1.52:8765  Modelo: (lo elige el broker)
+¿Qué quieres hacer?
+  1. Nueva tarea
+  2. Historial
+  3. Elegir proyecto
+  4. Conexión y modelo
+  0. Salir
+Escribe el número [1]: 3
+Ruta completa de la carpeta del proyecto: C:\Users\jfeli\AppData\Local\Temp\athena-texto-puc6jpmi\proyecto
+Proyecto: C:\Users\jfeli\AppData\Local\Temp\athena-texto-puc6jpmi\proyecto
+
+Proyecto: C:\Users\jfeli\AppData\Local\Temp\athena-texto-puc6jpmi\proyecto
+Broker: https://192.168.1.52:8765  Modelo: (lo elige el broker)
+¿Qué quieres hacer?
+  1. Nueva tarea
+  2. Historial
+  3. Elegir proyecto
+  4. Conexión y modelo
+  0. Salir
+Escribe el número [1]: 4
+URL del broker [https://192.168.1.52:8765]: http://127.0.0.1:18396
+Modelo (vacío: lo elige el broker): modelo-bueno
+¿Quieres escribir un token para esta sesión? (s/n) [n]: s
+Probando la conexión…
+Bien: Conectado a AI_Broker (informa estado degradado). El broker acepta el token. 1 modelos aptos en la lista.
+
+Proyecto: C:\Users\jfeli\AppData\Local\Temp\athena-texto-puc6jpmi\proyecto
+Broker: http://127.0.0.1:18396  Modelo: modelo-bueno
+¿Qué quieres hacer?
+  1. Nueva tarea
+  2. Historial
+  3. Elegir proyecto
+  4. Conexión y modelo
+  0. Salir
+Escribe el número [1]: 1
+Tipo de tarea:
+  1. Responder una pregunta (no cambia nada)
+  2. Modificar el proyecto
+  3. Crear documentos
+Escribe el número [1]: 3
+¿Qué quieres que haga?: Escribe la nota [[escribe:nota.txt:hola accesible]]
+Cambios en archivos:
+  2. Preguntar cada cambio
+  3. Permitir sin preguntar
+Escribe el número [2]: 2
+Ejecutar código del proyecto (tests):
+  1. No
+  2. Preguntar
+  3. Permitir
+Escribe el número [1]: 1
+Entregables, separados por comas (por ejemplo informe.md): nota.txt
+Athena está trabajando. Te iré contando cada paso.
+  Empieza el trabajo.
+  Consultando al modelo…
+  El modelo (modelo-bueno) pide usar 1 herramienta(s).
+  Pide permiso para escribir un archivo.
+
+Athena pide permiso: Escribir el archivo nota.txt.
+Riesgo: medio. Motivo: El agente quiere escribir el archivo completo dentro del proyecto.
+  Puede pasar: Crea nota.txt en el proyecto
+  Puede pasar: Tamaño: 0 → 15 caracteres
+Archivo nuevo (1 líneas):
+  hola accesible
+¿Permitir esta acción una vez? (s/n) [n]: s
+  Permiso concedido para escribir un archivo.
+  Usando la herramienta: escribir un archivo.
+  Archivo cambiado: nota.txt
+  Consultando al modelo…
+  El modelo (modelo-bueno) ha respondido.
+  Comprobando el trabajo…
+  Verificación: comprobado.
+  Trabajo terminado.
+
+✔ Terminado y comprobado
+Los entregables existen, no están vacíos y los escribió este trabajo. Eso no demuestra que su contenido sea correcto.
+Respuesta de Athena:
+Respuesta de prueba
+Archivos cambiados: nota.txt
+Comprobación: ✔ nota.txt: producido
+Qué puedes hacer ahora: Revisa los archivos cambiados. Si no te convence, pulsa «Deshacer cambios».
+¿Deshacer los cambios de este trabajo? (s/n) [n]: s
+Restaurados: nota.txt
+
+Proyecto: C:\Users\jfeli\AppData\Local\Temp\athena-texto-puc6jpmi\proyecto
+Broker: http://127.0.0.1:18396  Modelo: modelo-bueno
+¿Qué quieres hacer?
+  1. Nueva tarea
+  2. Historial
+  3. Elegir proyecto
+  4. Conexión y modelo
+  0. Salir
+Escribe el número [1]: 2
+Trabajos guardados, del más reciente al más antiguo:
+  1. 2026-11-20 10:06 · Completado · Documentos · Escribe la nota [[escribe:nota.txt:hola accesible]]
+  0. Volver
+Escribe el número [0]: 1
+Objetivo: Escribe la nota [[escribe:nota.txt:hola accesible]]
+Estado: Completado. Proyecto: C:\Users\jfeli\AppData\Local\Temp\athena-texto-puc6jpmi\proyecto
+Archivos cambiados: nota.txt
+
+Proyecto: C:\Users\jfeli\AppData\Local\Temp\athena-texto-puc6jpmi\proyecto
+Broker: http://127.0.0.1:18396  Modelo: modelo-bueno
+¿Qué quieres hacer?
+  1. Nueva tarea
+  2. Historial
+  3. Elegir proyecto
+  4. Conexión y modelo
+  0. Salir
+Escribe el número [1]: 0
+Hasta luego.

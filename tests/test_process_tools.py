@@ -296,3 +296,26 @@ def test_a_command_may_still_ask_to_be_cut_short() -> None:
         BashTool().validate({"command": "pytest -q", "timeout_seconds": 5})["timeout_seconds"]
         == 5.0
     )
+
+
+def test_an_interpreter_with_no_arguments_sees_end_of_input_and_exits(tmp_path: Path) -> None:
+    """H-09 (auditoría 19-nov): en Windows NUL cuenta como terminal.
+
+    Con `stdin=DEVNULL`, `python` a secas abría su consola interactiva y se quedaba colgado
+    hasta agotar el plazo del comando. Ahora el hijo recibe una tubería ya cerrada.
+    """
+    from athena.process_tools import _spawn_process
+
+    async def scenario() -> tuple[int | None, bytes]:
+        process = await _spawn_process(
+            (sys.executable, "-c", "import sys; print(sys.stdin.isatty(), sys.stdin.read() == '')"),
+            tmp_path,
+        )
+        out, _ = await asyncio.wait_for(process.communicate(), 20)
+        bare = await _spawn_process((sys.executable,), tmp_path)
+        await asyncio.wait_for(bare.communicate(), 20)
+        return bare.returncode, out
+
+    returncode, out = asyncio.run(scenario())
+    assert returncode == 0
+    assert out.split() == [b"False", b"True"]

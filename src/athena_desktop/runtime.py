@@ -34,6 +34,7 @@ from athena.checkpoints import CheckpointStore
 from athena.errors import AthenaRuntimeError
 from athena.events import EventName, InMemoryEventBus, RuntimeEvent
 from athena.goals import Goal
+from athena.model_catalog import ModelCatalog
 from athena.models import ModelHealthStatus, ModelProvider
 from athena.permissions import PermissionDecision, PermissionRequest
 from athena.project_memory import SqliteProjectMemory
@@ -174,6 +175,8 @@ def run_options(configuration: RunConfiguration) -> RunOptions:
         profile=_PROFILE_FOR[configuration.task_kind],
         deliverables=configuration.deliverables,
         require_change=configuration.task_kind == "change",
+        # Nombrado = elegido: el broker no puede sustituirlo (H-10).
+        model=configuration.model.strip(),
     )
 
 
@@ -200,9 +203,21 @@ class DesktopStores:
 
 
 def build_registry(
-    configuration: RunConfiguration, stores: DesktopStores, bus: InMemoryEventBus | None = None
+    configuration: RunConfiguration,
+    stores: DesktopStores,
+    bus: InMemoryEventBus | None = None,
+    *,
+    also_models: tuple[str, ...] = (),
 ) -> RunRegistry:
-    """Un registro con todo lo que el servicio tiene: memoria, copias e historial."""
+    """Un registro con todo lo que el servicio tiene: memoria, copias e historial.
+
+    Con un modelo escrito, el catalogo lo ofrece y el run lo pide por su nombre: asi viaja
+    como eleccion del run (estricta) y no como preferencia que el broker pueda cambiar
+    (ADR-034). Antes la ventana mostraba `qwen3.8:27b` y trabajaba `gpt-oss-120b` (H-10).
+    `also_models` deja reanudar un trabajo creado con otro modelo.
+    """
+    chosen = configuration.model.strip()
+    offered = tuple(name for name in (chosen, *also_models) if name)
     return RunRegistry(
         build_provider(configuration),
         bus or InMemoryEventBus(),
@@ -214,6 +229,7 @@ def build_registry(
         ),
         event_log=stores.events,
         governor=governor_from_environment(),
+        models=ModelCatalog(offered, default=chosen) if offered else None,
     )
 
 
@@ -263,7 +279,13 @@ async def run_athena(
     configuration.validate()
     await _refuse_unusable_model(configuration)
     stores = DesktopStores(state_dir or default_state_dir())
-    registry = build_registry(configuration, stores)
+    stored_model = ""
+    if resume_run_id is not None:
+        manifest = await stores.sessions.load_manifest(resume_run_id)
+        options = manifest.get("options") if isinstance(manifest, dict) else None
+        if isinstance(options, dict) and isinstance(options.get("model"), str):
+            stored_model = str(options["model"])
+    registry = build_registry(configuration, stores, also_models=(stored_model,))
     loop = asyncio.get_running_loop()
     await registry.mark_interrupted()
     if resume_run_id is not None:
@@ -471,8 +493,16 @@ async def check_connection(configuration: RunConfiguration) -> ConnectionReport:
     parsed = urlsplit(configuration.base_url.rstrip("/"))
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         return ConnectionReport(False, "La URL debe comenzar por http:// o https://")
-    if configuration.provider is ProviderKind.AI_BROKER and not configuration.token.strip():
-        return ConnectionReport(False, "Falta el token de AI_Broker")
+    # La misma regla que `validate()`: sin token escrito vale el que da AI OS Core (H-01).
+    from_core = not configuration.token.strip() and broker_token_source() is not None
+    if (
+        configuration.provider is ProviderKind.AI_BROKER
+        and not configuration.token.strip()
+        and not from_core
+    ):
+        return ConnectionReport(
+            False, "Falta el token de AI_Broker (y AI OS Core no está disponible para darlo)"
+        )
     token = CancellationSource().token
     provider = build_provider(configuration)
     if isinstance(provider, AiBrokerModelProvider):
@@ -495,7 +525,9 @@ async def check_connection(configuration: RunConfiguration) -> ConnectionReport:
             return ConnectionReport(False, problem, usable)
         return ConnectionReport(
             True,
-            f"Conectado a AI_Broker{estado}. {message} {len(usable)} modelos aptos en la lista.",
+            f"Conectado a AI_Broker{estado}. {message}"
+            + (" El token lo da AI OS Core." if from_core else "")
+            + f" {len(usable)} modelos aptos en la lista.",
             usable,
         )
     health = await provider.health(token)

@@ -693,3 +693,38 @@ def test_cancelling_a_subgraph_stops_its_tasks_and_not_the_run(tmp_path: Path) -
     assert tarea.token.is_cancelled, "una tarea sobrevivió a la cancelación de su subgrafo"
     assert not run.token.is_cancelled
     assert not hermana.token.is_cancelled, "cancelar un subgrafo alcanzó a otro independiente"
+
+
+def test_a_running_task_is_persisted_as_running_before_it_works(tmp_path: Path) -> None:
+    """Auditoría 19/20-nov, con el Broker real: el proceso murió con la tarea trabajando y el
+    plan guardado decía `pending`. Al reanudar, `recover` no la marcaba como de resultado
+    desconocido y la tarea se repetía a ciegas, aunque pudo haber escrito ficheros."""
+    from athena.graph_store import SqliteGraphStore
+
+    async def scenario() -> None:
+        workspace = _workspace(tmp_path)
+        store = SqliteGraphStore(tmp_path / "plans.db")
+        provider = _StubbornProvider()
+        executor, _ = _executor(workspace, provider, InMemoryEventBus(), store=store)
+        graph = TaskGraph.build([node("only", role=SubagentRole.CODER)])
+        source = CancellationSource()
+        work = asyncio.ensure_future(
+            executor.execute(graph, workspace, source.token, run_id="run-1")
+        )
+        for _ in range(500):
+            if provider.calls:
+                break
+            await asyncio.sleep(0.01)
+        assert provider.calls, "the task never reached the model"
+
+        # Lo que vería un proceso nuevo si este muriese ahora mismo.
+        stored = await store.load("run-1")
+        assert stored is not None
+        assert stored.graph.get("only").status is PlanStatus.RUNNING
+        recovered = await SqliteGraphStore(tmp_path / "plans.db").recover("run-1")
+        assert recovered is not None and recovered.interrupted == ("only",)
+
+        source.cancel()
+        await asyncio.gather(work, return_exceptions=True)
+
+    asyncio.run(scenario())

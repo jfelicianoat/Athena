@@ -1,0 +1,51 @@
+{
+  "antes": {
+    "captura": "01_historial_interrumpido.png",
+    "reanudar": "normal",
+    "detalle": "Objetivo: Crea informe.txt con una sola línea que diga qué hace el proyecto (lee README.md).\nEstado: Interrumpido (se puede reanudar)\nTipo: Documentos\nProyecto: C:\\Users\\jfeli\\AppData\\Local\\Temp\\athena-h05-hv9nl1ua\\proyecto\nÚltima actualización: 2026-11-19 22:14\nIdentificador: 8deae687-e30b-419e-85af-d4dbd221088f"
+  },
+  "despues": {
+    "captura": "02_reanudado_resultado.png",
+    "estado": "Respuesta dada — no se ha cambiado ningún archivo",
+    "fichero": true,
+    "texto": "Crea informe.txt con una sola línea que diga qué hace el proyecto (lee README.md).\n---\n✔ Respuesta dada — no se ha cambiado ningún archivo\nEsto no demuestra que la respuesta sea correcta: Athena solo comprueba que respondió sin tocar el proyecto.\n\nRespuesta de Athena\ninforme.txt creado con la línea: \"El proyecto cuenta botellas de agua en un almacén.\"\n\nArchivos cambiados\n• informe.txt\n\nComprobaciones\n✔ informe.txt: producido\n\nQué puedes hacer ahora\n• Si querías cambios, elige «Modificar el proyecto» y vuelve a pedirlo.\n\nDetalle técnico: estado=completed; verificación=passed; error=-\n1 deliverable(s) produced. The declared deliverables exist, are non-empty and were written by this run. It does not establish that their content is correct.\n---\n22:14:41  Preparando el trabajo… (los trabajos anteriores siguen en «Historial»)\n22:14:43  Se reanuda el trabajo.\n22:14:43  Consultando al modelo…\n22:14:51  El modelo no respondió bien. Se reintenta.\n22:14:51  Athena intenta corregir un problema y seguir.\n22:14:52  Consultando al modelo (intento 2)…\n22:15:02  El modelo (gpt-oss-120b) pide usar 2 herramienta(s).\n22:15:02  Permiso concedido para buscar archivos.\n22:15:02  Usando la herramienta: buscar archivos.\n22:15:02  Permiso concedido para leer un archivo.\n22:15:02  Usando la herramienta: leer un archivo.\n22:15:02  Consultando al modelo…\n22:15:07  El modelo no respondió bien. Se reintenta.\n22:15:07  Athena intenta corregir un problema y seguir.\n22:15:07  Consultando al modelo (intento 2)…\n22:15:18  El modelo (auto) pide usar 1 herramienta(s).\n22:15:18  Permiso concedido para escribir un archivo.\n22:15:18  Usando la herramienta: escribir un archivo.\n22:15:18  Archivo cambiado: informe.txt\n22:15:18  Consultando al modelo…\n22:15:24  El modelo (gpt-oss-120b) ha respondido.\n22:15:24  Comprobando el trabajo…\n22:15:24  Verificación: comprobado.\n22:15:24  Trabajo terminado.\n---\nSelecciona un trabajo para ver su detalle. Desde aquí puedes reanudar uno interrumpido, deshacer los cambios que hizo o usarlo como nuevo encargo."
+  },
+  "dialogos": [
+    {
+      "tipo": "sí/no",
+      "titulo": "Reanudar",
+      "mensaje": "Se reanudará este trabajo en C:\\Users\\jfeli\\AppData\\Local\\Temp\\athena-h05-hv9nl1ua\\proyecto, con los permisos y el presupuesto que le quedaban cuando se interrumpió, usando la conexión actual. ¿Continuar?",
+      "respuesta": true
+    }
+  ],
+  "pasos": [
+    {
+      "paso": "historial tras la caída",
+      "cumplido": true,
+      "segundos": 0.0,
+      "estado": "Describe el encargo",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "seleccionar",
+      "cumplido": true,
+      "segundos": 0.2,
+      "estado": "Describe el encargo",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "reanudar",
+      "cumplido": true,
+      "segundos": 43.1,
+      "estado": "Respuesta dada — no se ha cambiado ningún archivo",
+      "fase": "Completado"
+    },
+    {
+      "paso": "captura reanudado",
+      "cumplido": true,
+      "segundos": 0.1,
+      "estado": "Respuesta dada — no se ha cambiado ningún archivo",
+      "fase": "Completado"
+    }
+  ]
+}

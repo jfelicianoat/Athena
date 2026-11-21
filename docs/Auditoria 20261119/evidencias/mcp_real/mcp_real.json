@@ -1,0 +1,20 @@
+{
+  "herramientas_anunciadas": 84,
+  "herramienta": "mcp__tradingview__pine_analyze",
+  "preguntas": [
+    "mcp__tradingview__pine_analyze tier=r3_external_or_irreversible"
+  ],
+  "estado": "completed",
+  "lo_que_oye_el_modelo": "{\"call_id\": \"m-1\", \"ok\": true, \"output\": \"type=text text={\\n  \\\"success\\\": true,\\n  \\\"issue_count\\\": 0,\\n  \\\"diagnostics\\\": [],\\n  \\\"note\\\": \\\"No static analysis issues found. Use pine_compile or pine_smart_compile for full server-side compilation check.\\\"\\n}\", \"reference_uri\": null, \"truncated\": false}",
+  "servidor": {
+    "name": "tradingview",
+    "version": "2.0.0",
+    "description": "AI-assisted TradingView chart analysis and Pine Script development via Chrome DevTools Protocol"
+  },
+  "rpc": [
+    "initialize",
+    "tools/list",
+    "tools/call"
+  ],
+  "veredicto": "PASA"
+}

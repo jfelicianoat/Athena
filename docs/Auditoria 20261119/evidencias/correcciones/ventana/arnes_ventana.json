@@ -1,0 +1,308 @@
+{
+  "U01": {
+    "captura": "01_primera_ejecucion.png",
+    "estado": "Empieza eligiendo el proyecto",
+    "conexion": "Sin probar",
+    "texto": "\n---\nCómo empezar\n1. Elige la carpeta del proyecto.\n2. Configura la conexión y pulsa «Probar conexión».\n3. Elige el tipo de tarea y los permisos.\n4. Describe el encargo y pulsa «Iniciar».\n\nCada trabajo queda guardado en «Historial», desde donde puedes reanudarlo o deshacer sus cambios.\n---\n\n---\nTodavía no hay trabajos. Cada encargo que lances aparecerá aquí."
+  },
+  "U02": {
+    "captura": "02_historial_vacio.png",
+    "estado": "Empieza eligiendo el proyecto",
+    "conexion": "Sin probar",
+    "texto": "\n---\nCómo empezar\n1. Elige la carpeta del proyecto.\n2. Configura la conexión y pulsa «Probar conexión».\n3. Elige el tipo de tarea y los permisos.\n4. Describe el encargo y pulsa «Iniciar».\n\nCada trabajo queda guardado en «Historial», desde donde puedes reanudarlo o deshacer sus cambios.\n---\n\n---\nTodavía no hay trabajos. Cada encargo que lances aparecerá aquí."
+  },
+  "U03": {
+    "captura": "03_conexion_url_defecto.png",
+    "estado": "Empieza eligiendo el proyecto",
+    "conexion": "✖ Falta el token de AI_Broker (y AI OS Core no está disponible para darlo)",
+    "texto": "\n---\nCómo empezar\n1. Elige la carpeta del proyecto.\n2. Configura la conexión y pulsa «Probar conexión».\n3. Elige el tipo de tarea y los permisos.\n4. Describe el encargo y pulsa «Iniciar».\n\nCada trabajo queda guardado en «Historial», desde donde puedes reanudarlo o deshacer sus cambios.\n---\n\n---\nTodavía no hay trabajos. Cada encargo que lances aparecerá aquí."
+  },
+  "U04": {
+    "captura": "04_conexion_token_de_core.png",
+    "estado": "Empieza eligiendo el proyecto",
+    "conexion": "✔ Conectado a AI_Broker (informa estado degradado). El broker acepta el token. El token lo da AI OS Core. 1 modelos aptos en la lista.",
+    "texto": "\n---\nCómo empezar\n1. Elige la carpeta del proyecto.\n2. Configura la conexión y pulsa «Probar conexión».\n3. Elige el tipo de tarea y los permisos.\n4. Describe el encargo y pulsa «Iniciar».\n\nCada trabajo queda guardado en «Historial», desde donde puedes reanudarlo o deshacer sus cambios.\n---\n\n---\nTodavía no hay trabajos. Cada encargo que lances aparecerá aquí."
+  },
+  "U05": {
+    "captura": "05_conexion_ok.png",
+    "conexion": "✔ Conectado a AI_Broker (informa estado degradado). El broker acepta el token. 1 modelos aptos en la lista.",
+    "modelos": [
+      "modelo-bueno"
+    ]
+  },
+  "U06": {
+    "captura": "06_consulta_resultado.png",
+    "estado": "Respuesta dada — no se ha cambiado ningún archivo",
+    "conexion": "✔ Conectado a AI_Broker (informa estado degradado). El broker acepta el token. 1 modelos aptos en la lista.",
+    "texto": "¿Qué contiene este proyecto?\n---\n✔ Respuesta dada — no se ha cambiado ningún archivo\nEsto no demuestra que la respuesta sea correcta: Athena solo comprueba que respondió sin tocar el proyecto.\n\nRespuesta de Athena\nRespuesta de prueba\n\nComprobaciones\n✔ Respondió sin cambiar ningún archivo\n\nQué puedes hacer ahora\n• Si querías cambios, elige «Modificar el proyecto» y vuelve a pedirlo.\n\nDetalle técnico: estado=completed; verificación=passed; error=-\nAnswer given; no file was changed. The run answered without changing any file. It does not establish that the answer is correct.\n---\n02:45:03  Preparando el trabajo… (los trabajos anteriores siguen en «Historial»)\n02:45:03  Empieza el trabajo.\n02:45:03  Consultando al modelo…\n02:45:03  El modelo (modelo-bueno) ha respondido.\n02:45:03  Comprobando el trabajo…\n02:45:03  Verificación: comprobado.\n02:45:04  Trabajo terminado.\n---\nSelecciona un trabajo para ver su detalle. Desde aquí puedes reanudar uno interrumpido, deshacer los cambios que hizo o usarlo como nuevo encargo."
+  },
+  "U07": {
+    "captura": "07_dialogo_permiso_ventana_principal.png",
+    "fase": "Esperando tu permiso",
+    "permiso": "Escribir el archivo nota.txt",
+    "captura_dialogo": "08_dialogo_permiso.png"
+  },
+  "U08": {
+    "captura": "09_documento_resultado.png",
+    "estado": "Terminado y comprobado",
+    "fichero": true,
+    "deshacer_activo": "normal",
+    "texto": "Escribe la nota [[escribe:nota.txt:hola desde la auditoria]]\n---\n✔ Terminado y comprobado\nLos entregables existen, no están vacíos y los escribió este trabajo. Eso no demuestra que su contenido sea correcto.\n\nRespuesta de Athena\nRespuesta de prueba\n\nArchivos cambiados\n• nota.txt\n\nComprobaciones\n✔ nota.txt: producido\n\nQué puedes hacer ahora\n• Revisa los archivos cambiados. Si no te convence, pulsa «Deshacer cambios».\n\nDetalle técnico: estado=completed; verificación=passed; error=-\n1 deliverable(s) produced. The declared deliverables exist, are non-empty and were written by this run. It does not establish that their content is correct.\n---\n02:45:04  Preparando el trabajo… (los trabajos anteriores siguen en «Historial»)\n02:45:04  Empieza el trabajo.\n02:45:04  Consultando al modelo…\n02:45:04  El modelo (modelo-bueno) pide usar 1 herramienta(s).\n02:45:04  Pide permiso para escribir un archivo.\n02:45:05  Permiso concedido para escribir un archivo.\n02:45:05  Usando la herramienta: escribir un archivo.\n02:45:05  Archivo cambiado: nota.txt\n02:45:05  Consultando al modelo…\n02:45:05  El modelo (modelo-bueno) ha respondido.\n02:45:05  Comprobando el trabajo…\n02:45:05  Verificación: comprobado.\n02:45:05  Trabajo terminado.\n---\nSelecciona un trabajo para ver su detalle. Desde aquí puedes reanudar uno interrumpido, deshacer los cambios que hizo o usarlo como nuevo encargo."
+  },
+  "U09": {
+    "fichero_tras_deshacer": false
+  },
+  "U10": {
+    "captura": "10_historial.png",
+    "filas": 2,
+    "estado": "2 trabajo(s) guardados"
+  },
+  "U11": {
+    "captura": "11_trabajo_en_marcha.png",
+    "fase": "Arrancando",
+    "cola": "—"
+  },
+  "dialogos": [
+    {
+      "tipo": "error",
+      "titulo": "Athena",
+      "mensaje": "El modelo «modelo-solo-decision» no sirve para trabajar con Athena: el broker no le declara la capacidad «completion» (declara: decision), así que o rechaza el trabajo o lo contesta otro modelo en su lugar. Elige otro modelo de la lista o pulsa «Probar conexión» para verla.",
+      "respuesta": "ok"
+    },
+    {
+      "tipo": "sí/no/cancelar",
+      "titulo": "¿Consulta o cambio?",
+      "mensaje": "Tu encargo parece pedir cambios en archivos, pero el tipo de tarea es «Responder una pregunta», que no cambia nada.\n\n¿Quieres cambiarlo a «Modificar el proyecto»?\n\nSí: modificar el proyecto · No: solo responder · Cancelar: volver",
+      "respuesta": null
+    },
+    {
+      "tipo": "sí/no",
+      "titulo": "Deshacer cambios",
+      "mensaje": "Se devolverán a su estado anterior los archivos que escribió este trabajo:\n\n• nota.txt\n\nSi alguno lo cambiaste tú después, se deja como está y te lo diré. ¿Continuar?",
+      "respuesta": true
+    },
+    {
+      "tipo": "info",
+      "titulo": "Deshacer cambios",
+      "mensaje": "Restaurados:\n• nota.txt",
+      "respuesta": "ok"
+    },
+    {
+      "tipo": "aceptar/cancelar",
+      "titulo": "El trabajo no se podrá comprobar",
+      "mensaje": "Este proyecto no define comprobaciones que Athena pueda ejecutar (tests en AGENTS.md, pyproject.toml o package.json). El cambio se puede hacer, pero el trabajo terminará como «sin comprobar» en vez de «completado».\n\n¿Empezar igualmente?",
+      "respuesta": false
+    },
+    {
+      "tipo": "sí/no",
+      "titulo": "Cerrar Athena",
+      "mensaje": "Hay un trabajo en marcha. Si cierras, se detendrá y quedará guardado en «Historial». ¿Cerrar?",
+      "respuesta": true
+    }
+  ],
+  "pasos": [
+    {
+      "paso": "primera ejecución",
+      "cumplido": true,
+      "segundos": 0.1,
+      "estado": "Empieza eligiendo el proyecto",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "historial vacío",
+      "cumplido": true,
+      "segundos": 0.0,
+      "estado": "Empieza eligiendo el proyecto",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "captura historial vacío",
+      "cumplido": true,
+      "segundos": 0.1,
+      "estado": "Empieza eligiendo el proyecto",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "volver a Trabajo",
+      "cumplido": true,
+      "segundos": 0.0,
+      "estado": "Empieza eligiendo el proyecto",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "probar conexión con la URL por defecto",
+      "cumplido": true,
+      "segundos": 0.2,
+      "estado": "Empieza eligiendo el proyecto",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "captura conexión por defecto",
+      "cumplido": true,
+      "segundos": 0.1,
+      "estado": "Empieza eligiendo el proyecto",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "probar conexión: token vacío y Core lo da (H-01)",
+      "cumplido": true,
+      "segundos": 0.2,
+      "estado": "Empieza eligiendo el proyecto",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "captura H-01",
+      "cumplido": true,
+      "segundos": 0.1,
+      "estado": "Empieza eligiendo el proyecto",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "probar conexión con token",
+      "cumplido": true,
+      "segundos": 0.2,
+      "estado": "Empieza eligiendo el proyecto",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "captura conexión ok",
+      "cumplido": true,
+      "segundos": 0.1,
+      "estado": "Empieza eligiendo el proyecto",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "modelo sin completion",
+      "cumplido": true,
+      "segundos": 0.2,
+      "estado": "Error",
+      "fase": "Error"
+    },
+    {
+      "paso": "esperar fin",
+      "cumplido": true,
+      "segundos": 0.0,
+      "estado": "Error",
+      "fase": "Error"
+    },
+    {
+      "paso": "restaurar modelo",
+      "cumplido": true,
+      "segundos": 0.0,
+      "estado": "Error",
+      "fase": "Error"
+    },
+    {
+      "paso": "consulta",
+      "cumplido": true,
+      "segundos": 0.6,
+      "estado": "Respuesta dada — no se ha cambiado ningún archivo",
+      "fase": "Completado"
+    },
+    {
+      "paso": "captura consulta",
+      "cumplido": true,
+      "segundos": 0.1,
+      "estado": "Respuesta dada — no se ha cambiado ningún archivo",
+      "fase": "Completado"
+    },
+    {
+      "paso": "consulta con verbo de cambio (Cancelar)",
+      "cumplido": true,
+      "segundos": 0.0,
+      "estado": "Lista para empezar",
+      "fase": "Completado"
+    },
+    {
+      "paso": "documento con permiso",
+      "cumplido": true,
+      "segundos": 0.2,
+      "estado": "Athena espera tu permiso",
+      "fase": "Esperando tu permiso"
+    },
+    {
+      "paso": "captura diálogo de permiso",
+      "cumplido": true,
+      "segundos": 0.1,
+      "estado": "Athena espera tu permiso",
+      "fase": "Esperando tu permiso"
+    },
+    {
+      "paso": "permitir una vez",
+      "cumplido": true,
+      "segundos": 0.5,
+      "estado": "Terminado y comprobado",
+      "fase": "Completado"
+    },
+    {
+      "paso": "captura documento",
+      "cumplido": true,
+      "segundos": 0.1,
+      "estado": "Terminado y comprobado",
+      "fase": "Completado"
+    },
+    {
+      "paso": "deshacer",
+      "cumplido": true,
+      "segundos": 0.2,
+      "estado": "Terminado y comprobado",
+      "fase": "Completado"
+    },
+    {
+      "paso": "comprobar deshacer",
+      "cumplido": true,
+      "segundos": 0.0,
+      "estado": "Terminado y comprobado",
+      "fase": "Completado"
+    },
+    {
+      "paso": "cambio sin comprobaciones (aviso, Cancelar)",
+      "cumplido": true,
+      "segundos": 0.0,
+      "estado": "Lista para empezar",
+      "fase": "Completado"
+    },
+    {
+      "paso": "historial",
+      "cumplido": true,
+      "segundos": 0.2,
+      "estado": "Lista para empezar",
+      "fase": "Completado"
+    },
+    {
+      "paso": "captura historial",
+      "cumplido": true,
+      "segundos": 0.1,
+      "estado": "Lista para empezar",
+      "fase": "Completado"
+    },
+    {
+      "paso": "trabajo largo",
+      "cumplido": true,
+      "segundos": 0.0,
+      "estado": "Athena está trabajando",
+      "fase": "Arrancando"
+    },
+    {
+      "paso": "captura en marcha",
+      "cumplido": true,
+      "segundos": 0.1,
+      "estado": "Athena está trabajando",
+      "fase": "Arrancando"
+    },
+    {
+      "paso": "esperar 3 s",
+      "cumplido": false,
+      "segundos": 3.0,
+      "estado": "Athena está trabajando",
+      "fase": "Esperando al modelo"
+    },
+    {
+      "paso": "cerrar con trabajo en marcha",
+      "cumplido": true,
+      "segundos": 0.0,
+      "estado": "Cerrando…",
+      "fase": "Esperando al modelo"
+    }
+  ]
+}

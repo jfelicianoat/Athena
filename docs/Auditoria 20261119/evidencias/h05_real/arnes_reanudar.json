@@ -1,0 +1,51 @@
+{
+  "antes": {
+    "captura": "01_historial_interrumpido.png",
+    "reanudar": "normal",
+    "detalle": "Objetivo: Crea informe.txt con una sola línea que diga qué hace el proyecto (lee README.md).\nEstado: Interrumpido (se puede reanudar)\nTipo: Documentos\nProyecto: C:\\Users\\jfeli\\AppData\\Local\\Temp\\athena-h05-e8a08ayb\\proyecto\nÚltima actualización: 2026-11-19 21:56\nIdentificador: c1863b89-18d2-4072-8412-590571c1ec7d"
+  },
+  "despues": {
+    "captura": "02_reanudado_resultado.png",
+    "estado": "No se ha podido completar",
+    "fichero": false,
+    "texto": "Crea informe.txt con una sola línea que diga qué hace el proyecto (lee README.md).\n---\n✖ No se ha podido completar\nEl proveedor del modelo no respondió.\n\nQué puedes hacer ahora\n• Revisa la pestaña «Actividad» para ver en qué paso se quedó.\n\nDetalle técnico: estado=failed; verificación=-; error=model_transient_error\nAI_Broker returned an empty tool decision\n---\n21:56:40  Preparando el trabajo… (los trabajos anteriores siguen en «Historial»)\n21:56:43  Se reanuda el trabajo.\n21:56:43  Consultando al modelo…\n21:57:08  El modelo (auto) pide usar 1 herramienta(s).\n21:57:08  Permiso concedido para buscar archivos.\n21:57:08  Usando la herramienta: buscar archivos.\n21:57:08  Consultando al modelo…\n21:57:25  El modelo no respondió bien. Se reintenta.\n21:57:25  Athena intenta corregir un problema y seguir.\n21:57:26  Consultando al modelo (intento 2)…\n21:57:53  El modelo (gpt-oss-120b) pide usar 1 herramienta(s).\n21:57:53  Permiso concedido para leer un archivo.\n21:57:53  Usando la herramienta: leer un archivo.\n21:57:53  Consultando al modelo…\n21:58:19  El modelo no respondió bien. Se reintenta.\n21:58:19  Athena intenta corregir un problema y seguir.\n21:58:19  Consultando al modelo (intento 2)…\n21:58:23  El modelo no respondió bien. Se reintenta.\n21:58:23  Athena intenta corregir un problema y seguir.\n21:58:23  Consultando al modelo (intento 3)…\n21:58:34  El modelo no respondió bien.\n21:58:34  El trabajo no se ha podido completar.\n---\nSelecciona un trabajo para ver su detalle. Desde aquí puedes reanudar uno interrumpido, deshacer los cambios que hizo o usarlo como nuevo encargo."
+  },
+  "dialogos": [
+    {
+      "tipo": "sí/no",
+      "titulo": "Reanudar",
+      "mensaje": "Se reanudará este trabajo en C:\\Users\\jfeli\\AppData\\Local\\Temp\\athena-h05-e8a08ayb\\proyecto, con los permisos y el presupuesto que le quedaban cuando se interrumpió, usando la conexión actual. ¿Continuar?",
+      "respuesta": true
+    }
+  ],
+  "pasos": [
+    {
+      "paso": "historial tras la caída",
+      "cumplido": true,
+      "segundos": 0.0,
+      "estado": "Describe el encargo",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "seleccionar",
+      "cumplido": true,
+      "segundos": 0.1,
+      "estado": "Describe el encargo",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "reanudar",
+      "cumplido": true,
+      "segundos": 114.2,
+      "estado": "No se ha podido completar",
+      "fase": "No completado"
+    },
+    {
+      "paso": "captura reanudado",
+      "cumplido": true,
+      "segundos": 0.1,
+      "estado": "No se ha podido completar",
+      "fase": "No completado"
+    }
+  ]
+}

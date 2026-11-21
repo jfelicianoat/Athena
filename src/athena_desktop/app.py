@@ -166,7 +166,7 @@ class ApprovalDialog:
             scroll.configure(command=preview.yview)
             scroll.pack(side=tk.RIGHT, fill=tk.Y)
             preview.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-            preview.tag_configure("add", foreground="#1a7f37")
+            preview.tag_configure("add", foreground="#116329")
             preview.tag_configure("del", foreground="#cf222e")
             preview.tag_configure("hunk", foreground="#0550ae")
             for line in view.preview.splitlines():
@@ -288,6 +288,8 @@ class AthenaDesktopApp:
         #: de un destino en otro (A03).
         self._tokens: dict[tuple[str, str], str] = {}
         self._config_widgets: list[ttk.Widget] = []
+        #: El fondo del cuadro del encargo cuando se puede escribir (H-07).
+        self._objective_background = ""
 
         provider = self.settings.provider
         self.workspace = tk.StringVar(value=self.settings.workspace)
@@ -349,7 +351,7 @@ class AthenaDesktopApp:
         style.configure("Section.TLabelframe.Label", font=("Segoe UI", 10, "bold"))
         style.configure("Run.TButton", font=("Segoe UI", 10, "bold"), padding=(16, 6))
         style.configure("Status.TLabel", foreground="#2563a6", font=("Segoe UI", 10, "bold"))
-        style.configure("Ok.TLabel", foreground="#1a7f37")
+        style.configure("Ok.TLabel", foreground="#116329")
         style.configure("Bad.TLabel", foreground="#cf222e")
         style.configure("DialogTitle.TLabel", font=("Segoe UI", 13, "bold"))
 
@@ -424,9 +426,10 @@ class AthenaDesktopApp:
         url = ttk.Entry(body, textvariable=self.base_url)
         url.pack(fill=tk.X, pady=(0, 6))
         url.bind("<FocusOut>", lambda _: self._switch_credential())
-        ttk.Label(body, text="Modelo o preferencia").pack(anchor=tk.W)
-        # Editable: se puede escribir cualquier preferencia, y «Probar conexión» rellena la
-        # lista con los modelos del broker que sirven para trabajar con Athena (I-06).
+        ttk.Label(body, text="Modelo (vacío: lo elige el broker)").pack(anchor=tk.W)
+        # Editable, y «Probar conexión» rellena la lista con los modelos del broker que
+        # sirven para trabajar con Athena (I-06). Un modelo escrito es una eleccion del run,
+        # no una preferencia: el broker no puede cambiarlo por otro (ADR-034, H-10).
         model = ttk.Combobox(body, textvariable=self.model, values=())
         model.pack(fill=tk.X, pady=(0, 6))
         self.model_box = model
@@ -616,7 +619,7 @@ class AthenaDesktopApp:
         self.retry_button.pack(side=tk.LEFT, padx=(8, 0))
         self.answer = self._text_panel(result_tab, font=("Segoe UI", 10))
         self.answer.tag_configure("head", font=("Segoe UI", 12, "bold"))
-        self.answer.tag_configure("ok", foreground="#1a7f37")
+        self.answer.tag_configure("ok", foreground="#116329")
         self.answer.tag_configure("warn", foreground="#9a6700")
         self.answer.tag_configure("error", foreground="#cf222e")
         self.answer.tag_configure("section", font=("Segoe UI", 10, "bold"))
@@ -630,7 +633,7 @@ class AthenaDesktopApp:
             variable=self.show_technical,
         ).pack(side=tk.LEFT)
         self.activity = self._text_panel(activity_tab, font=("Segoe UI", 9))
-        self.activity.tag_configure("ok", foreground="#1a7f37")
+        self.activity.tag_configure("ok", foreground="#116329")
         self.activity.tag_configure("warn", foreground="#9a6700")
         self.activity.tag_configure("error", foreground="#cf222e")
         self.activity.tag_configure("tech", foreground="#8b949e", font=("Cascadia Mono", 8))
@@ -1056,9 +1059,11 @@ class AthenaDesktopApp:
         self.p_last.set("—")
         self.p_permission.set("Ninguno")
         self.p_queue.set("—")
+        # Una consulta no escribe aunque el desplegable diga otra cosa (`run_options`), H-06.
+        files = "no (consulta)" if configuration.task_kind == "question" else self.writes.get()
         self.p_config.set(
             f"{Path(configuration.workspace).name} · {self.provider.get()} "
-            f"{configuration.model or '(modelo por defecto)'} · archivos: {self.writes.get()} "
+            f"{configuration.model or '(lo elige el broker)'} · archivos: {files} "
             f"· ejecutar: {self.execution.get()}"
         )
         self.status.set("Athena está trabajando")
@@ -1134,6 +1139,13 @@ class AthenaDesktopApp:
             with contextlib.suppress(tk.TclError):
                 _set_ttk_state(widget, enabled=enabled)
         self.objective.configure(state=tk.NORMAL if enabled else tk.DISABLED)
+        # Un Text deshabilitado sigue blanco y parece editable (H-07): se ve gris en marcha.
+        if not self._objective_background:
+            self._objective_background = str(self.objective.cget("background"))
+        with contextlib.suppress(tk.TclError):
+            self.objective.configure(
+                background=self._objective_background if enabled else "SystemButtonFace"
+            )
         if enabled:
             self._refresh()
 
@@ -1526,6 +1538,15 @@ class AthenaDesktopApp:
         ):
             return
         self.workspace.set(summary.project)
+        # El tipo del trabajo guardado, no el que haya en el formulario: de el depende como
+        # se presenta el resultado (H-05: un documento reanudado decia «no se ha cambiado
+        # ningun archivo» encima de la lista de archivos cambiados).
+        if summary.task_kind in ("question", "change", "documents"):
+            self.task_kind.set(summary.task_kind)
+        if summary.task_kind != "question" and self.writes.get() == _MODE_NAMES["off"]:
+            # Los permisos reales salen del manifiesto del run; esto solo evita que la
+            # validacion del formulario impida reanudar.
+            self.writes.set(_MODE_NAMES["ask"])
         self.objective.configure(state=tk.NORMAL)
         self.objective.delete("1.0", tk.END)
         self.objective.insert("1.0", summary.objective)

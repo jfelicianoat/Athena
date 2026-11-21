@@ -1,0 +1,800 @@
+[
+  {
+    "id": "E01",
+    "objetivo": "health público sin token",
+    "esperado": "200",
+    "observado": [
+      200,
+      {
+        "status": "ok",
+        "wire_version": 1,
+        "runs": 0
+      }
+    ],
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "E02",
+    "objetivo": "ruta protegida sin token",
+    "esperado": "401",
+    "observado": 401,
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "E03",
+    "objetivo": "token incorrecto",
+    "esperado": "401",
+    "observado": 401,
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "E04",
+    "objetivo": "token con carácter no ASCII",
+    "esperado": "401 (credencial incorrecta)",
+    "observado": [
+      401,
+      {
+        "error": {
+          "code": "unauthorized",
+          "message": "Bad token"
+        }
+      }
+    ],
+    "estado": "PASA",
+    "nota": "compare_digest con str no ASCII lanza TypeError"
+  },
+  {
+    "id": "E05",
+    "objetivo": "consulta con perfil questions",
+    "esperado": "201 y run completed",
+    "observado": [
+      201,
+      "completed"
+    ],
+    "estado": "PASA",
+    "nota": "",
+    "detalle": {
+      "run_id": "0b044f28-0f45-44a5-ba84-661df347cb8c",
+      "workspace_id": "proj-7249544d5b9d45d0641e903217b53412",
+      "status": "completed",
+      "resumable": false,
+      "degraded": false,
+      "objective": "¿Qué hay en este proyecto?",
+      "created_at": "2026-11-20T02:43:52.974495+00:00",
+      "updated_at": "2026-11-20T02:43:53.060306+00:00",
+      "working_memory": {
+        "objective": "¿Qué hay en este proyecto?",
+        "constraints": [],
+        "current_plan": [],
+        "current_step": null,
+        "facts": [],
+        "files_examined": [],
+        "files_modified": [],
+        "commands_run": [],
+        "decisions": [],
+        "errors": [],
+        "verification": {
+          "status": "passed",
+          "summary": "Answer given; no file was changed. The run answered without changing any file. It does not establish that the answer is correct.",
+          "evidence_count": 1
+        },
+        "remaining_work": []
+      },
+      "verification": {
+        "status": "passed",
+        "summary": "Answer given; no file was changed. The run answered without changing any file. It does not establish that the answer is correct.",
+        "evidence_count": 1
+      },
+      "tool_references": [],
+      "checkpoints": [
+        {
+          "name": "started",
+          "occurred_at": "2026-11-20T02:43:52.974819+00:00",
+          "payload": {}
+        },
+        {
+          "name": "completed",
+          "occurred_at": "2026-11-20T02:43:53.060299+00:00",
+          "payload": {
+            "verification": "passed"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": "E06",
+    "objetivo": "documento con writes=allow escribe el entregable",
+    "esperado": "completed y nota.txt en disco",
+    "observado": [
+      201,
+      "completed",
+      true
+    ],
+    "estado": "PASA",
+    "nota": "",
+    "detalle": {
+      "run_id": "ab11379b-c511-4ca6-8f09-468ade30157e",
+      "workspace_id": "proj-7249544d5b9d45d0641e903217b53412",
+      "status": "completed",
+      "resumable": false,
+      "degraded": false,
+      "objective": "Crea la nota [[escribe:nota.txt:hola auditoria]]",
+      "created_at": "2026-11-20T02:43:53.610680+00:00",
+      "updated_at": "2026-11-20T02:43:53.832310+00:00",
+      "working_memory": {
+        "objective": "Crea la nota [[escribe:nota.txt:hola auditoria]]",
+        "constraints": [],
+        "current_plan": [],
+        "current_step": null,
+        "facts": [],
+        "files_examined": [],
+        "files_modified": [
+          "nota.txt"
+        ],
+        "commands_run": [],
+        "decisions": [],
+        "errors": [],
+        "verification": {
+          "status": "passed",
+          "summary": "1 deliverable(s) produced. The declared deliverables exist, are non-empty and were written by this run. It does not establish that their content is correct.",
+          "evidence_count": 1
+        },
+        "remaining_work": []
+      },
+      "verification": {
+        "status": "passed",
+        "summary": "1 deliverable(s) produced. The declared deliverables exist, are non-empty and were written by this run. It does not establish that their content is correct.",
+        "evidence_count": 1
+      },
+      "tool_references": [],
+      "checkpoints": [
+        {
+          "name": "started",
+          "occurred_at": "2026-11-20T02:43:53.610730+00:00",
+          "payload": {}
+        },
+        {
+          "name": "tool_calls",
+          "occurred_at": "2026-11-20T02:43:53.754762+00:00",
+          "payload": {
+            "iteration": 1,
+            "tool_calls": [
+              "write_file"
+            ]
+          }
+        },
+        {
+          "name": "completed",
+          "occurred_at": "2026-11-20T02:43:53.832303+00:00",
+          "payload": {
+            "verification": "passed"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": "E07",
+    "objetivo": "puntos de deshacer del run",
+    "esperado": "200 con al menos un punto",
+    "observado": [
+      200,
+      {
+        "run_id": "ab11379b-c511-4ca6-8f09-468ade30157e",
+        "points": [
+          {
+            "checkpoint_id": "c39cba85-90d2-4745-a8a1-d147f5989993",
+            "task_id": "ab11379b-c511-4ca6-8f09-468ade30157e",
+            "scope": "run",
+            "covers": [],
+            "files": [
+              "nota.txt"
+            ],
+            "created_at": "2026-11-20T02:43:53.716505+00:00"
+          }
+        ]
+      }
+    ],
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "E08",
+    "objetivo": "deshacer elimina el fichero creado",
+    "esperado": "200 y nota.txt ya no existe",
+    "observado": [
+      200,
+      {
+        "restored": [
+          "nota.txt"
+        ],
+        "protected": [],
+        "conflicts": [],
+        "failed": [],
+        "scope": "run"
+      },
+      false
+    ],
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "E09",
+    "objetivo": "writes=ask sin cliente conectado: se deniega y no escribe",
+    "esperado": "estado final != completed y pedido.txt no existe",
+    "observado": [
+      "failed",
+      false
+    ],
+    "estado": "PASA",
+    "nota": "",
+    "detalle": {
+      "run_id": "1ec5f166-786f-4f9d-8d07-c20ee65bb558",
+      "workspace_id": "proj-7249544d5b9d45d0641e903217b53412",
+      "status": "failed",
+      "resumable": false,
+      "degraded": false,
+      "objective": "Crea [[escribe:pedido.txt:x]]",
+      "created_at": "2026-11-20T02:43:54.327483+00:00",
+      "updated_at": "2026-11-20T02:43:59.810287+00:00",
+      "working_memory": {
+        "objective": "Crea [[escribe:pedido.txt:x]]",
+        "constraints": [],
+        "current_plan": [],
+        "current_step": null,
+        "facts": [],
+        "files_examined": [],
+        "files_modified": [],
+        "commands_run": [],
+        "decisions": [
+          "Repair cycle 1: Verification failed: pedido.txt does not exist.",
+          "Repair cycle 2: Verification failed: pedido.txt does not exist."
+        ],
+        "errors": [
+          {
+            "code": "permission_denied",
+            "message": "Permission deny for tool write_file",
+            "recovery_action": "no_retry"
+          }
+        ],
+        "verification": {
+          "status": "failed",
+          "summary": "Verification failed: pedido.txt does not exist.",
+          "evidence_count": 1
+        },
+        "remaining_work": [
+          "Make the failing verification checks pass."
+        ]
+      },
+      "verification": {
+        "status": "failed",
+        "summary": "Verification failed: pedido.txt does not exist.",
+        "evidence_count": 1
+      },
+      "tool_references": [],
+      "checkpoints": [
+        {
+          "name": "started",
+          "occurred_at": "2026-11-20T02:43:54.327560+00:00",
+          "payload": {}
+        },
+        {
+          "name": "tool_calls",
+          "occurred_at": "2026-11-20T02:43:59.378722+00:00",
+          "payload": {
+            "iteration": 1,
+            "tool_calls": [
+              "write_file"
+            ]
+          }
+        },
+        {
+          "name": "iteration",
+          "occurred_at": "2026-11-20T02:43:59.455522+00:00",
+          "payload": {
+            "iteration": 2,
+            "repair_cycles": 1
+          }
+        },
+        {
+          "name": "iteration",
+          "occurred_at": "2026-11-20T02:43:59.533304+00:00",
+          "payload": {
+            "iteration": 3,
+            "repair_cycles": 2
+          }
+        },
+        {
+          "name": "failed",
+          "occurred_at": "2026-11-20T02:43:59.810278+00:00",
+          "payload": {
+            "error_code": "verification_failure"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": "E10",
+    "objetivo": "misma Idempotency-Key con otro objetivo",
+    "esperado": "sin regla documentada (ADR-021 solo promete un run por clave): se registra",
+    "observado": [
+      201,
+      {
+        "run_id": "0131873c-b8d6-45e6-905d-47e64d9924b2",
+        "workspace_id": "proj-7249544d5b9d45d0641e903217b53412",
+        "writes": "ask",
+        "exec": "ask"
+      },
+      200,
+      {
+        "run_id": "0131873c-b8d6-45e6-905d-47e64d9924b2",
+        "idempotent_replay": true,
+        "workspace_id": "proj-7249544d5b9d45d0641e903217b53412"
+      }
+    ],
+    "estado": "OBSERVADO",
+    "nota": "OBSERVADO: devuelve el run del primer objetivo; ver R-01"
+  },
+  {
+    "id": "E11",
+    "objetivo": "modelo que nunca da la decisión estructurada",
+    "esperado": "failed, acotado",
+    "observado": [
+      "failed",
+      null
+    ],
+    "estado": "PASA",
+    "nota": "",
+    "detalle": {
+      "run_id": "eafbb0c2-ffa5-4303-a3f2-e8181618ab49",
+      "workspace_id": "proj-7249544d5b9d45d0641e903217b53412",
+      "status": "failed",
+      "resumable": false,
+      "degraded": false,
+      "objective": "Responde [[prosa]]",
+      "created_at": "2026-11-20T02:44:00.936869+00:00",
+      "updated_at": "2026-11-20T02:44:01.389905+00:00",
+      "working_memory": {
+        "objective": "Responde [[prosa]]",
+        "constraints": [],
+        "current_plan": [],
+        "current_step": null,
+        "facts": [],
+        "files_examined": [],
+        "files_modified": [],
+        "commands_run": [],
+        "decisions": [],
+        "errors": [
+          {
+            "code": "model_transient_error",
+            "message": "AI_Broker model did not return the structured Athena tool decision. Model response: Claro, aquí tienes una respuesta en prosa sin JSON.",
+            "recovery_action": "retry_backoff"
+          },
+          {
+            "code": "model_transient_error",
+            "message": "AI_Broker model did not return the structured Athena tool decision. Model response: Claro, aquí tienes una respuesta en prosa sin JSON.",
+            "recovery_action": "retry_backoff"
+          },
+          {
+            "code": "model_transient_error",
+            "message": "AI_Broker model did not return the structured Athena tool decision. Model response: Claro, aquí tienes una respuesta en prosa sin JSON.",
+            "recovery_action": "retry_backoff"
+          }
+        ],
+        "verification": {},
+        "remaining_work": []
+      },
+      "verification": {},
+      "tool_references": [],
+      "checkpoints": [
+        {
+          "name": "started",
+          "occurred_at": "2026-11-20T02:44:00.936910+00:00",
+          "payload": {}
+        },
+        {
+          "name": "failed",
+          "occurred_at": "2026-11-20T02:44:01.389894+00:00",
+          "payload": {
+            "error_code": "model_transient_error"
+          }
+        }
+      ]
+    },
+    "tareas_broker": 11
+  },
+  {
+    "id": "E12",
+    "objetivo": "broker con fallo permanente",
+    "esperado": "failed",
+    "observado": "failed",
+    "estado": "PASA",
+    "nota": "",
+    "detalle": {
+      "run_id": "52db16af-9bd2-4c72-9e62-ad016df6f31e",
+      "workspace_id": "proj-7249544d5b9d45d0641e903217b53412",
+      "status": "failed",
+      "resumable": false,
+      "degraded": false,
+      "objective": "Responde [[falla]]",
+      "created_at": "2026-11-20T02:44:01.548441+00:00",
+      "updated_at": "2026-11-20T02:44:01.635925+00:00",
+      "working_memory": {
+        "objective": "Responde [[falla]]",
+        "constraints": [],
+        "current_plan": [],
+        "current_step": null,
+        "facts": [],
+        "files_examined": [],
+        "files_modified": [],
+        "commands_run": [],
+        "decisions": [],
+        "errors": [
+          {
+            "code": "model_permanent_error",
+            "message": "AI_Broker could not complete the task: MODEL_ERROR: falla simulada",
+            "recovery_action": "abort"
+          }
+        ],
+        "verification": {},
+        "remaining_work": []
+      },
+      "verification": {},
+      "tool_references": [],
+      "checkpoints": [
+        {
+          "name": "started",
+          "occurred_at": "2026-11-20T02:44:01.548497+00:00",
+          "payload": {}
+        },
+        {
+          "name": "failed",
+          "occurred_at": "2026-11-20T02:44:01.635917+00:00",
+          "payload": {
+            "error_code": "model_permanent_error"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": "E13",
+    "objetivo": "cancelar un run en marcha y repetir",
+    "esperado": "202 → cancelled → 409",
+    "observado": [
+      202,
+      "cancelled",
+      409
+    ],
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "E14",
+    "objetivo": "workspace relativo",
+    "esperado": "4xx",
+    "observado": [
+      403,
+      {
+        "error": {
+          "code": "workspace_boundary",
+          "message": "Workspace root is unavailable: relativo\\x"
+        }
+      }
+    ],
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "E15",
+    "objetivo": "workspace inexistente",
+    "esperado": "4xx",
+    "observado": [
+      403,
+      {
+        "error": {
+          "code": "workspace_boundary",
+          "message": "Workspace root is unavailable: C:\\Users\\jfeli\\AppData\\Local\\Temp\\athena-e2e-8ebuaorv\\no-existe"
+        }
+      }
+    ],
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "E16",
+    "objetivo": "modo de escritura inválido",
+    "esperado": "400",
+    "observado": [
+      400,
+      {
+        "error": {
+          "code": "tool_validation_error",
+          "message": "writes must be one of off, ask, allow"
+        }
+      }
+    ],
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "E17",
+    "objetivo": "tras matar el proceso el run queda reanudable",
+    "esperado": "recovery_pending",
+    "observado": {
+      "run_id": "f5bfca41-a75c-4a81-9545-3a12a07edd60",
+      "workspace_id": "proj-7249544d5b9d45d0641e903217b53412",
+      "status": "recovery_pending",
+      "resumable": true,
+      "degraded": false,
+      "objective": "Tarea larga [[lento:60]]",
+      "files_modified": [],
+      "updated_at": "2026-11-20T02:44:08.209271+00:00"
+    },
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "E18",
+    "objetivo": "reanudar un run interrumpido",
+    "esperado": "2xx",
+    "observado": [
+      202,
+      {
+        "run_id": "f5bfca41-a75c-4a81-9545-3a12a07edd60",
+        "resumed": true
+      }
+    ],
+    "estado": "PASA",
+    "nota": "",
+    "final": "recovery_pending"
+  },
+  {
+    "id": "E19",
+    "objetivo": "perfil questions con el modelo pidiendo write_file (writes=allow pedido)",
+    "esperado": "no se crea consulta.txt (perfil questions sin herramientas de escritura)",
+    "observado": [
+      201,
+      "failed",
+      false
+    ],
+    "estado": "PASA",
+    "nota": "",
+    "detalle": {
+      "run_id": "91bb3ec4-7532-4861-9597-0627744d2d0b",
+      "workspace_id": "proj-7249544d5b9d45d0641e903217b53412",
+      "status": "failed",
+      "resumable": false,
+      "degraded": false,
+      "objective": "Responde y de paso [[escribe:consulta.txt:no debería]]",
+      "created_at": "2026-11-20T02:44:08.412400+00:00",
+      "updated_at": "2026-11-20T02:44:08.500338+00:00",
+      "working_memory": {
+        "objective": "Responde y de paso [[escribe:consulta.txt:no debería]]",
+        "constraints": [],
+        "current_plan": [],
+        "current_step": null,
+        "facts": [],
+        "files_examined": [],
+        "files_modified": [],
+        "commands_run": [],
+        "decisions": [],
+        "errors": [
+          {
+            "code": "model_permanent_error",
+            "message": "AI_Broker selected a tool Athena did not offer",
+            "recovery_action": "abort"
+          }
+        ],
+        "verification": {},
+        "remaining_work": []
+      },
+      "verification": {},
+      "tool_references": [],
+      "checkpoints": [
+        {
+          "name": "started",
+          "occurred_at": "2026-11-20T02:44:08.412451+00:00",
+          "payload": {}
+        },
+        {
+          "name": "failed",
+          "occurred_at": "2026-11-20T02:44:08.500332+00:00",
+          "payload": {
+            "error_code": "model_permanent_error"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": "C-allow",
+    "objetivo": "Core responde «allow» a policies/evaluate",
+    "esperado": "201; tareas al broker solo si 201",
+    "observado": {
+      "http": 201,
+      "cuerpo": {
+        "run_id": "9880a0e6-4afa-492c-9cae-b1826c2b4a89",
+        "workspace_id": "proj-5b1139dfad32b2fea581b40ce4f1d1e1",
+        "writes": "ask",
+        "exec": "ask"
+      },
+      "tareas_broker": 1,
+      "recibos": [
+        "accepted",
+        "succeeded"
+      ],
+      "saltos": [
+        "request",
+        "response"
+      ],
+      "final": "completed"
+    },
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "C-deny",
+    "objetivo": "Core responde «deny» a policies/evaluate",
+    "esperado": "403; tareas al broker solo si 201",
+    "observado": {
+      "http": 403,
+      "cuerpo": {
+        "error": {
+          "code": "core_denied",
+          "message": "AI OS Core no autoriza este run (DENY). Revisa las políticas de «athena:broker»."
+        }
+      },
+      "tareas_broker": 0,
+      "recibos": [],
+      "saltos": [],
+      "final": null
+    },
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "C-require",
+    "objetivo": "Core responde «require» a policies/evaluate",
+    "esperado": "403; tareas al broker solo si 201",
+    "observado": {
+      "http": 403,
+      "cuerpo": {
+        "error": {
+          "code": "core_denied",
+          "message": "AI OS Core pide una aprobación humana antes de este run (políticas de «athena:broker»)."
+        }
+      },
+      "tareas_broker": 0,
+      "recibos": [],
+      "saltos": [],
+      "final": null
+    },
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "C-html",
+    "objetivo": "Core responde «html» a policies/evaluate",
+    "esperado": "503; tareas al broker solo si 201",
+    "observado": {
+      "http": 503,
+      "cuerpo": {
+        "error": {
+          "code": "core_unavailable",
+          "message": "AI OS Core (http://127.0.0.1:48942) no respondió con JSON. Por seguridad el run no se ha creado."
+        }
+      },
+      "tareas_broker": 0,
+      "recibos": [],
+      "saltos": [],
+      "final": null
+    },
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "C-lista",
+    "objetivo": "Core responde «lista» a policies/evaluate",
+    "esperado": "503; tareas al broker solo si 201",
+    "observado": {
+      "http": 503,
+      "cuerpo": {
+        "error": {
+          "code": "core_unavailable",
+          "message": "AI OS Core (http://127.0.0.1:29833) respondió algo que no es una decisión. Por seguridad el run no se ha creado."
+        }
+      },
+      "tareas_broker": 0,
+      "recibos": [],
+      "saltos": [],
+      "final": null
+    },
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "C-500",
+    "objetivo": "Core responde «500» a policies/evaluate",
+    "esperado": "503; tareas al broker solo si 201",
+    "observado": {
+      "http": 503,
+      "cuerpo": {
+        "error": {
+          "code": "core_unavailable",
+          "message": "AI OS Core respondió 500: {\"detail\": \"boom\"}. Por seguridad el run no se ha creado."
+        }
+      },
+      "tareas_broker": 0,
+      "recibos": [],
+      "saltos": [],
+      "final": null
+    },
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "C-caido",
+    "objetivo": "Core no escucha",
+    "esperado": "503 core_unavailable",
+    "observado": [
+      503,
+      {
+        "error": {
+          "code": "core_unavailable",
+          "message": "No se pudo consultar a AI OS Core en http://127.0.0.1:18279 (ATHENA_CORE_URL). Arranca Core («Arrancar AI OS Core.bat») o quita esa conexión. Por seguridad el run no se ha creado."
+        }
+      }
+    ],
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "C-implicito-caido",
+    "objetivo": "sin ATHENA_CORE_URL, con athena.json y Core parado",
+    "esperado": "se registra (impacto de H-04)",
+    "observado": [
+      503,
+      {
+        "error": {
+          "code": "core_unavailable",
+          "message": "No se pudo consultar a AI OS Core en http://127.0.0.1:15887 (fichero de conexión athena.json que deja AI OS Core). Arranca Core («Arrancar AI OS Core.bat») o quita esa conexión. Por seguridad el run no se ha creado."
+        }
+      }
+    ],
+    "estado": "OBSERVADO",
+    "nota": ""
+  },
+  {
+    "id": "C-implicito",
+    "objetivo": "sin ATHENA_CORE_URL pero con conexion/athena.json",
+    "esperado": "README (0.3.8): el fichero de conexión activa Core → decide Core (DENY → 403)",
+    "observado": [
+      403,
+      {
+        "error": {
+          "code": "core_denied",
+          "message": "AI OS Core no autoriza este run (DENY). Revisa las políticas de «athena:broker»."
+        }
+      }
+    ],
+    "estado": "PASA",
+    "nota": "en 0.3.7 el README decía que sin ATHENA_CORE_URL nada cambiaba (H-04)"
+  },
+  {
+    "id": "C-token",
+    "objetivo": "token del Broker servido por Core",
+    "esperado": "201 y completed",
+    "observado": [
+      201,
+      "completed"
+    ],
+    "estado": "PASA",
+    "nota": ""
+  }
+]

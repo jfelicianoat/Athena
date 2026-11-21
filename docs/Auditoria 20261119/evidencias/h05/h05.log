@@ -1,0 +1,9 @@
+fase 1: 0  
+informe.txt tras la caída: False
+fase 2: 0 - historial tras la caída
+  TIEMPO AGOTADO esperando: historial tras la caída
+- seleccionar
+  ERROR en acción: IndexError('tuple index out of range')
+- reanudar
+- captura reanudado
+ 

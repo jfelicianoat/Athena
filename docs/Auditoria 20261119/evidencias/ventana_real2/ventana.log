@@ -1,0 +1,19 @@
+- H-01 real: token vacío, Core real lo daría
+- captura H-01
+- probar conexión real con token
+- captura conexión
+- modelo real sin completion (tev1:4b)
+  [diálogo error] Athena: 'El modelo «tev1:4b» no sirve para trabajar con Athena: el broker no le declara la capacidad «completion» (declara: decision), así que o rechaza el trabajo o lo ' -> ok
+- registro I-06
+- consulta real
+- captura consulta
+- documento real con permiso
+- permitir hasta terminar
+- permisos concedidos
+- captura documento
+- deshacer
+  [diálogo sí/no] Deshacer cambios: 'Se devolverán a su estado anterior los archivos que escribió este trabajo:\n\n(los que escribió)\n\nSi alguno lo cambiaste tú después, se deja como está y te lo dir' -> True
+  [diálogo info] Deshacer cambios: 'No había nada que deshacer de este trabajo.' -> ok
+- tras deshacer
+base: C:\Users\jfeli\AppData\Local\Temp\athena-ui-real-0ksv_zkx
+salida=0

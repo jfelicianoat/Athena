@@ -1,0 +1,68 @@
+{
+  "resultado": {
+    "http": 201,
+    "estado": "completed",
+    "errores": [],
+    "tareas_al_broker": 2
+  },
+  "detalle": {
+    "run_id": "3a49097d-adac-40c4-bbbc-b86cce1f5ca7",
+    "workspace_id": "proj-2b8cc7b6157aa6c6e4e77926beaca59e",
+    "status": "completed",
+    "resumable": false,
+    "degraded": false,
+    "objective": "Comprueba el entorno [[bash:python:5]]",
+    "created_at": "2026-11-20T02:44:28.293688+00:00",
+    "updated_at": "2026-11-20T02:44:28.667429+00:00",
+    "working_memory": {
+      "objective": "Comprueba el entorno [[bash:python:5]]",
+      "constraints": [],
+      "current_plan": [],
+      "current_step": null,
+      "facts": [],
+      "files_examined": [],
+      "files_modified": [],
+      "commands_run": [
+        "python"
+      ],
+      "decisions": [],
+      "errors": [],
+      "verification": {
+        "status": "passed",
+        "summary": "All project checks pass.",
+        "evidence_count": 1
+      },
+      "remaining_work": []
+    },
+    "verification": {
+      "status": "passed",
+      "summary": "All project checks pass.",
+      "evidence_count": 1
+    },
+    "tool_references": [],
+    "checkpoints": [
+      {
+        "name": "started",
+        "occurred_at": "2026-11-20T02:44:28.293808+00:00",
+        "payload": {}
+      },
+      {
+        "name": "tool_calls",
+        "occurred_at": "2026-11-20T02:44:28.499184+00:00",
+        "payload": {
+          "iteration": 1,
+          "tool_calls": [
+            "bash"
+          ]
+        }
+      },
+      {
+        "name": "completed",
+        "occurred_at": "2026-11-20T02:44:28.667421+00:00",
+        "payload": {
+          "verification": "passed"
+        }
+      }
+    ]
+  }
+}

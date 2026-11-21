@@ -406,7 +406,10 @@ def test_a_granted_identity_starts_a_run_and_hears_about_it(tmp_path: Path) -> N
         # earned. What the channel has to get right is that all three facts arrive.
         assert any("Started" in text for text in adapter.texts())
         assert any("nothing was proven" in text for text in adapter.texts())
-        assert any(text.startswith("Athena stopped:") for text in adapter.texts())
+        # Inconcluso no es «parado»: terminó sin poder comprobarse (auditoría 20-nov).
+        assert any(
+            text.startswith("Athena finished but could not verify") for text in adapter.texts()
+        )
         assert not any("no detail given" in text for text in adapter.texts())
 
     asyncio.run(scenario())

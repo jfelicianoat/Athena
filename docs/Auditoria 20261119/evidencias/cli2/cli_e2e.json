@@ -1,0 +1,30 @@
+{
+  "C1_consulta": {
+    "rc": 0,
+    "out": "Listo: respuesta del doble.\n\nVerification: passed - Answer given; no file was changed. The run answered without changing any file. It does not establish that the answer is correct.\n",
+    "err": "ts\": [\"Reads workspace content\", \"Changes nothing\"]}\n{\"event\": \"permission.resolved\", \"correlation_id\": \"c1\", \"tool_name\": \"glob\", \"decision\": \"allow\", \"asked\": false}\n{\"event\": \"tool.started\", \"correlation_id\": \"c1\", \"tool_name\": \"glob\"}\n{\"event\": \"tool.completed\", \"correlation_id\": \"c1\", \"tool_name\": \"glob\", \"externalized\": false, \"review_required\": false, \"size_chars\": null, \"display\": {\"kind\": \"items\", \"title\": \"glob\", \"summary\": \"1 matches\", \"items\": [\"README.md\"], \"facts\": {\"pattern\": \"*\", \"truncated\": false, \"count\": 1}, \"reference_uri\": null}}\n{\"event\": \"session.persisted\", \"correlation_id\": null, \"status\": \"running\", \"checkpoint\": \"tool_calls\"}\n{\"event\": \"model.started\", \"correlation_id\": \"40b04265-e1ba-43d6-84b2-9b8026177fa0\", \"attempt\": 1}\n{\"event\": \"model.completed\", \"correlation_id\": \"40b04265-e1ba-43d6-84b2-9b8026177fa0\", \"finish_reason\": \"stop\", \"tool_call_count\": 0, \"input_tokens\": 1, \"output_tokens\": 1, \"model\": \"doble\"}\n{\"event\": \"verification.started\", \"correlation_id\": null}\n{\"event\": \"verification.completed\", \"correlation_id\": null, \"status\": \"passed\", \"evidence_count\": 1, \"inconclusive_reason\": null}\n{\"event\": \"session.persisted\", \"correlation_id\": null, \"status\": \"completed\", \"checkpoint\": \"completed\"}\n{\"event\": \"agent.completed\", \"correlation_id\": null, \"iterations\": 2, \"tool_calls\": 1, \"repair_cycles\": 0, \"verification\": \"Answer given; no file was changed. The run answered without changing any file. It does not establish that the answer is correct.\"}\n"
+  },
+  "C2_escritura_denegada": {
+    "rc": 1,
+    "out": "Allow this one action? [y/N] \nNot completed (verification_inconclusive): Verification is inconclusive: the project defines no checks Athena may run.\n",
+    "err": "orkspace\n  effect   : File size 0 -> 5 characters\n-----------------------------------------------------------------\n{\"event\": \"permission.resolved\", \"correlation_id\": \"c1\", \"tool_name\": \"write_file\", \"decision\": \"deny\", \"asked\": true}\n{\"event\": \"tool.failed\", \"correlation_id\": \"c1\", \"tool_name\": \"write_file\", \"error_code\": \"permission_denied\", \"message\": \"Permission deny for tool write_file\"}\n{\"event\": \"recovery.action\", \"correlation_id\": \"c1\", \"error_code\": \"permission_denied\", \"action\": \"no_retry\", \"reason\": \"Permission was refused; repeating the request would only re-ask.\"}\n{\"event\": \"session.persisted\", \"correlation_id\": null, \"status\": \"running\", \"checkpoint\": \"tool_calls\"}\n{\"event\": \"model.started\", \"correlation_id\": \"4f2e9e4f-30e6-4f27-8de5-7aef1cc20bb8\", \"attempt\": 1}\n{\"event\": \"model.completed\", \"correlation_id\": \"4f2e9e4f-30e6-4f27-8de5-7aef1cc20bb8\", \"finish_reason\": \"stop\", \"tool_call_count\": 0, \"input_tokens\": 1, \"output_tokens\": 1, \"model\": \"doble\"}\n{\"event\": \"verification.started\", \"correlation_id\": null}\n{\"event\": \"verification.completed\", \"correlation_id\": null, \"status\": \"inconclusive\", \"evidence_count\": 1, \"inconclusive_reason\": \"no_checks_defined\"}\n{\"event\": \"session.persisted\", \"correlation_id\": null, \"status\": \"failed\", \"checkpoint\": \"failed\"}\n{\"event\": \"agent.failed\", \"correlation_id\": null, \"error_code\": \"verification_inconclusive\", \"message\": \"Verification is inconclusive: the project defines no checks Athena may run.\", \"reason\": \"no_checks_defined\"}\n"
+  },
+  "C2_fichero_tras_denegar": false,
+  "C3_escritura_permitida": {
+    "rc": 1,
+    "out": "Allow this one action? [y/N] \nNot completed (verification_inconclusive): Verification is inconclusive: the project defines no checks Athena may run.\n",
+    "err": "l\\n+++ b/cli.txt\\n@@ -0,0 +1 @@\\n+hola\\n\", \"chars_before\": 0, \"chars_after\": 5, \"lines_before\": 0, \"lines_after\": 1}\n{\"event\": \"tool.completed\", \"correlation_id\": \"c1\", \"tool_name\": \"write_file\", \"externalized\": false, \"review_required\": false, \"size_chars\": null, \"display\": {\"kind\": \"text\", \"title\": \"cli.txt\", \"summary\": \"--- /dev/null\", \"items\": [], \"facts\": {\"path\": \"cli.txt\", \"change\": \"created\", \"diff\": \"--- /dev/null\\n+++ b/cli.txt\\n@@ -0,0 +1 @@\\n+hola\\n\", \"chars_before\": 0, \"chars_after\": 5, \"lines_before\": 0, \"lines_after\": 1, \"field\": \"diff\"}, \"reference_uri\": null}}\n{\"event\": \"session.persisted\", \"correlation_id\": null, \"status\": \"running\", \"checkpoint\": \"tool_calls\"}\n{\"event\": \"model.started\", \"correlation_id\": \"46106658-0105-4a38-a030-39ebcb904cfe\", \"attempt\": 1}\n{\"event\": \"model.completed\", \"correlation_id\": \"46106658-0105-4a38-a030-39ebcb904cfe\", \"finish_reason\": \"stop\", \"tool_call_count\": 0, \"input_tokens\": 1, \"output_tokens\": 1, \"model\": \"doble\"}\n{\"event\": \"verification.started\", \"correlation_id\": null}\n{\"event\": \"verification.completed\", \"correlation_id\": null, \"status\": \"inconclusive\", \"evidence_count\": 1, \"inconclusive_reason\": \"no_checks_defined\"}\n{\"event\": \"session.persisted\", \"correlation_id\": null, \"status\": \"failed\", \"checkpoint\": \"failed\"}\n{\"event\": \"agent.failed\", \"correlation_id\": null, \"error_code\": \"verification_inconclusive\", \"message\": \"Verification is inconclusive: the project defines no checks Athena may run.\", \"reason\": \"no_checks_defined\"}\n"
+  },
+  "C3_fichero_tras_permitir": true,
+  "C4_list_sessions": {
+    "rc": 0,
+    "out": "no sessions awaiting recovery\n",
+    "err": ""
+  },
+  "C5_resume_inexistente": {
+    "rc": 2,
+    "out": "Cannot resume: Unknown session: no-existe. Use --list-sessions to see what can be resumed.\n",
+    "err": ""
+  },
+  "peticiones_al_modelo": 6
+}

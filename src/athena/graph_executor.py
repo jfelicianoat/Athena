@@ -330,6 +330,11 @@ class GraphExecutor:
         async with bound, self.access.hold(workspace.root, write=writes):
             cancellation.raise_if_cancelled()
             graph.transition(node.id, PlanStatus.RUNNING)
+            # Guardado ANTES de trabajar: si el proceso muere a mitad, el plan debe decir
+            # «en marcha» para que `recover` la marque como de resultado desconocido. Sin
+            # esto quedaba `pending` y reanudar la repetia a ciegas (auditoria del 19-nov,
+            # visto con el Broker real).
+            await self._persist(run_id, graph)
             await self._publish(
                 EventName.TASK_STARTED,
                 run_id,

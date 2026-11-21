@@ -332,6 +332,18 @@ def present_result(result: AgentRunResult, *, task_kind: str) -> ResultView:
     if not message and result.error is not None:
         message = result.error.message
     steps = ["Revisa la pestaña «Actividad» para ver en qué paso se quedó."]
+    if (
+        code == "model_transient_error"
+        and result.error is not None
+        and ("decision" in result.error.message)
+    ):
+        # El modelo SI contesto, pero sin una decision que Athena pueda usar (H-11): decir
+        # «no respondio» mandaba a buscar un broker caido.
+        message = (
+            "El modelo respondió, pero sin una decisión que Athena pueda usar "
+            "(ni una acción válida ni una respuesta final)."
+        )
+        steps.insert(0, "Prueba con otro modelo de la lista (por ejemplo qwen3.8:27b).")
     if code == "budget_exceeded":
         steps.insert(0, "Sube las iteraciones o el tiempo máximo y usa «Reintentar».")
     if code == "process_timeout":

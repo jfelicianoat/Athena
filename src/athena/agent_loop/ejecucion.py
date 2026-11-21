@@ -287,7 +287,9 @@ class EjecucionMixin(SesionMixin):
             # policy and does not become a recorded error against the task.
             raise
         except AthenaRuntimeError as exc:
-            directive = self.recovery.decide(exc)
+            # Todo lo que llega aqui lo produjo una herramienta; la parada de la sesion ya
+            # salio por la rama de arriba.
+            directive = self.recovery.decide(exc, from_tool=True)
             data.working = data.working.failing(
                 RecordedError(exc.code, exc.message, directive.action.value)
             )

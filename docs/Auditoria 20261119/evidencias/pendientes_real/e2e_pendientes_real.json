@@ -1,0 +1,103 @@
+[
+  {
+    "id": "P1",
+    "objetivo": "aprobación remota por SSE (ack + allow con X-Athena-Subscriber)",
+    "esperado": "aprobación contestada con 200, completed y aviso.txt",
+    "observado": {
+      "http": 201,
+      "final": "completed",
+      "respuestas": [
+        {
+          "request_id": "12884ec2-3ebb-4007-a8f3-a3daf8fb9132",
+          "ack": 200,
+          "decision": [
+            200,
+            {
+              "request_id": "12884ec2-3ebb-4007-a8f3-a3daf8fb9132",
+              "decision": "allow"
+            }
+          ]
+        }
+      ],
+      "fin_en_stream": "agent.completed",
+      "error_cliente": null,
+      "fichero": "revisado por Athena\n"
+    },
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "P6",
+    "objetivo": "R06 repetido con H-09 corregido",
+    "esperado": "no acaba failed por el process_timeout de una herramienta y se verifica",
+    "observado": {
+      "final": "completed",
+      "errores": [
+        {
+          "code": "model_transient_error",
+          "message": "AI_Broker is unreachable: ConnectionResetError",
+          "recovery_action": "retry_backoff"
+        },
+        {
+          "code": "model_transient_error",
+          "message": "AI_Broker is unreachable: TimeoutError",
+          "recovery_action": "retry_backoff"
+        },
+        {
+          "code": "model_transient_error",
+          "message": "AI_Broker is unreachable: TimeoutError",
+          "recovery_action": "retry_backoff"
+        }
+      ],
+      "verificacion": {
+        "status": "passed",
+        "summary": "All project checks pass.",
+        "evidence_count": 1
+      },
+      "calc": "def total(items):\n    return sum(items)\n"
+    },
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "P3",
+    "objetivo": "delegación pedida en el objetivo (delegate_task, explorer)",
+    "esperado": "si el modelo delega: subagent.started/completed y run completed (depende del modelo)",
+    "observado": {
+      "http": 201,
+      "final": "failed",
+      "subagente": [],
+      "respuesta": []
+    },
+    "estado": "OBSERVADO",
+    "nota": "OBSERVADO si el modelo no delega: no es un fallo de Athena"
+  },
+  {
+    "id": "P2",
+    "objetivo": "System-1 en sombra (goal completion + reviewer gate) con el Broker real",
+    "esperado": "el run termina igual que sin System-1 y deja eventos system1.* (juicio o fallback)",
+    "observado": {
+      "http": 201,
+      "final": "failed",
+      "system1": []
+    },
+    "estado": "FALLA",
+    "nota": ""
+  },
+  {
+    "id": "P4",
+    "objetivo": "reanudar un plan con una tarea interrumpida",
+    "esperado": "README/CURRENT_STATE: se niega y nombra las tareas de resultado desconocido",
+    "observado": {
+      "tarea_empezada": true,
+      "listado": "recovery_pending",
+      "resume_http": 202,
+      "resume": {
+        "run_id": "4b6fe23c-e433-417d-843f-904f0c006dfa",
+        "resumed": true
+      }
+    },
+    "estado": "FALLA",
+    "nota": ""
+  }
+]

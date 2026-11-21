@@ -1,0 +1,22 @@
+{
+  "T1_permitido": {
+    "mensajes": [
+      "Started. I will tell you how it goes.\nRun cb906e29-cf8f-4921-8223-429963d026a9",
+      "Verification was inconclusive: nothing was proven.",
+      "Athena finished but could not verify the result: Verification is inconclusive: the project defines no checks Athena may run."
+    ],
+    "tareas_al_modelo": 1,
+    "estado": "PASA"
+  },
+  "T2_no_permitido": {
+    "mensajes": [
+      "This account is not authorised to use Athena. If that is wrong, whoever runs this bot has to add your Telegram id."
+    ],
+    "estado": "PASA"
+  },
+  "arranque_con_lista": null,
+  "T3_sin_lista": {
+    "error": "TelegramConfigError: ATHENA_TELEGRAM_ALLOWED_IDS hace falta: un bot sin lista de permitidos es un agente atendiendo a cualquiera que le escriba",
+    "estado": "PASA"
+  }
+}

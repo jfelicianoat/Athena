@@ -1,0 +1,528 @@
+[
+  {
+    "id": "R00",
+    "objetivo": "catálogo del despliegue",
+    "esperado": "200 con los permitidos",
+    "observado": [
+      200,
+      {
+        "default": "qwen3.8:27b",
+        "models": [
+          {
+            "name": "qwen3.8:27b",
+            "default": true
+          },
+          {
+            "name": "nemotron-3.5-lightning:30b",
+            "default": false
+          }
+        ]
+      }
+    ],
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "R01",
+    "objetivo": "consulta con el modelo real",
+    "esperado": "completed; el modelo que contestó es el pedido",
+    "observado": [
+      201,
+      "completed",
+      [
+        "qwen3.8:27b",
+        "qwen3.8:27b",
+        "qwen3.8:27b"
+      ]
+    ],
+    "estado": "PASA",
+    "nota": "",
+    "detalle": {
+      "run_id": "2e1c9b44-0ebf-40ac-aebf-a0b12b5175f0",
+      "workspace_id": "proj-d45220916b8245b7cee47957b7fcacc3",
+      "status": "completed",
+      "resumable": false,
+      "degraded": false,
+      "objective": "¿Qué cuenta el programa de este proyecto? Responde en una frase.",
+      "created_at": "2026-11-19T21:55:34.757267+00:00",
+      "updated_at": "2026-11-19T21:56:40.581217+00:00",
+      "working_memory": {
+        "objective": "¿Qué cuenta el programa de este proyecto? Responde en una frase.",
+        "constraints": [],
+        "current_plan": [],
+        "current_step": null,
+        "facts": [],
+        "files_examined": [
+          ".",
+          "README.md"
+        ],
+        "files_modified": [],
+        "commands_run": [],
+        "decisions": [],
+        "errors": [],
+        "verification": {
+          "status": "passed",
+          "summary": "Answer given; no file was changed. The run answered without changing any file. It does not establish that the answer is correct.",
+          "evidence_count": 1
+        },
+        "remaining_work": []
+      },
+      "verification": {
+        "status": "passed",
+        "summary": "Answer given; no file was changed. The run answered without changing any file. It does not establish that the answer is correct.",
+        "evidence_count": 1
+      },
+      "tool_references": [],
+      "checkpoints": [
+        {
+          "name": "started",
+          "occurred_at": "2026-11-19T21:55:34.757376+00:00",
+          "payload": {}
+        },
+        {
+          "name": "tool_calls",
+          "occurred_at": "2026-11-19T21:56:01.729652+00:00",
+          "payload": {
+            "iteration": 1,
+            "tool_calls": [
+              "list_directory",
+              "glob"
+            ]
+          }
+        },
+        {
+          "name": "tool_calls",
+          "occurred_at": "2026-11-19T21:56:17.879361+00:00",
+          "payload": {
+            "iteration": 2,
+            "tool_calls": [
+              "read_file"
+            ]
+          }
+        },
+        {
+          "name": "completed",
+          "occurred_at": "2026-11-19T21:56:40.581206+00:00",
+          "payload": {
+            "verification": "passed"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": "R02",
+    "objetivo": "documento con el modelo real (bucle directo)",
+    "esperado": "completed y resumen.txt no vacío",
+    "observado": [
+      201,
+      "completed",
+      "Programa que cuenta botellas de agua en un almacén.\n"
+    ],
+    "estado": "PASA",
+    "nota": "",
+    "detalle": {
+      "run_id": "e13e878f-2083-45ca-a6ce-0d81e300e653",
+      "workspace_id": "proj-d45220916b8245b7cee47957b7fcacc3",
+      "status": "completed",
+      "resumable": false,
+      "degraded": false,
+      "objective": "Crea el archivo resumen.txt con una sola línea que diga qué hace este proyecto (lee README.md).",
+      "created_at": "2026-11-19T21:56:40.755411+00:00",
+      "updated_at": "2026-11-19T21:58:19.178517+00:00",
+      "working_memory": {
+        "objective": "Crea el archivo resumen.txt con una sola línea que diga qué hace este proyecto (lee README.md).",
+        "constraints": [],
+        "current_plan": [],
+        "current_step": null,
+        "facts": [],
+        "files_examined": [
+          "README.md"
+        ],
+        "files_modified": [
+          "resumen.txt"
+        ],
+        "commands_run": [],
+        "decisions": [],
+        "errors": [],
+        "verification": {
+          "status": "passed",
+          "summary": "1 deliverable(s) produced. The declared deliverables exist, are non-empty and were written by this run. It does not establish that their content is correct.",
+          "evidence_count": 1
+        },
+        "remaining_work": []
+      },
+      "verification": {
+        "status": "passed",
+        "summary": "1 deliverable(s) produced. The declared deliverables exist, are non-empty and were written by this run. It does not establish that their content is correct.",
+        "evidence_count": 1
+      },
+      "tool_references": [],
+      "checkpoints": [
+        {
+          "name": "started",
+          "occurred_at": "2026-11-19T21:56:40.755503+00:00",
+          "payload": {}
+        },
+        {
+          "name": "tool_calls",
+          "occurred_at": "2026-11-19T21:57:05.124741+00:00",
+          "payload": {
+            "iteration": 1,
+            "tool_calls": [
+              "glob",
+              "glob"
+            ]
+          }
+        },
+        {
+          "name": "tool_calls",
+          "occurred_at": "2026-11-19T21:57:25.932710+00:00",
+          "payload": {
+            "iteration": 2,
+            "tool_calls": [
+              "read_file"
+            ]
+          }
+        },
+        {
+          "name": "tool_calls",
+          "occurred_at": "2026-11-19T21:57:50.774762+00:00",
+          "payload": {
+            "iteration": 3,
+            "tool_calls": [
+              "write_file"
+            ]
+          }
+        },
+        {
+          "name": "completed",
+          "occurred_at": "2026-11-19T21:58:19.178507+00:00",
+          "payload": {
+            "verification": "passed"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": "R03",
+    "objetivo": "deshacer el documento real",
+    "esperado": "200 y resumen.txt eliminado",
+    "observado": [
+      200,
+      {
+        "restored": [
+          "resumen.txt"
+        ],
+        "protected": [],
+        "conflicts": [],
+        "failed": [],
+        "scope": "run"
+      },
+      false
+    ],
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "R04",
+    "objetivo": "modelo no permitido",
+    "esperado": "4xx sin crear run",
+    "observado": [
+      400,
+      {
+        "error": {
+          "code": "tool_validation_error",
+          "message": "Modelo desconocido: gemma4:12b. Disponibles: qwen3.8:27b, nemotron-3.5-lightning:30b"
+        }
+      }
+    ],
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "R05",
+    "objetivo": "cancelar con una llamada real en curso",
+    "esperado": "cancelled en segundos",
+    "observado": [
+      202,
+      "cancelled",
+      0.5
+    ],
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "R06",
+    "objetivo": "corregir un test con verificación real (python -m unittest)",
+    "esperado": "completed, calc.py corregido y test intacto",
+    "observado": [
+      201,
+      "failed",
+      "def total(items):\n    return sum(items)\n",
+      {}
+    ],
+    "estado": "FALLA",
+    "nota": "",
+    "detalle": {
+      "run_id": "51dc5689-9d1d-42dc-bf8d-bf1789210b9f",
+      "workspace_id": "proj-53262988fce67ba4092205c8c4f1d7a2",
+      "status": "failed",
+      "resumable": false,
+      "degraded": false,
+      "objective": "El test de test_calc.py falla. Corrige calc.py para que pase, sin tocar el test.",
+      "created_at": "2026-11-19T21:58:28.002556+00:00",
+      "updated_at": "2026-11-19T22:01:03.007036+00:00",
+      "working_memory": {
+        "objective": "El test de test_calc.py falla. Corrige calc.py para que pase, sin tocar el test.",
+        "constraints": [],
+        "current_plan": [],
+        "current_step": null,
+        "facts": [],
+        "files_examined": [
+          ".",
+          "test_calc.py",
+          "calc.py"
+        ],
+        "files_modified": [
+          "calc.py"
+        ],
+        "commands_run": [
+          "python -m unittest",
+          "python -m unittest test_calc"
+        ],
+        "decisions": [],
+        "errors": [
+          {
+            "code": "process_timeout",
+            "message": "Command exceeded 30.0 seconds and was terminated",
+            "recovery_action": "cancelled"
+          }
+        ],
+        "verification": {},
+        "remaining_work": []
+      },
+      "verification": {},
+      "tool_references": [],
+      "checkpoints": [
+        {
+          "name": "started",
+          "occurred_at": "2026-11-19T21:58:28.002627+00:00",
+          "payload": {}
+        },
+        {
+          "name": "tool_calls",
+          "occurred_at": "2026-11-19T21:58:50.195935+00:00",
+          "payload": {
+            "iteration": 1,
+            "tool_calls": [
+              "list_directory",
+              "read_file",
+              "read_file"
+            ]
+          }
+        },
+        {
+          "name": "tool_calls",
+          "occurred_at": "2026-11-19T21:59:10.873773+00:00",
+          "payload": {
+            "iteration": 2,
+            "tool_calls": [
+              "edit_file"
+            ]
+          }
+        },
+        {
+          "name": "tool_calls",
+          "occurred_at": "2026-11-19T21:59:29.986484+00:00",
+          "payload": {
+            "iteration": 3,
+            "tool_calls": [
+              "bash"
+            ]
+          }
+        },
+        {
+          "name": "tool_calls",
+          "occurred_at": "2026-11-19T22:00:04.742459+00:00",
+          "payload": {
+            "iteration": 4,
+            "tool_calls": [
+              "bash"
+            ]
+          }
+        },
+        {
+          "name": "failed",
+          "occurred_at": "2026-11-19T22:01:03.007026+00:00",
+          "payload": {
+            "error_code": "process_timeout"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": "R07",
+    "objetivo": "documento con ATHENA_PLANNING encendido (modo por defecto)",
+    "esperado": "completed y notas.txt; se registra la forma elegida (plan.decided)",
+    "observado": [
+      201,
+      "completed",
+      true,
+      [
+        "plan.decided"
+      ]
+    ],
+    "estado": "PASA",
+    "nota": "",
+    "detalle": {
+      "run_id": "60df6309-ed4b-4031-bc6f-56eb28555ee3",
+      "workspace_id": "proj-d45220916b8245b7cee47957b7fcacc3",
+      "status": "completed",
+      "resumable": false,
+      "degraded": false,
+      "objective": "Crea notas.txt con dos líneas: qué hace el proyecto y en qué fichero se describe.",
+      "created_at": "2026-11-19T22:01:04.079067+00:00",
+      "updated_at": "2026-11-19T22:02:22.130965+00:00",
+      "working_memory": {
+        "objective": "Crea notas.txt con dos líneas: qué hace el proyecto y en qué fichero se describe.",
+        "constraints": [],
+        "current_plan": [],
+        "current_step": null,
+        "facts": [],
+        "files_examined": [
+          ".",
+          "README.md"
+        ],
+        "files_modified": [
+          "notas.txt"
+        ],
+        "commands_run": [],
+        "decisions": [],
+        "errors": [],
+        "verification": {
+          "status": "passed",
+          "summary": "1 deliverable(s) produced. The declared deliverables exist, are non-empty and were written by this run. It does not establish that their content is correct.",
+          "evidence_count": 1
+        },
+        "remaining_work": []
+      },
+      "verification": {
+        "status": "passed",
+        "summary": "1 deliverable(s) produced. The declared deliverables exist, are non-empty and were written by this run. It does not establish that their content is correct.",
+        "evidence_count": 1
+      },
+      "tool_references": [],
+      "checkpoints": [
+        {
+          "name": "started",
+          "occurred_at": "2026-11-19T22:01:04.079203+00:00",
+          "payload": {}
+        },
+        {
+          "name": "tool_calls",
+          "occurred_at": "2026-11-19T22:01:21.920053+00:00",
+          "payload": {
+            "iteration": 1,
+            "tool_calls": [
+              "list_directory",
+              "glob"
+            ]
+          }
+        },
+        {
+          "name": "tool_calls",
+          "occurred_at": "2026-11-19T22:01:41.379984+00:00",
+          "payload": {
+            "iteration": 2,
+            "tool_calls": [
+              "read_file"
+            ]
+          }
+        },
+        {
+          "name": "tool_calls",
+          "occurred_at": "2026-11-19T22:02:02.025617+00:00",
+          "payload": {
+            "iteration": 3,
+            "tool_calls": [
+              "write_file"
+            ]
+          }
+        },
+        {
+          "name": "completed",
+          "occurred_at": "2026-11-19T22:02:22.130956+00:00",
+          "payload": {
+            "verification": "passed"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": "R08",
+    "objetivo": "documento con plan forzado (execution_mode=hierarchical)",
+    "esperado": "termina con agent.* y indice.txt; eventos graph.*/task.*",
+    "observado": [
+      201,
+      null,
+      "completed",
+      true,
+      [
+        "agent.completed",
+        "agent.started",
+        "graph.completed",
+        "graph.started",
+        "plan.decided",
+        "task.completed",
+        "task.started"
+      ]
+    ],
+    "estado": "PASA",
+    "nota": "",
+    "detalle": {
+      "run_id": "f7f88168-b5eb-4147-83e6-18b75a5c3774",
+      "workspace_id": "proj-d45220916b8245b7cee47957b7fcacc3",
+      "status": "completed",
+      "resumable": false,
+      "degraded": false,
+      "objective": "Crea indice.txt con una línea por cada fichero del proyecto y una frase sobre él.",
+      "created_at": "2026-11-19T22:02:22.264351+00:00",
+      "updated_at": "2026-11-19T22:04:57.202230+00:00",
+      "working_memory": {
+        "objective": "Crea indice.txt con una línea por cada fichero del proyecto y una frase sobre él.",
+        "constraints": [],
+        "current_plan": [
+          {
+            "description": "Create indice.txt in the project root containing one line per every file in the project, where each line is the file path followed by a short descriptive phrase about that file's purpose or content.",
+            "status": "done",
+            "task_id": "T1"
+          }
+        ],
+        "current_step": null,
+        "facts": [],
+        "files_examined": [],
+        "files_modified": [
+          "indice.txt"
+        ],
+        "commands_run": [],
+        "decisions": [],
+        "errors": [],
+        "verification": {
+          "status": "passed",
+          "summary": "1 deliverable(s) produced. The declared deliverables exist, are non-empty and were written by this run. It does not establish that their content is correct."
+        },
+        "remaining_work": []
+      },
+      "verification": {
+        "status": "passed",
+        "summary": "1 deliverable(s) produced. The declared deliverables exist, are non-empty and were written by this run. It does not establish that their content is correct."
+      },
+      "tool_references": [],
+      "checkpoints": []
+    }
+  }
+]

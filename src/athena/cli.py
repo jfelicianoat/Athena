@@ -31,17 +31,19 @@ from athena.permissions import (
 from athena.process_tools import BashTool
 from athena.registry import ToolRegistry
 from athena.repository_tools import repository_read_tools
-from athena.session_store import SqliteSessionStore
+from athena.session_store import SessionStoreError, SqliteSessionStore
 from athena.state import AgentStatus
 from athena.stores import SqliteToolResultStore
 from athena.tool_executor import ToolExecutor
 from athena.tool_search import ToolSearchTool
 from athena.tools import Tool
 from athena.verification import (
+    AnswerVerificationPolicy,
     CommandVerificationPolicy,
     PermissionCheckAuthorizer,
     VerificationPlanner,
 )
+from athena.verification.contratos import VerificationPolicy
 from athena.workspace import Workspace
 
 _CAPABILITY_MODES = ("off", "ask", "allow")
@@ -206,9 +208,16 @@ async def _run(arguments: argparse.Namespace, source: CancellationSource | None 
     authorizer = PermissionCheckAuthorizer(
         engine, enabled=arguments.execution != "off", prompt=prompt, event_bus=event_bus
     )
-    verification = CommandVerificationPolicy(
-        VerificationPlanner(workspace), authorizer=authorizer, event_bus=event_bus
-    )
+    verification: VerificationPolicy
+    if arguments.writes == "off" and arguments.execution == "off":
+        # Solo lectura (lo de por defecto): es una consulta, y se comprueba como en el perfil
+        # `questions` del servicio. Con la verificacion por comandos, un proyecto sin checks
+        # daba la respuesta por fallida y no se imprimia (auditoria del 19-nov).
+        verification = AnswerVerificationPolicy()
+    else:
+        verification = CommandVerificationPolicy(
+            VerificationPlanner(workspace), authorizer=authorizer, event_bus=event_bus
+        )
     loop = AgentLoop(
         provider,
         registry,
@@ -226,13 +235,19 @@ async def _run(arguments: argparse.Namespace, source: CancellationSource | None 
     cancellation = source or CancellationSource()
     _install_cancellation(cancellation)
     if arguments.resume is not None:
-        result = await loop.resume(arguments.resume, workspace, cancellation.token)
+        try:
+            result = await loop.resume(arguments.resume, workspace, cancellation.token)
+        except SessionStoreError as exc:
+            print(f"Cannot resume: {exc}. Use --list-sessions to see what can be resumed.")
+            return 2
     else:
         result = await loop.run(objective or "", workspace, cancellation.token)
     if result.answer:
         print(result.answer)
     if result.verification is not None:
         print(f"\nVerification: {result.verification.status.value} - {result.verification.summary}")
+    if result.status is not AgentRunStatus.COMPLETED and result.error is not None:
+        print(f"\nNot completed ({result.error.code}): {result.error.message}")
     if result.status is AgentRunStatus.COMPLETED:
         return 0
     return 130 if result.status is AgentRunStatus.CANCELLED else 1

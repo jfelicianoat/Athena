@@ -1,0 +1,14 @@
+[OBSERVADO] P5: catálogo crudo del Broker: ¿qué es gpt-oss-120b?
+    observado: {'total': 736, 'gpt_oss': [{'name': 'openai/gpt-oss-20b', 'provider': 'lmstudio', 'deployment': 'local', 'status': 'online', 'context_window': 32768, 'context_window_source': 'configured', 'capabilities': ['completion'], 'family': 'LM Studio', 'compatibility': 'compatible', 'compatibility_checked_at
+Traceback (most recent call last):
+  File "D:\Desarrollo\Proyectos TFM\Athena\docs\Auditoria 20261119\pruebas\e2e_pendientes_real.py", line 374, in <module>
+    main(Path(sys.argv[1]), set(sys.argv[2:]))
+    ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Desarrollo\Proyectos TFM\Athena\docs\Auditoria 20261119\pruebas\e2e_pendientes_real.py", line 351, in main
+    p5_catalogue(out)
+    ~~~~~~~~~~~~^^^^^
+  File "D:\Desarrollo\Proyectos TFM\Athena\docs\Auditoria 20261119\pruebas\e2e_pendientes_real.py", line 303, in p5_catalogue
+    del ssl
+        ^^^
+UnboundLocalError: cannot access local variable 'ssl' where it is not associated with a value
+salida=1

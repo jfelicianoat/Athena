@@ -1,0 +1,20 @@
+[PASA] R00: catálogo del despliegue
+    observado: (200, {'default': 'qwen3.8:27b', 'models': [{'name': 'qwen3.8:27b', 'default': True}, {'name': 'nemotron-3.5-lightning:30b', 'default': False}]})
+[PASA] R01: consulta con el modelo real
+    observado: (201, 'completed', ['qwen3.8:27b', 'qwen3.8:27b', 'qwen3.8:27b'])
+[PASA] R02: documento con el modelo real (bucle directo)
+    observado: (201, 'completed', 'Programa que cuenta botellas de agua en un almacén.\n')
+[PASA] R03: deshacer el documento real
+    observado: (200, {'restored': ['resumen.txt'], 'protected': [], 'conflicts': [], 'failed': [], 'scope': 'run'}, False)
+[PASA] R04: modelo no permitido
+    observado: (400, {'error': {'code': 'tool_validation_error', 'message': 'Modelo desconocido: gemma4:12b. Disponibles: qwen3.8:27b, nemotron-3.5-lightning:30b'}})
+[PASA] R05: cancelar con una llamada real en curso
+    observado: (202, 'cancelled', 0.5)
+[FALLA] R06: corregir un test con verificación real (python -m unittest)
+    observado: (201, 'failed', 'def total(items):\n    return sum(items)\n', {})
+[PASA] R07: documento con ATHENA_PLANNING encendido (modo por defecto)
+    observado: (201, 'completed', True, ['plan.decided'])
+[PASA] R08: documento con plan forzado (execution_mode=hierarchical)
+    observado: (201, None, 'completed', True, ['agent.completed', 'agent.started', 'graph.completed', 'graph.started', 'plan.decided', 'task.completed', 'task.started'])
+
+9 casos, 1 en FALLA, 563 s. C:\Users\jfeli\AppData\Local\Temp\athena-real-jcx484fx

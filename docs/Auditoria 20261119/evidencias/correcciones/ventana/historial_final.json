@@ -1,0 +1,20 @@
+[
+  {
+    "estado": "cancelled",
+    "objetivo": "Piensa mucho [[lento:30]]",
+    "reanudable": false,
+    "tipo": "question"
+  },
+  {
+    "estado": "completed",
+    "objetivo": "Escribe la nota [[escribe:nota.txt:hola desde la auditoria]]",
+    "reanudable": false,
+    "tipo": "documents"
+  },
+  {
+    "estado": "completed",
+    "objetivo": "¿Qué contiene este proyecto?",
+    "reanudable": false,
+    "tipo": "question"
+  }
+]

@@ -1,0 +1,10 @@
+{
+  "tarea_empezada": true,
+  "resume_http": 400,
+  "resume": {
+    "error": {
+      "code": "tool_validation_error",
+      "message": "Run 8b3f13ba-1a1c-4117-b4ac-97896a5f6878 was a plan and these tasks were interrupted with an unknown outcome: whole. Somebody has to say what happened to them before the plan can go on."
+    }
+  }
+}

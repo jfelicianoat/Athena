@@ -1,0 +1,43 @@
+{
+  "despues": {
+    "captura": "01_reanudado_resultado.png",
+    "estado": "Empieza eligiendo el proyecto",
+    "fichero": false,
+    "texto": "\n---\nCómo empezar\n1. Elige la carpeta del proyecto.\n2. Configura la conexión y pulsa «Probar conexión».\n3. Elige el tipo de tarea y los permisos.\n4. Describe el encargo y pulsa «Iniciar».\n\nCada trabajo queda guardado en «Historial», desde donde puedes reanudarlo o deshacer sus cambios.\n---\n\n---\nTodavía no hay trabajos. Cada encargo que lances aparecerá aquí."
+  },
+  "dialogos": [],
+  "pasos": [
+    {
+      "paso": "historial tras la caída",
+      "cumplido": false,
+      "segundos": 20.2,
+      "estado": "Empieza eligiendo el proyecto",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "seleccionar",
+      "error": "IndexError('tuple index out of range')"
+    },
+    {
+      "paso": "seleccionar",
+      "cumplido": true,
+      "segundos": 0.0,
+      "estado": "Empieza eligiendo el proyecto",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "reanudar",
+      "cumplido": true,
+      "segundos": 0.0,
+      "estado": "Empieza eligiendo el proyecto",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "captura reanudado",
+      "cumplido": true,
+      "segundos": 0.1,
+      "estado": "Empieza eligiendo el proyecto",
+      "fase": "Sin empezar"
+    }
+  ]
+}

@@ -97,6 +97,8 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 90.0
 #: state this adapter does not recognise is not evidence that the task ended.
 _SUCCEEDED = frozenset({"succeeded", "completed", "done"})
 _FAILED = frozenset({"failed", "error", "rejected"})
+#: Estados del catalogo con los que un modelo puede atender (H-12).
+_USABLE = frozenset({"available", "online"})
 _CANCELLED = frozenset({"cancelled", "canceled", "expired", "timeout"})
 
 
@@ -227,7 +229,13 @@ class AiBrokerModelProvider(ModelProvider):
         listed = payload.get("models")
         found: dict[str, tuple[str, ...]] = {}
         for item in listed if isinstance(listed, list) else ():
-            if not isinstance(item, dict) or item.get("status", "available") != "available":
+            # El Broker real marca `online` los modelos de LM Studio y de la nube (708 de 736
+            # el 20-nov) y solo los de Ollama `available`; ignorar `online` dejaba fuera
+            # modelos locales que el Broker usa (H-12). Los de la nube no se ofrecen aqui:
+            # pueden costar y llenarian la lista con cientos; quien quiera uno lo escribe.
+            if not isinstance(item, dict) or item.get("status", "available") not in _USABLE:
+                continue
+            if item.get("deployment") == "cloud":
                 continue
             name, capabilities = item.get("name"), item.get("capabilities")
             if isinstance(name, str) and name:
@@ -345,9 +353,12 @@ class AiBrokerModelProvider(ModelProvider):
                 # modelo ya en memoria, resuelve. Sin la marca se mantiene permanente,
                 # que es lo prudente cuando nadie ha dicho lo contrario.
                 error_type = ModelTransientError if _is_retryable(payload) else ModelPermanentError
+                detail = _detail(payload)
+                # El porque en el propio mensaje: es lo que llega al resumen del run y a la
+                # ventana; en `details` solo lo veia quien leyese el JSON (R-04, 19-nov).
                 raise error_type(
-                    "AI_Broker could not complete the task",
-                    details={"task": task_id, "detail": _detail(payload)},
+                    "AI_Broker could not complete the task" + (f": {detail}" if detail else ""),
+                    details={"task": task_id, "detail": detail},
                 )
             if state in _CANCELLED:
                 # The broker gave up. Transient rather than permanent: the same request

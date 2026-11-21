@@ -21,7 +21,7 @@ _TASK_KINDS = frozenset({"question", "change", "documents"})
 #: Donde suele estar cada proveedor. Cambiar de proveedor recupera la URL que se uso con
 #: el la ultima vez en vez de dejar la del otro (A03).
 DEFAULT_URLS = {
-    "ai_broker": "http://localhost:8000",
+    "ai_broker": "https://192.168.1.52:8765",
     "openai_compatible": "http://localhost:1234/v1",
 }
 
@@ -34,7 +34,7 @@ class ProviderKind(StrEnum):
 @dataclass(frozen=True, slots=True)
 class DesktopSettings:
     provider: ProviderKind = ProviderKind.AI_BROKER
-    base_url: str = "http://localhost:8000"
+    base_url: str = "https://192.168.1.52:8765"
     model: str = ""
     workspace: str = ""
     writes: CapabilityMode = "off"

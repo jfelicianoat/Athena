@@ -1,0 +1,62 @@
+[
+  {
+    "id": "P3",
+    "objetivo": "delegación pedida en el objetivo (delegate_task, explorer)",
+    "esperado": "si el modelo delega: subagent.started/completed y run completed (depende del modelo)",
+    "observado": {
+      "http": 201,
+      "final": "completed",
+      "subagente": [],
+      "respuesta": []
+    },
+    "estado": "OBSERVADO",
+    "nota": "OBSERVADO si el modelo no delega: no es un fallo de Athena"
+  },
+  {
+    "id": "P2",
+    "objetivo": "System-1 en sombra (goal completion + reviewer gate) con el Broker real",
+    "esperado": "el run termina igual que sin System-1 y deja eventos system1.* (juicio o fallback)",
+    "observado": {
+      "http": 201,
+      "final": "completed",
+      "system1": [
+        {
+          "use_case": "athena_goal_completion",
+          "accepted": false,
+          "decision": null,
+          "confidence": null,
+          "provider": "laya_mcp",
+          "model": "multilingual",
+          "threshold": 0.97,
+          "input_chars": 1336,
+          "latency_ms": 0.436,
+          "reason_code": "INPUT_TOO_LARGE",
+          "fallback": true,
+          "provider_fallback": true,
+          "confidence_is_calibrated": false,
+          "shadow_mode": true
+        }
+      ]
+    },
+    "estado": "PASA",
+    "nota": ""
+  },
+  {
+    "id": "P4",
+    "objetivo": "reanudar un plan con una tarea interrumpida",
+    "esperado": "README/CURRENT_STATE: se niega y nombra las tareas de resultado desconocido",
+    "observado": {
+      "tarea_empezada": true,
+      "listado": "recovery_pending",
+      "resume_http": 400,
+      "resume": {
+        "error": {
+          "code": "tool_validation_error",
+          "message": "Run 6aa6938a-54df-4c29-b90b-bbb6e35c98cc was a plan and these tasks were interrupted with an unknown outcome: T1. Somebody has to say what happened to them before the plan can go on."
+        }
+      }
+    },
+    "estado": "PASA",
+    "nota": ""
+  }
+]

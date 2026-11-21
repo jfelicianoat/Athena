@@ -384,6 +384,15 @@ def render_event(event: RuntimeEvent, identity: ChannelIdentity) -> ChannelRespo
             return response(text, ResponseKind.RESULT)
         case EventName.AGENT_FAILED:
             detail = _text(payload, "message") or _text(payload, "error_code") or "no detail given"
+            if _text(payload, "error_code") == "verification_inconclusive":
+                # Terminado sin poder comprobarlo no es un fallo (la ventana dice «Terminado
+                # sin comprobar»). Con la concesion por defecto del canal (ejecucion off)
+                # era el final de casi todo run, y llegaba como «stopped» (auditoria 20-nov).
+                # ERROR y no RESULT: lo inconcluso no se viste de exito, solo se dice bien.
+                return response(
+                    f"Athena finished but could not verify the result: {detail}",
+                    ResponseKind.ERROR,
+                )
             return response(f"Athena stopped: {detail}", ResponseKind.ERROR)
         case EventName.AGENT_CANCELLED:
             return response("The run was cancelled.", ResponseKind.RESULT)

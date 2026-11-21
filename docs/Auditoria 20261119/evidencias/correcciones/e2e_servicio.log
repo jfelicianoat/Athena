@@ -1,0 +1,60 @@
+[PASA] E01: health público sin token
+    observado: (200, {'status': 'ok', 'wire_version': 1, 'runs': 0})
+[PASA] E02: ruta protegida sin token
+    observado: 401
+[PASA] E03: token incorrecto
+    observado: 401
+[PASA] E04: token con carácter no ASCII
+    observado: (401, {'error': {'code': 'unauthorized', 'message': 'Bad token'}})
+[PASA] E05: consulta con perfil questions
+    observado: (201, 'completed')
+[PASA] E06: documento con writes=allow escribe el entregable
+    observado: (201, 'completed', True)
+[PASA] E07: puntos de deshacer del run
+    observado: (200, {'run_id': 'ab11379b-c511-4ca6-8f09-468ade30157e', 'points': [{'checkpoint_id': 'c39cba85-90d2-4745-a8a1-d147f5989993', 'task_id': 'ab11379b-c511-4ca6-8f09-468ade30157e', 'scope': 'run', 'covers': [], 'files': ['nota.txt'], 'created_at': '2026-11-20T02:43:53.716505+00:00'}]})
+[PASA] E08: deshacer elimina el fichero creado
+    observado: (200, {'restored': ['nota.txt'], 'protected': [], 'conflicts': [], 'failed': [], 'scope': 'run'}, False)
+[PASA] E09: writes=ask sin cliente conectado: se deniega y no escribe
+    observado: ('failed', False)
+[OBSERVADO] E10: misma Idempotency-Key con otro objetivo
+    observado: (201, {'run_id': '0131873c-b8d6-45e6-905d-47e64d9924b2', 'workspace_id': 'proj-7249544d5b9d45d0641e903217b53412', 'writes': 'ask', 'exec': 'ask'}, 200, {'run_id': '0131873c-b8d6-45e6-905d-47e64d9924b2', 'idempotent_replay': True, 'workspace_id': 'proj-7249544d5b9d45d0641e903217b53412'})
+[PASA] E11: modelo que nunca da la decisión estructurada
+    observado: ('failed', None)
+[PASA] E12: broker con fallo permanente
+    observado: failed
+[PASA] E13: cancelar un run en marcha y repetir
+    observado: (202, 'cancelled', 409)
+[PASA] E14: workspace relativo
+    observado: (403, {'error': {'code': 'workspace_boundary', 'message': 'Workspace root is unavailable: relativo\\x'}})
+[PASA] E15: workspace inexistente
+    observado: (403, {'error': {'code': 'workspace_boundary', 'message': 'Workspace root is unavailable: C:\\Users\\jfeli\\AppData\\Local\\Temp\\athena-e2e-8ebuaorv\\no-existe'}})
+[PASA] E16: modo de escritura inválido
+    observado: (400, {'error': {'code': 'tool_validation_error', 'message': 'writes must be one of off, ask, allow'}})
+[PASA] E17: tras matar el proceso el run queda reanudable
+    observado: {'run_id': 'f5bfca41-a75c-4a81-9545-3a12a07edd60', 'workspace_id': 'proj-7249544d5b9d45d0641e903217b53412', 'status': 'recovery_pending', 'resumable': True, 'degraded': False, 'objective': 'Tarea larga [[lento:60]]', 'files_modified': [], 'updated_at': '2026-11-20T02:44:08.209271+00:00'}
+[PASA] E18: reanudar un run interrumpido
+    observado: (202, {'run_id': 'f5bfca41-a75c-4a81-9545-3a12a07edd60', 'resumed': True})
+[PASA] E19: perfil questions con el modelo pidiendo write_file (writes=allow pedido)
+    observado: (201, 'failed', False)
+[PASA] C-allow: Core responde «allow» a policies/evaluate
+    observado: {'http': 201, 'cuerpo': {'run_id': '9880a0e6-4afa-492c-9cae-b1826c2b4a89', 'workspace_id': 'proj-5b1139dfad32b2fea581b40ce4f1d1e1', 'writes': 'ask', 'exec': 'ask'}, 'tareas_broker': 1, 'recibos': ['accepted', 'succeeded'], 'saltos': ['request', 'response'], 'final': 'completed'}
+[PASA] C-deny: Core responde «deny» a policies/evaluate
+    observado: {'http': 403, 'cuerpo': {'error': {'code': 'core_denied', 'message': 'AI OS Core no autoriza este run (DENY). Revisa las políticas de «athena:broker».'}}, 'tareas_broker': 0, 'recibos': [], 'saltos': [], 'final': None}
+[PASA] C-require: Core responde «require» a policies/evaluate
+    observado: {'http': 403, 'cuerpo': {'error': {'code': 'core_denied', 'message': 'AI OS Core pide una aprobación humana antes de este run (políticas de «athena:broker»).'}}, 'tareas_broker': 0, 'recibos': [], 'saltos': [], 'final': None}
+[PASA] C-html: Core responde «html» a policies/evaluate
+    observado: {'http': 503, 'cuerpo': {'error': {'code': 'core_unavailable', 'message': 'AI OS Core (http://127.0.0.1:48942) no respondió con JSON. Por seguridad el run no se ha creado.'}}, 'tareas_broker': 0, 'recibos': [], 'saltos': [], 'final': None}
+[PASA] C-lista: Core responde «lista» a policies/evaluate
+    observado: {'http': 503, 'cuerpo': {'error': {'code': 'core_unavailable', 'message': 'AI OS Core (http://127.0.0.1:29833) respondió algo que no es una decisión. Por seguridad el run no se ha creado.'}}, 'tareas_broker': 0, 'recibos': [], 'saltos': [], 'final': None}
+[PASA] C-500: Core responde «500» a policies/evaluate
+    observado: {'http': 503, 'cuerpo': {'error': {'code': 'core_unavailable', 'message': 'AI OS Core respondió 500: {"detail": "boom"}. Por seguridad el run no se ha creado.'}}, 'tareas_broker': 0, 'recibos': [], 'saltos': [], 'final': None}
+[PASA] C-caido: Core no escucha
+    observado: (503, {'error': {'code': 'core_unavailable', 'message': 'No se pudo consultar a AI OS Core en http://127.0.0.1:18279 (ATHENA_CORE_URL). Arranca Core («Arrancar AI OS Core.bat») o quita esa conexión. Por seguridad el run no se ha creado.'}})
+[OBSERVADO] C-implicito-caido: sin ATHENA_CORE_URL, con athena.json y Core parado
+    observado: (503, {'error': {'code': 'core_unavailable', 'message': 'No se pudo consultar a AI OS Core en http://127.0.0.1:15887 (fichero de conexión athena.json que deja AI OS Core). Arranca Core («Arrancar AI OS Core.bat») o quita esa conexión. Por seguridad el run no se ha creado.'}})
+[PASA] C-implicito: sin ATHENA_CORE_URL pero con conexion/athena.json
+    observado: (403, {'error': {'code': 'core_denied', 'message': 'AI OS Core no autoriza este run (DENY). Revisa las políticas de «athena:broker».'}})
+[PASA] C-token: token del Broker servido por Core
+    observado: (201, 'completed')
+
+29 casos, 0 en FALLA. Base temporal: C:\Users\jfeli\AppData\Local\Temp\athena-e2e-8ebuaorv

@@ -1,0 +1,120 @@
+- preparar
+- orden de tabulación
+- Ctrl+Intro
+- registro A1
+- documento con permiso
+- Escape en el diálogo
+- registro A2
+- contraste
+{
+  "A3_tabulacion": {
+    "recorrido": [
+      "TEntry:PY_VAR0",
+      "TButton:Elegir…",
+      "TCombobox:PY_VAR1",
+      "TEntry:PY_VAR2",
+      "TCombobox:PY_VAR3",
+      "TEntry:PY_VAR4",
+      "TButton:Probar conexión",
+      "TCombobox:PY_VAR5",
+      "TCombobox:PY_VAR6",
+      "TEntry:PY_VAR7",
+      "TEntry:PY_VAR8",
+      "TNotebook:",
+      "TRadiobutton:Responder una pregunta",
+      "TRadiobutton:Modificar el proyecto",
+      "TRadiobutton:Crear documentos",
+      "Text:",
+      "TButton:Iniciar",
+      "TButton:Limpiar pantalla",
+      "TNotebook:",
+      "TEntry:PY_VAR0",
+      "TButton:Elegir…",
+      "TCombobox:PY_VAR1",
+      "TEntry:PY_VAR2",
+      "TCombobox:PY_VAR3",
+      "TEntry:PY_VAR4",
+      "TButton:Probar conexión",
+      "TCombobox:PY_VAR5",
+      "TCombobox:PY_VAR6",
+      "TEntry:PY_VAR7",
+      "TEntry:PY_VAR8",
+      "TNotebook:",
+      "TRadiobutton:Responder una pregunta",
+      "TRadiobutton:Modificar el proyecto",
+      "TRadiobutton:Crear documentos",
+      "Text:",
+      "TButton:Iniciar",
+      "TButton:Limpiar pantalla",
+      "TNotebook:",
+      "TEntry:PY_VAR0",
+      "TButton:Elegir…",
+      "TCombobox:PY_VAR1",
+      "TEntry:PY_VAR2",
+      "TCombobox:PY_VAR3",
+      "TEntry:PY_VAR4",
+      "TButton:Probar conexión",
+      "TCombobox:PY_VAR5",
+      "TCombobox:PY_VAR6",
+      "TEntry:PY_VAR7",
+      "TEntry:PY_VAR8",
+      "TNotebook:",
+      "TRadiobutton:Responder una pregunta",
+      "TRadiobutton:Modificar el proyecto",
+      "TRadiobutton:Crear documentos",
+      "Text:",
+      "TButton:Iniciar",
+      "TButton:Limpiar pantalla",
+      "TNotebook:",
+      "TEntry:PY_VAR0",
+      "TButton:Elegir…",
+      "TCombobox:PY_VAR1"
+    ],
+    "llega_a": {
+      "Elegir…": true,
+      "Probar conexión": true,
+      "Iniciar": true,
+      "Limpiar pantalla": true
+    },
+    "estado": "PASA"
+  },
+  "A1_ctrl_intro": {
+    "fase": "Completado",
+    "estado": "PASA"
+  },
+  "A2_escape_deniega": {
+    "fichero_escrito": false,
+    "estado": "PASA"
+  },
+  "A4_contraste": {
+    "estilos": {
+      "TLabel": {
+        "fg": "SystemWindowText",
+        "bg": "SystemButtonFace",
+        "contraste": 18.43
+      },
+      "Hint.TLabel": {
+        "fg": "#5f6b7a",
+        "bg": "SystemButtonFace",
+        "contraste": 4.76
+      },
+      "Ok.TLabel": {
+        "fg": "#116329",
+        "bg": "SystemButtonFace",
+        "contraste": 6.49
+      },
+      "Bad.TLabel": {
+        "fg": "#cf222e",
+        "bg": "SystemButtonFace",
+        "contraste": 4.7
+      },
+      "Header.TLabel": {
+        "fg": "SystemWindowText",
+        "bg": "SystemButtonFace",
+        "contraste": 18.43
+      }
+    },
+    "por_debajo_de_4_5": [],
+    "estado": "PASA"
+  }
+}

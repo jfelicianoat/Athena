@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from athena.adapters.service.projections import (
     error_to_json,
@@ -89,7 +90,19 @@ class EndpointsRunsMixin(TransporteMixin):
         a check-then-act across `await registry.start(...)` would let both callers miss.
         """
         flow_id = request.headers.get("x-flow-id")
+        fingerprint = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
         existing = self._idempotency.get(key)
+        if existing is not None and self._idempotency_bodies.get(key) != fingerprint:
+            # Devolver en silencio el run de otro encargo hacia creer al cliente que se
+            # hizo lo que pidio ahora (Agora repetia claves con tarjetas de igual nombre).
+            return Response(
+                422,
+                error_to_json(
+                    "idempotency_key_reused",
+                    "This Idempotency-Key was already used for a different request; "
+                    "use a new key for a new run",
+                ),
+            )
         if existing is not None:
             try:
                 run_id = await asyncio.shield(existing)
@@ -112,6 +125,7 @@ class EndpointsRunsMixin(TransporteMixin):
 
         pending: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self._idempotency[key] = pending
+        self._idempotency_bodies[key] = fingerprint
         try:
             response = await self._create_run(objective, root, payload, status=201, flow_id=flow_id)
             created = (response.payload or {}).get("run_id")
@@ -123,6 +137,7 @@ class EndpointsRunsMixin(TransporteMixin):
             # cancelling the future is what lets a concurrent waiter fall through above,
             # instead of blocking on a promise nobody is going to keep.
             self._idempotency.pop(key, None)
+            self._idempotency_bodies.pop(key, None)
             if not pending.done():
                 pending.cancel()
             raise
@@ -133,7 +148,9 @@ class EndpointsRunsMixin(TransporteMixin):
     def _trim_idempotency(self) -> None:
         """Keep the map bounded. A retry that arrives an hour later is a new request."""
         while len(self._idempotency) > _IDEMPOTENCY_ENTRIES:
-            self._idempotency.pop(next(iter(self._idempotency)))
+            oldest = next(iter(self._idempotency))
+            self._idempotency.pop(oldest)
+            self._idempotency_bodies.pop(oldest, None)
 
     async def _create_run(
         self, objective: str, root: str, payload: JSONObject, *, status: int, flow_id: str | None

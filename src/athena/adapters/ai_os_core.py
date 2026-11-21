@@ -1,11 +1,14 @@
 """AI OS Core como director: autoriza cada run y recibe sus recibos.
 
 Core es el plano de control del ecosistema del TFM. Athena no lo necesita: sin
-`ATHENA_CORE_URL` todo sigue igual. Con él, `RunRegistry` pide permiso antes de crear
-o reanudar un run (política `athena:broker`) y solo sigue con un ALLOW ejecutable; si
-Core no contesta, el run no existe —quien configuró un director no quiere que se le
-salte cuando se cae—. Al terminar, el run deja su recibo (`succeeded`, `failed_terminal`
-o `cancelled`) para que Core sepa, tras una caída, si se puede reintentar.
+`ATHENA_CORE_URL` **y** sin el fichero de conexión que Core deja en
+`%LOCALAPPDATA%/AIOSCore/conexion/athena.json`, todo sigue igual. Con cualquiera de los
+dos (el fichero basta: es como Core reparte tokens sin pegarlos), `RunRegistry` pide
+permiso antes de crear o reanudar un run (política `athena:broker`) y solo sigue con un
+ALLOW ejecutable; si Core no contesta, el run no existe —quien configuró un director no
+quiere que se le salte cuando se cae—. Al terminar, el run deja su recibo (`succeeded`,
+`failed_terminal` o `cancelled`) para que Core sepa, tras una caída, si se puede
+reintentar.
 
 Es un adaptador como el del broker: el runtime no sabe que existe Core.
 """
@@ -45,7 +48,12 @@ class CoreUnavailableError(PermissionDeniedError):
 
 class AiOsCoreGovernor:
     def __init__(
-        self, base_url: str, token: str | None = None, *, timeout_seconds: float = 10.0
+        self,
+        base_url: str,
+        token: str | None = None,
+        *,
+        timeout_seconds: float = 10.0,
+        origin: str = "",
     ) -> None:
         parsed = urlparse(base_url.strip())
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -53,6 +61,8 @@ class AiOsCoreGovernor:
         self._base_url = base_url.strip().rstrip("/")
         self._token = token.strip() if token else None
         self._timeout_seconds = timeout_seconds
+        #: De donde salio la URL, para que el error lo diga (H-04): «» o « (…)».
+        self._origin = f" ({origin})" if origin else ""
 
     async def authorize(self, run_id: str, context: dict[str, Any]) -> None:
         """Lanza si Core no da un ALLOW ejecutable: entonces no se manda nada al modelo."""
@@ -101,7 +111,7 @@ class AiOsCoreGovernor:
 
     async def receipt(self, run_id: str, status: str, evidence: dict[str, Any]) -> None:
         """Un recibo perdido no tumba el run: Core verá el siguiente estado."""
-        with contextlib.suppress(CoreUnavailableError, _CoreHttpError):
+        with contextlib.suppress(Exception):  # nada de Core puede tumbar el run (H-03)
             await asyncio.to_thread(
                 self._post,
                 "/api/v1/operations/receipts",
@@ -131,14 +141,27 @@ class AiOsCoreGovernor:
         )
         try:
             with urlopen(request, timeout=timeout or self._timeout_seconds) as response:
-                result: dict[str, Any] = json.loads(response.read().decode("utf-8") or "{}")
-                return result
+                result = json.loads(response.read().decode("utf-8") or "{}")
         except HTTPError as exc:
             raise _CoreHttpError(exc.code, exc.read().decode("utf-8", "replace")[:300]) from None
         except (URLError, TimeoutError, OSError) as exc:
             raise CoreUnavailableError(
-                "No se pudo consultar a AI OS Core. Por seguridad el run no se ha creado."
+                f"No se pudo consultar a AI OS Core en {self._base_url}{self._origin}. "
+                "Arranca Core («Arrancar AI OS Core.bat») o quita esa conexión. "
+                "Por seguridad el run no se ha creado."
             ) from exc
+        except ValueError:
+            # Un proxy o una pagina de error con 200 no es una decision de Core (H-03).
+            raise CoreUnavailableError(
+                f"AI OS Core ({self._base_url}) no respondió con JSON. "
+                "Por seguridad el run no se ha creado."
+            ) from None
+        if not isinstance(result, dict):
+            raise CoreUnavailableError(
+                f"AI OS Core ({self._base_url}) respondió algo que no es una decisión. "
+                "Por seguridad el run no se ha creado."
+            )
+        return result
 
 
 class _CoreHttpError(RuntimeError):
@@ -252,4 +275,9 @@ def governor_from_environment() -> AiOsCoreGovernor | None:
     core = core_settings()
     if core is None:
         return None
-    return AiOsCoreGovernor(core[0], core[1])
+    origin = (
+        "ATHENA_CORE_URL"
+        if os.environ.get("ATHENA_CORE_URL", "").strip()
+        else "fichero de conexión athena.json que deja AI OS Core"
+    )
+    return AiOsCoreGovernor(core[0], core[1], origin=origin)

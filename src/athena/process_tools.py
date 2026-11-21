@@ -704,9 +704,14 @@ async def _spawn_process(
                 cwd=str(cwd),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                stdin=asyncio.subprocess.DEVNULL,
+                # Una tuberia cerrada y no DEVNULL: en Windows NUL cuenta como terminal, y
+                # `python` (o cualquier interprete) a secas abria su consola interactiva y
+                # se quedaba colgado hasta agotar el plazo (H-09, auditoria del 19-nov).
+                stdin=asyncio.subprocess.PIPE,
                 env=environment,
             )
+            if process.stdin is not None:
+                process.stdin.close()
             # En su job desde el primer momento: es lo que permite matar tambien a los
             # nietos cuando el padre ya no esta (A14).
             contain(process)

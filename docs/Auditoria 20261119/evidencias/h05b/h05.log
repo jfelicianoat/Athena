@@ -1,0 +1,9 @@
+fase 1: 0 DIALOGOS [] fase Esperando al modelo
+ 
+informe.txt tras la caída: False
+fase 2: 0 - historial tras la caída
+- seleccionar
+- reanudar
+  [diálogo sí/no] Reanudar: 'Se reanudará este trabajo en C:\\Users\\jfeli\\AppData\\Local\\Temp\\athena-h05-yeqxc315\\proyecto, con los permisos y el presupuesto que le quedaban cuando se interru' -> True
+- captura reanudado
+ 

@@ -1,0 +1,9 @@
+[OBSERVADO] P3: delegación pedida en el objetivo (delegate_task, explorer)
+    observado: {'http': 201, 'final': 'failed', 'subagente': [], 'respuesta': []}
+[FALLA] P2: System-1 en sombra (goal completion + reviewer gate) con el Broker real
+    observado: {'http': 201, 'final': 'failed', 'system1': []}
+[FALLA] P4: reanudar un plan con una tarea interrumpida
+    observado: {'tarea_empezada': True, 'listado': 'failed', 'resume_http': 400, 'resume': {'error': {'code': 'tool_validation_error', 'message': 'Run 64e37190-15c4-47c5-a68b-7c1ef3798478 is failed, not recovery_pending'}}}
+
+3 casos, 2 en FALLA, 9 s. C:\Users\jfeli\AppData\Local\Temp\athena-pend-aedsiqdq
+salida=0

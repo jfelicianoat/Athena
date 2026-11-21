@@ -139,6 +139,9 @@ class TransporteMixin:
         self._connections: set[asyncio.Task[None]] = set()
         #: Idempotency key to the run it created, or to the call still creating it.
         self._idempotency: dict[str, asyncio.Future[str]] = {}
+        #: La huella del cuerpo con que se uso cada clave: la misma clave con otro cuerpo
+        #: no es un reintento sino otra peticion (R-01, auditoria del 19-nov).
+        self._idempotency_bodies: dict[str, str] = {}
 
     # -- lifecycle --------------------------------------------------------
 
@@ -301,7 +304,11 @@ class TransporteMixin:
         scheme, _, presented = header.partition(" ")
         if scheme.lower() != "bearer":
             return False
-        return hmac.compare_digest(presented, self.config.token)
+        # En bytes: con `str`, un caracter no ASCII hacia lanzar a `compare_digest` y el
+        # cliente recibia un 500 en vez de un 401 (H-02, auditoria del 19-nov).
+        return hmac.compare_digest(
+            presented.encode("utf-8", "surrogateescape"), self.config.token.encode("utf-8")
+        )
 
     async def _write(self, writer: asyncio.StreamWriter, response: Response) -> None:
         body, content_type = response.rendered()

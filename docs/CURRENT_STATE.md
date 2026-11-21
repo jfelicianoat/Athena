@@ -14,6 +14,20 @@ refused in the desktop, a warning before a change that cannot be verified, the b
 shown while a run waits, a cap on System-1 judgment input and resume after a crash. Resolution and
 evidence: [`AUDIT_2026-10-09_RESOLUTION.md`](AUDIT_2026-10-09_RESOLUTION.md).
 
+**0.3.8 (2026-11-20)** resolves the audit of 19/20-nov-2026, part of it run against the real
+AI_Broker:
+- a command timeout is told to the model instead of ending the run, and bare interpreters no
+  longer hang on Windows;
+- a plan task is saved as running before it works, so resuming refuses instead of repeating it;
+- the desktop sends a typed model as the run's strict choice (ADR-034);
+- resuming from History keeps the run's task kind;
+- «Probar conexión» accepts the token Core provides;
+- Core's implicit connection file is documented;
+- Core answers that are not JSON give 503, and non-ASCII bearers give 401;
+- a read-only CLI run is verified as a question.
+
+Resolution and evidence: [`AUDIT_2026-11-19_RESOLUTION.md`](AUDIT_2026-11-19_RESOLUTION.md).
+
 This file is the current-state index. Accepted ADRs define architectural decisions;
 acceptance reports and integration reports are dated evidence, not rolling status pages.
 

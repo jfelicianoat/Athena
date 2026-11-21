@@ -1,0 +1,60 @@
+{
+  "resultado": {
+    "http": 201,
+    "estado": "failed",
+    "errores": [
+      {
+        "code": "process_timeout",
+        "message": "Command exceeded 5.0 seconds and was terminated",
+        "recovery_action": "cancelled"
+      }
+    ],
+    "tareas_al_broker": 1
+  },
+  "detalle": {
+    "run_id": "ce0c5464-3e51-4468-8a37-882a3248dead",
+    "workspace_id": "proj-5a7034034bd69b7dff1878f54877df9f",
+    "status": "failed",
+    "resumable": false,
+    "degraded": false,
+    "objective": "Comprueba el entorno [[bash:python:5]]",
+    "created_at": "2026-11-19T22:07:13.207057+00:00",
+    "updated_at": "2026-11-19T22:07:19.132321+00:00",
+    "working_memory": {
+      "objective": "Comprueba el entorno [[bash:python:5]]",
+      "constraints": [],
+      "current_plan": [],
+      "current_step": null,
+      "facts": [],
+      "files_examined": [],
+      "files_modified": [],
+      "commands_run": [],
+      "decisions": [],
+      "errors": [
+        {
+          "code": "process_timeout",
+          "message": "Command exceeded 5.0 seconds and was terminated",
+          "recovery_action": "cancelled"
+        }
+      ],
+      "verification": {},
+      "remaining_work": []
+    },
+    "verification": {},
+    "tool_references": [],
+    "checkpoints": [
+      {
+        "name": "started",
+        "occurred_at": "2026-11-19T22:07:13.207176+00:00",
+        "payload": {}
+      },
+      {
+        "name": "failed",
+        "occurred_at": "2026-11-19T22:07:19.132311+00:00",
+        "payload": {
+          "error_code": "process_timeout"
+        }
+      }
+    ]
+  }
+}

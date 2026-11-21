@@ -1,0 +1,51 @@
+{
+  "antes": {
+    "captura": "01_historial_interrumpido.png",
+    "reanudar": "normal",
+    "detalle": "Objetivo: Escribe el informe [[lento:6]] [[escribe:informe.txt:informe]]\nEstado: Interrumpido (se puede reanudar)\nTipo: Documentos\nProyecto: C:\\Users\\jfeli\\AppData\\Local\\Temp\\athena-h05-yeqxc315\\proyecto\nÚltima actualización: 2026-11-19 21:33\nIdentificador: a3e917b1-f066-4d8f-9630-d42686e97165"
+  },
+  "despues": {
+    "captura": "02_reanudado_resultado.png",
+    "estado": "Respuesta dada — no se ha cambiado ningún archivo",
+    "fichero": true,
+    "texto": "Escribe el informe [[lento:6]] [[escribe:informe.txt:informe]]\n---\n✔ Respuesta dada — no se ha cambiado ningún archivo\nEsto no demuestra que la respuesta sea correcta: Athena solo comprueba que respondió sin tocar el proyecto.\n\nRespuesta de Athena\nRespuesta de prueba\n\nArchivos cambiados\n• informe.txt\n\nComprobaciones\n✔ informe.txt: producido\n\nQué puedes hacer ahora\n• Si querías cambios, elige «Modificar el proyecto» y vuelve a pedirlo.\n\nDetalle técnico: estado=completed; verificación=passed; error=-\n1 deliverable(s) produced. The declared deliverables exist, are non-empty and were written by this run. It does not establish that their content is correct.\n---\n21:33:52  Preparando el trabajo… (los trabajos anteriores siguen en «Historial»)\n21:33:52  Se reanuda el trabajo.\n21:33:52  Consultando al modelo…\n21:33:58  El modelo (modelo-bueno) pide usar 1 herramienta(s).\n21:33:58  Permiso concedido para escribir un archivo.\n21:33:58  Usando la herramienta: escribir un archivo.\n21:33:58  Archivo cambiado: informe.txt\n21:33:58  Consultando al modelo…\n21:34:04  El modelo (modelo-bueno) ha respondido.\n21:34:04  Comprobando el trabajo…\n21:34:04  Verificación: comprobado.\n21:34:04  Trabajo terminado.\n---\nSelecciona un trabajo para ver su detalle. Desde aquí puedes reanudar uno interrumpido, deshacer los cambios que hizo o usarlo como nuevo encargo."
+  },
+  "dialogos": [
+    {
+      "tipo": "sí/no",
+      "titulo": "Reanudar",
+      "mensaje": "Se reanudará este trabajo en C:\\Users\\jfeli\\AppData\\Local\\Temp\\athena-h05-yeqxc315\\proyecto, con los permisos y el presupuesto que le quedaban cuando se interrumpió, usando la conexión actual. ¿Continuar?",
+      "respuesta": true
+    }
+  ],
+  "pasos": [
+    {
+      "paso": "historial tras la caída",
+      "cumplido": true,
+      "segundos": 0.0,
+      "estado": "Describe el encargo",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "seleccionar",
+      "cumplido": true,
+      "segundos": 0.2,
+      "estado": "Describe el encargo",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "reanudar",
+      "cumplido": true,
+      "segundos": 12.6,
+      "estado": "Respuesta dada — no se ha cambiado ningún archivo",
+      "fase": "Completado"
+    },
+    {
+      "paso": "captura reanudado",
+      "cumplido": true,
+      "segundos": 0.1,
+      "estado": "Respuesta dada — no se ha cambiado ningún archivo",
+      "fase": "Completado"
+    }
+  ]
+}

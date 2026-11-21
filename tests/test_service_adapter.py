@@ -1600,3 +1600,34 @@ def _drain(subscriber: Any) -> list[RuntimeEvent]:
         if event is not None:
             entregados.append(event)
     return entregados
+
+
+def test_the_same_key_with_another_body_is_refused(tmp_path: Path) -> None:
+    """R-01 (auditoría 19-nov): la misma clave con otro encargo devolvía en silencio el run
+    del primero, y el cliente creía que se hacía lo que acababa de pedir."""
+    root = _sandbox(tmp_path / "repo")
+
+    async def scenario() -> None:
+        registry = _registry(tmp_path, _ScriptedProvider([]))
+        service = AthenaService(registry, _config())
+        host, port = await service.start()
+        try:
+            first = {"objective": "Look around", "workspace": str(root), "writes": "off"}
+            other = {"objective": "Something else", "workspace": str(root), "writes": "off"}
+            key = {"Idempotency-Key": "k-reused"}
+            status, _ = await _request(host, port, "POST", "/v1/runs", body=first, headers=key)
+            assert status == 201
+            status, payload = await _request(
+                host, port, "POST", "/v1/runs", body=first, headers=key
+            )
+            assert status == 200 and json.loads(payload)["idempotent_replay"] is True
+            status, payload = await _request(
+                host, port, "POST", "/v1/runs", body=other, headers=key
+            )
+            assert status == 422
+            assert json.loads(payload)["error"]["code"] == "idempotency_key_reused"
+            assert len(registry.live_ids()) == 1
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())

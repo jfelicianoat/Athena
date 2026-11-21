@@ -99,11 +99,15 @@ class RecoveryPolicy:
         self.limits = limits or RecoveryLimits()
         self.provider_fallback = provider_fallback
 
-    def decide(self, error: AthenaRuntimeError) -> RecoveryDirective:
+    def decide(self, error: AthenaRuntimeError, *, from_tool: bool = False) -> RecoveryDirective:
         # Being stopped outranks whatever the failing operation was, and what counts as
         # "stopped" is decided in one place so this cannot drift from the loop's answer.
         outcome = classify_outcome(error)
-        if outcome.is_stopped_deliberately:
+        # El plazo de UN comando que pidio el modelo no es el de la sesion: se le cuenta al
+        # modelo y sigue (H-09 de la auditoria del 19-nov). Antes un `python` colgado tras
+        # un arreglo ya hecho y comprobado daba el run entero por fallido sin verificarlo.
+        tool_timeout = from_tool and isinstance(error, ProcessTimeoutError)
+        if outcome.is_stopped_deliberately and not tool_timeout:
             wording = (
                 "The session ran out of time."
                 if outcome is ExecutionOutcome.TIMED_OUT

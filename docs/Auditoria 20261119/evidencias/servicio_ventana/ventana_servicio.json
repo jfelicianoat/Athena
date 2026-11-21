@@ -1,0 +1,47 @@
+{
+  "S1": {
+    "captura": "01_servicio_en_marcha.png",
+    "estado": "Token copiado al portapapeles",
+    "url": "http://127.0.0.1:8770",
+    "portapapeles_es_el_token": true,
+    "health": 200,
+    "auth_con_token": 200,
+    "auth_sin_token": 401
+  },
+  "S2": {
+    "captura": "02_servicio_detenido.png",
+    "estado": "Servicio detenido",
+    "health_tras_detener": "sin respuesta (puerto cerrado)"
+  },
+  "dialogos": [],
+  "pasos": [
+    {
+      "paso": "iniciar servicio",
+      "cumplido": true,
+      "segundos": 1.6,
+      "estado": "Empieza eligiendo el proyecto",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "copiar token y comprobarlo",
+      "cumplido": true,
+      "segundos": 0.3,
+      "estado": "Empieza eligiendo el proyecto",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "detener",
+      "cumplido": true,
+      "segundos": 0.8,
+      "estado": "Empieza eligiendo el proyecto",
+      "fase": "Sin empezar"
+    },
+    {
+      "paso": "tras detener",
+      "cumplido": true,
+      "segundos": 2.2,
+      "estado": "Empieza eligiendo el proyecto",
+      "fase": "Sin empezar"
+    }
+  ]
+}

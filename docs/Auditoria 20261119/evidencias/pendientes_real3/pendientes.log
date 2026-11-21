@@ -1,0 +1,9 @@
+[OBSERVADO] P3: delegación pedida en el objetivo (delegate_task, explorer)
+    observado: {'http': 201, 'final': 'completed', 'subagente': [], 'respuesta': []}
+[PASA] P2: System-1 en sombra (goal completion + reviewer gate) con el Broker real
+    observado: {'http': 201, 'final': 'completed', 'system1': [{'use_case': 'athena_goal_completion', 'accepted': False, 'decision': None, 'confidence': None, 'provider': 'laya_mcp', 'model': 'multilingual', 'threshold': 0.97, 'input_chars': 1336, 'latency_ms': 0.436, 'reason_code': 'INPUT_TOO_LARGE', 'fallback': 
+[PASA] P4: reanudar un plan con una tarea interrumpida
+    observado: {'tarea_empezada': True, 'listado': 'recovery_pending', 'resume_http': 400, 'resume': {'error': {'code': 'tool_validation_error', 'message': 'Run 6aa6938a-54df-4c29-b90b-bbb6e35c98cc was a plan and these tasks were interrupted with an unknown outcome: T1. Somebody has to say what happened to them be
+
+3 casos, 0 en FALLA, 269 s. C:\Users\jfeli\AppData\Local\Temp\athena-pend-ds_vyzyp
+salida=0

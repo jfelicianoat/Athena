@@ -95,9 +95,16 @@ python -m athena_desktop
 The desktop window uses Python's native Tcl/Tk component. On Windows, keep the
 `Tcl/Tk and IDLE` option enabled in the official Python installer.
 
+**Accessibility.** Tk 8.6 exposes no accessibility API: measured with Windows UI Automation
+(what Narrator and NVDA read), the window shows 75 unnamed panes and no named control, so a
+screen reader cannot use it. Keyboard use works (Ctrl+Enter starts a task, Escape denies an
+approval, Tab reaches every main control) and text meets WCAG AA contrast. For a screen
+reader, use the CLI (`athena <repo> -o "…"`), which prints plain text to the console.
+
 Preferences are stored under `%LOCALAPPDATA%\Athena\settings.json`. Tokens are deliberately
-excluded: enter one for the current application session, or provide `ATHENA_BROKER_TOKEN`
-for AI_Broker and `ATHENA_API_KEY` for OpenAI-compatible providers. AI_Broker receives its
+excluded: with AI OS Core running, Core hands out the AI_Broker token and nothing has to be
+typed; otherwise enter one for the current application session, or provide
+`ATHENA_BROKER_TOKEN` for AI_Broker and `ATHENA_API_KEY` for OpenAI-compatible providers. AI_Broker receives its
 credential as `x-admin-token`; OpenAI-compatible endpoints receive a Bearer token.
 For AI_Broker, Athena translates its tool definitions and the model's decisions through a
 structured JSON contract. Tool execution and permission decisions remain inside Athena.
@@ -175,8 +182,12 @@ deployment with no catalogue keeps fixed/routed behaviour and `/v1/models` answe
 
 ## AI OS Core as director (0.3.2)
 
-Optional. Without `ATHENA_CORE_URL` nothing changes. With it (and the per-app token in
-`ATHENA_CORE_TOKEN`), both the service and the desktop app ask AI OS Core before creating or
+Optional, but switched on by either of two things: `ATHENA_CORE_URL` (with the per-app token
+in `ATHENA_CORE_TOKEN`), **or** the connection file that a running Core writes to
+`%LOCALAPPDATA%\AIOSCore\conexion\athena.json` (Core hands out tokens that way, so nobody
+pastes one). With neither, nothing changes. When Core is on, a stopped Core means no run
+can start (503 `core_unavailable`, and the message says where the Core URL came from):
+start Core or remove that connection file. With Core on, both the service and the desktop app ask AI OS Core before creating or
 resuming a run: `RunRegistry` evaluates the `athena:broker` policy with `operation_type:
 agent_run`, `data_classification: confidential`, the model, profile, writes and exec modes, and
 only goes on with an executable ALLOW. Anything else means no run and no model call: the
