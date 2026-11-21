@@ -27,7 +27,7 @@ athena-desktop = "athena_desktop.app:main"
 dev = [
   "mypy==1.18.2",
   "pytest==8.4.2",
-  "ruff==0.16.4",
+  "ruff==0.17.4",
 ]
 
 [tool.setuptools.packages.find]
